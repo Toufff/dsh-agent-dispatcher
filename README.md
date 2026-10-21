@@ -2,15 +2,17 @@
 
 Local task dispatch across DSH, Codex and Claude Code. Linear holds requirements and acceptance; the recipient controls local executors, directories and sessions.
 
-**Development status:** the initial implementation contains the scheduling kernel and behavioral tests. It is not yet an installable DSH plugin. Native DSH integration, official CLI adapters, Linear intake/outbox and the priority editor are planned in [the architecture](docs/architecture.md). No live agent or Linear integration is claimed by this version.
+**Development status:** host plugin, CLI/native adapters, Linear intake/outbox and priority panel are implemented and undergoing integration acceptance. Unit/contract tests pass; live integration acceptance is not yet complete. See [the architecture](docs/architecture.md).
 
 ## Development
 
-Requires Node.js 22 or later. No dependencies or credentials are needed for the kernel tests.
+Requires Node.js 22 or later. No credentials are needed for the automated tests.
 
 ```sh
+npm ci
 npm test
 npm run check
+npm run build
 ```
 
 The kernel accepts injected persistence and executor adapters. An executor must report whether execution was accepted, definitively rejected, or uncertain. Automatic fallback is permitted only after a definitive pre-execution rejection.

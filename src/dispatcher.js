@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
-const terminal = new Set(['review', 'failed', 'exhausted']);
+const terminal = new Set(['review', 'failed', 'exhausted', 'stopped', 'accepted']);
+async function bounded(operation, ms = 15000) {
+  let timer;
+  try { return await Promise.race([Promise.resolve().then(operation), new Promise(resolve => {
+    timer = setTimeout(() => resolve({ status: 'unknown', reason: 'Operation timed out; reconcile before continuing' }), ms);
+  })]); } finally { clearTimeout(timer); }
+}
 
 /** A single-owner kernel. store.save must durably replace the aggregate atomically. */
 export class Dispatcher {
@@ -17,7 +23,7 @@ export class Dispatcher {
     return result;
   }
 
-  enqueue({ source, round, cwd, prompt, executors }) {
+  enqueue({ source, round, cwd, prompt, executors, title = source, projectId, issue, session }) {
     return this.#exclusive(async () => {
       if (!source || !round || !cwd || !prompt || !executors?.length)
         throw new Error('source, explicit round, local cwd, prompt and executors required');
@@ -27,8 +33,10 @@ export class Dispatcher {
       const key = JSON.stringify([source, round]);
       const existing = state.tasks.find(t => t.key === key);
       if (existing) return existing.id;
-      const task = { id: this.id(), key, cwd, prompt, executors: [...executors],
-        status: 'queued', attempts: [], report: 'pending' };
+      const task = { id: this.id(), key, cwd, prompt, title, executors: [...executors],
+        status: 'queued', attempts: [], report: 'pending', owner: 'scheduler', events: [],
+        createdAt: new Date().toISOString(), ...(projectId ? { projectId } : {}),
+        ...(issue ? { issue } : {}), ...(session ? { session } : {}) };
       state.tasks.push(task);
       await this.store.save(state);
       return task.id;
@@ -38,12 +46,14 @@ export class Dispatcher {
   tick() {
     return this.#exclusive(async () => {
       const state = await this.store.load();
+      if (state.paused || state.tasks.some(t => t.owner === 'human')) return;
       // Any unresolved task owns the single automatic execution slot.
       const task = state.tasks.find(t => !terminal.has(t.status));
-      if (!task || task.status !== 'queued') return;
+      if (!task || task.status !== 'queued' || task.owner === 'human') return;
       for (let i = task.attempts.length; i < task.executors.length; i++) {
         const executor = task.executors[i];
-        const attempt = { id: this.id(), executor, status: 'starting' };
+        const attempt = { id: this.id(), executor, status: 'starting', sessionId: this.id(),
+          ...(task.session?.executor === executor ? { sessionId: task.session.id, resume: true } : {}) };
         task.attempts.push(attempt);
         task.status = 'starting';
         // Never call start until its intent is durable.
@@ -51,7 +61,7 @@ export class Dispatcher {
         let result;
         try {
           const adapter = this.adapters[executor];
-          result = adapter ? await adapter.start(structuredClone({ task, attempt }))
+          result = adapter ? await bounded(() => adapter.start(structuredClone({ task, attempt })))
             : { status: 'rejected', reason: 'Adapter unavailable; not started' };
         } catch {
           result = { status: 'unknown' };
@@ -76,6 +86,9 @@ export class Dispatcher {
     } else {
       attempt.status = task.status = 'unknown';
     }
+    if (status === 'busy') attempt.status = task.status = 'busy';
+    if (typeof result?.summary === 'string') task.summary = result.summary.slice(0, 12000);
+    if (typeof result?.reason === 'string') attempt.reason = result.reason.slice(0, 1000);
     if (typeof result?.sessionId === 'string') attempt.sessionId = result.sessionId;
     if (typeof result?.runId === 'string') attempt.runId = result.runId;
   }
@@ -84,17 +97,68 @@ export class Dispatcher {
     return this.#exclusive(async () => {
       const state = await this.store.load();
       const task = state.tasks.find(t => !terminal.has(t.status));
-      if (!task || task.status === 'queued') return;
+      if (!task || task.status === 'queued' || task.owner === 'human') return;
       const attempt = task.attempts.at(-1);
       const adapter = this.adapters[attempt.executor];
       let result;
-      try { result = await adapter?.reconcile(structuredClone({ task, attempt })); }
+      try { result = await bounded(() => adapter?.reconcile(structuredClone({ task, attempt }))); }
       catch { result = { status: 'unknown' }; }
       // Once accepted, a later failure cannot become a pre-start rejection.
       if (result?.status === 'rejected' && attempt.accepted)
         result = { status: 'unknown' };
-      this.#apply(task, attempt, result);
+      if (attempt.status === 'busy' && result?.status === 'ready') {
+        task.attempts.pop(); task.status = 'queued';
+      } else this.#apply(task, attempt, result);
       await this.store.save(state);
+    });
+  }
+
+  update(fn) {
+    return this.#exclusive(async () => {
+      const state = await this.store.load();
+      const result = await fn(state);
+      await this.store.save(state);
+      return result;
+    });
+  }
+
+  action(id, action) {
+    return this.update(async state => {
+      const task = state.tasks.find(t => t.id === id);
+      if (!task) throw new Error('Task not found');
+      const attempt = task.attempts.at(-1);
+      if (action === 'stop' || action === 'takeover') {
+        if (!terminal.has(task.status) && task.status !== 'queued' && task.status !== 'busy') {
+          task.status = 'stopping';
+          await this.store.save(state);
+          let result;
+          try { result = await bounded(() => this.adapters[attempt.executor]?.stop({ task, attempt })); }
+          catch { result = null; }
+          if (result?.status !== 'stopped') {
+            task.status = 'unknown';
+            task.events.push({ action: 'stop-unconfirmed', at: new Date().toISOString() });
+            return;
+          }
+        }
+        task.status = action === 'takeover' ? 'manual' : 'stopped';
+        task.owner = action === 'takeover' ? 'human' : 'scheduler';
+      } else if (action === 'return') {
+        if (task.owner !== 'human') throw new Error('Task is not manually owned');
+        if (attempt) {
+          const result = await bounded(() => this.adapters[attempt.executor]?.idle({ task, attempt }));
+          if (result !== true) throw new Error('Session idle state is unconfirmed');
+        }
+        task.owner = 'scheduler'; task.status = 'stopped';
+      } else if (action === 'retry') {
+        if (!['failed', 'exhausted', 'stopped'].includes(task.status)) throw new Error('Stop or reconcile before retry');
+        task.previousAttempts = [...(task.previousAttempts ?? []), ...task.attempts];
+        if (attempt?.accepted) task.session = { executor: attempt.executor, id: attempt.sessionId };
+        task.attempts = []; task.status = 'queued'; task.report = 'pending';
+      } else if (action === 'accept') {
+        if (task.status !== 'review') throw new Error('Task is not ready for review');
+        task.status = 'accepted';
+      } else throw new Error('Unsupported task action');
+      task.events.push({ action, at: new Date().toISOString() });
     });
   }
 }
