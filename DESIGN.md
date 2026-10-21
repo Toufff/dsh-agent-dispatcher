@@ -122,7 +122,7 @@ components:
 
 ## Components
 
-Agent identities pair a bundled Lobe Icons brand mark with the visible executor name. Priority rows use 24px marks and execution records use 20px marks; all reserve fixed space and are hidden from accessibility APIs because the adjacent name supplies the label. DSH uses the DeepSeek mark in the existing blue accent, Codex inherits text color, and Claude uses `#ad502d` in light mode / `#e8a082` in dark mode. Unknown adapter types use a neutral terminal SVG. Attribution and license live beside the source assets.
+Agent identities pair a bundled Lobe Icons brand mark with the visible executor name. Priority rows use 24px marks and execution records use 20px marks; all reserve fixed space and are hidden from accessibility APIs because the adjacent name supplies the label. DSH uses the DeepSeek mark in the existing blue accent, ChatGPT uses the OpenAI knot mark and inherits text color, and Claude uses `#ad502d` in light mode / `#e8a082` in dark mode. Unknown adapter types use a neutral terminal SVG. Attribution and license live beside the source assets.
 
 ### Buttons
 常规按钮最小高度（36px），悬停使用 panel 底色。主按钮使用蓝色背景和同色边界；其悬停仍保持蓝色，深色模式使用专门的深色文字。禁用态透明度（0.5），光标为不可用。所有可聚焦元素的键盘焦点使用（2px）蓝色外轮廓，偏移（3px）。仅在用户未请求减少动态时，按钮背景以（0.12s ease-out）过渡。

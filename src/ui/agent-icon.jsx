@@ -1,9 +1,9 @@
 import React from 'react';
-import codex from './icons/codex.svg';
+import chatgpt from './icons/openai.svg';
 import claude from './icons/claude.svg';
 import deepseek from './icons/deepseek.svg';
 
-const icons = { codex, claude, dsh: deepseek };
+const icons = { codex: chatgpt, claude, dsh: deepseek };
 /** Bundled, reviewed SVG assets only; never render remote issue content as markup. */
 export function AgentIcon({ type }) {
   return icons[type]

@@ -24,7 +24,7 @@ export const settingsSchema = z.object({ executors: z.array(executorSchema), pro
   });
 export const initialState = () => ({ version: 1, revision: 0, paused: true, tasks: [], outbox: [],
   settings: { executors: [
-    { id: 'codex', label: 'Codex', type: 'codex', command: 'codex', enabled: true, args: [], sandbox: 'workspace-write', verified: false },
+    { id: 'codex', label: 'ChatGPT', type: 'codex', command: 'codex', enabled: true, args: [], sandbox: 'workspace-write', verified: false },
     { id: 'dsh', label: 'DSH', type: 'dsh', enabled: true, args: [], sandbox: 'workspace-write', verified: false },
     { id: 'claude', label: 'Claude Code', type: 'claude', command: 'claude', enabled: false, args: [], sandbox: 'workspace-write', verified: false }
   ], projects: [] } });

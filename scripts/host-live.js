@@ -18,7 +18,7 @@ try {
   await page.getByRole('button', { name: '本地确认验收', exact: true }).waitFor({ timeout: 180000 });
   assert.equal(await page.locator('.detail .attempt code').last().innerText(), originalSession);
   assert.match(await page.locator('.detail pre').innerText(), /DISPATCH_DSH_OK/);
-  await page.getByRole('button', { name: '上移 Codex', exact: true }).click();
+  await page.getByRole('button', { name: '上移 ChatGPT', exact: true }).click();
   await page.getByRole('button', { name: '保存顺序', exact: true }).click();
   await page.getByRole('button', { name: '保存顺序', exact: true }).waitFor({ state: 'hidden' });
   await page.getByRole('combobox', { name: '项目', exact: true }).selectOption('acceptance');
