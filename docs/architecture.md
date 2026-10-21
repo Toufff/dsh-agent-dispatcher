@@ -26,11 +26,11 @@ The host adapter must provide atomic replacement of one aggregate state record a
 
 All adapters implement start and reconciliation; stop must confirm termination before another managed run starts. Session identity, execution identity and task identity are distinct.
 
-| Adapter | Planned transport | Validation |
+| Adapter | Transport | Validation |
 | --- | --- | --- |
-| DSH | Native session controller | Live local test required |
-| Codex | Official app-server or CLI protocol | Live local test required |
-| Claude Code | Official CLI, stream JSON and resume | Contract tests first; collaborator validates live |
+| DSH | Native session controller | Live execution, takeover and resume passed |
+| Codex | Official CLI JSON protocol | Live CLI and packaged-host execution passed |
+| Claude Code | Official CLI, stream JSON and resume | Contract tests passed; collaborator validates live |
 
 Use official executables with their existing login. Never extract subscription OAuth credentials, proxy subscription model endpoints or share accounts. Invoke commands without a shell. Resume only explicitly registered task sessions; never choose the most recent session heuristically.
 
@@ -50,4 +50,4 @@ The DSH panel will expose draggable executor priority (plus keyboard controls), 
 4. Linear intake and result outbox; local project mappings.
 5. Native DSH priority editor and task inspection; end-to-end validation.
 
-Do not advertise the plugin as functional until these integration stages pass. Human acceptance remains separate from an agent's completion report.
+These stages are implemented; see acceptance.md for verified scope and remaining live-Claude validation. Human acceptance remains separate from an agent's completion report. The host adds a cross-process runtime-directory lock; only one receiver may use a given DSH domain store.

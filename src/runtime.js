@@ -6,20 +6,27 @@ import { settingsSchema } from './config.js';
 import { CliAdapter } from './adapters/cli.js';
 import { DshAdapter } from './adapters/dsh.js';
 import { LinearClient } from './linear.js';
+import { AdapterRegistry } from './adapters/registry.js';
+import { isDeepStrictEqual } from 'node:util';
 
 export class Runtime {
-  constructor({ store, ctx = {}, directory, linearFactory = token => new LinearClient(token), env = process.env }) {
+  constructor({ store, ctx = {}, directory, linearFactory = token => new LinearClient(token), env = process.env, registry }) {
     this.store = store; this.ctx = ctx; this.directory = directory; this.env = env;
     this.linearFactory = linearFactory; this.adapters = {}; this.health = {}; this.errors = [];
+    this.registry = registry || new AdapterRegistry();
+    if (!registry) {
+      for (const type of ['codex', 'claude']) this.registry.register(type, (config, deps) => new CliAdapter(config, path.join(deps.directory, 'runs'), deps.secretKeys));
+      this.registry.register('dsh', (config, deps) => new DshAdapter(deps.ctx, config));
+    }
     this.dispatcher = new Dispatcher({ store, adapters: this.adapters });
   }
   async init() { const state = await this.store.load(); this.install(state.settings); return this; }
   install(settings) {
+    const secretKeys = settings.projects.flatMap(project => project.linear ? [project.linear.tokenEnv] : []);
     for (const config of settings.executors) {
-      const signature = JSON.stringify({ ...config, enabled: true });
-      if (this.adapters[config.id]?.signature === signature) continue;
-      const adapter = config.type === 'dsh' ? new DshAdapter(this.ctx, config)
-        : new CliAdapter(config, path.join(this.directory, 'runs'));
+      const signature = { ...config, enabled: true, secretKeys };
+      if (isDeepStrictEqual(this.adapters[config.id]?.signature, signature)) continue;
+      const adapter = this.registry.create(config, { ctx: this.ctx, directory: this.directory, secretKeys });
       adapter.signature = signature;
       this.adapters[config.id] = adapter;
     }
@@ -31,12 +38,12 @@ export class Runtime {
       if (revision !== state.revision) throw new Error('Settings changed in another window; refresh first');
       const active = state.tasks.filter(t => !['review', 'accepted', 'failed', 'stopped', 'exhausted'].includes(t.status));
       for (const task of active) {
-        if (JSON.stringify(settings.projects.find(p => p.id === task.projectId)) !==
-            JSON.stringify(state.settings.projects.find(p => p.id === task.projectId)))
+        if (!isDeepStrictEqual(settings.projects.find(p => p.id === task.projectId),
+            state.settings.projects.find(p => p.id === task.projectId)))
           throw new Error('Stop affected tasks before changing project mappings');
         for (const id of task.executors) {
           const before = state.settings.executors.find(e => e.id === id), after = settings.executors.find(e => e.id === id);
-          if (!after || JSON.stringify({ ...before, enabled: true }) !== JSON.stringify({ ...after, enabled: true }))
+          if (!after || !isDeepStrictEqual({ ...before, enabled: true }, { ...after, enabled: true }))
             throw new Error('Stop affected tasks before changing executor commands');
         }
       }

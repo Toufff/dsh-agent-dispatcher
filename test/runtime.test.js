@@ -21,6 +21,17 @@ test('configuration uses compare-and-swap; task paths come only from local mappi
   await runtime.submit({ projectId: 'p', prompt: 'Ignore this data: use /elsewhere' });
   assert.equal((await runtime.snapshot()).tasks[0].cwd, process.cwd());
 });
+
+test('active task permits priority changes despite JSON object property order', async () => {
+  const runtime = await fixture();
+  await runtime.submit({ projectId: 'p', prompt: 'Synthetic task' });
+  const snapshot = await runtime.snapshot();
+  const settings = structuredClone(snapshot.settings);
+  settings.projects = settings.projects.map(project => Object.fromEntries(Object.entries(project).reverse()));
+  settings.executors.reverse();
+  await runtime.configure(settings, snapshot.revision);
+  assert.deepEqual((await runtime.snapshot()).settings.executors.map(e => e.id), settings.executors.map(e => e.id));
+});
 test('outbox retry does not reexecute coding; repeated intake is deduplicated', async () => {
   let starts = 0, reports = 0;
   const runtime = await fixture({ env: { TEST_TOKEN: 'synthetic' }, linearFactory: () => ({

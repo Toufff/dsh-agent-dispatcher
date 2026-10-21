@@ -1,0 +1,33 @@
+import { chromium } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
+import assert from 'node:assert/strict';
+const url = process.env.DSH_TEST_URL || (await readFile('.local/host.log', 'utf8')).match(/http:\/\/127\.0\.0\.1:\d+\/\?token=\S+/)?.[0];
+const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || 'msedge', headless: true });
+const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+try {
+  await page.goto(url);
+  const preview = page.getByRole('dialog', { name: '预览版说明' });
+  if (await preview.isVisible({ timeout: 5000 }).catch(() => false)) await preview.getByRole('button', { name: '继续' }).click();
+  await page.getByRole('button', { name: '任务派发', exact: true }).click();
+  await page.getByRole('heading', { name: '执行优先级', exact: true }).waitFor();
+  const originalSession = await page.locator('.detail .attempt code').last().innerText();
+  await page.getByRole('button', { name: '人工接管', exact: true }).click();
+  await page.getByLabel('我已结束人工会话，确认可继续派发').check();
+  await page.getByRole('button', { name: '归还控制', exact: true }).click();
+  await page.getByRole('button', { name: '重试任务', exact: true }).click();
+  await page.getByRole('button', { name: '本地确认验收', exact: true }).waitFor({ timeout: 180000 });
+  assert.equal(await page.locator('.detail .attempt code').last().innerText(), originalSession);
+  assert.match(await page.locator('.detail pre').innerText(), /DISPATCH_DSH_OK/);
+  await page.getByRole('button', { name: '上移 Codex', exact: true }).click();
+  await page.getByRole('button', { name: '保存顺序', exact: true }).click();
+  await page.getByRole('button', { name: '保存顺序', exact: true }).waitFor({ state: 'hidden' });
+  await page.getByRole('combobox', { name: '项目', exact: true }).selectOption('acceptance');
+  const title = `Codex host acceptance ${Date.now()}`;
+  await page.getByRole('textbox', { name: '任务标题', exact: true }).fill(title);
+  await page.getByRole('textbox', { name: '需求与验收条件', exact: true }).fill('Do not use tools or modify files. Reply exactly: DISPATCH_HOST_CODEX_OK');
+  await page.getByRole('button', { name: '加入队列', exact: true }).click();
+  await page.getByRole('button', { name: `${title} 待验收`, exact: true }).waitFor({ timeout: 180000 });
+  assert.match(await page.locator('.detail pre').innerText(), /DISPATCH_HOST_CODEX_OK/);
+  await page.getByRole('button', { name: '暂停派发', exact: true }).click();
+  console.log(JSON.stringify({ dshTakeoverReturn: true, dshSessionResume: true, packagedCodexWorker: true, pausedAfterTest: true }));
+} finally { await browser.close(); }

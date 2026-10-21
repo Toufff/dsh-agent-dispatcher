@@ -5,6 +5,20 @@ import path from 'node:path';
 import os from 'node:os';
 import { CliAdapter, cliArgs } from '../src/adapters/cli.js';
 
+test('worker environment excludes Linear credentials but preserves normal runtime environment', () => {
+  const keys = ['DISPATCH_LINEAR_TEST_SECRET', 'CUSTOM_DISPATCH_TEST_SECRET'];
+  const previous = keys.map(key => process.env[key]);
+  try {
+    for (const key of keys) process.env[key] = 'synthetic-secret';
+    const adapter = new CliAdapter({ type: 'codex' }, '.', [keys[1]]);
+    for (const key of keys) assert.equal(adapter.workerEnv[key], undefined);
+    const pathKey = Object.keys(process.env).find(key => key.toLowerCase() === 'path');
+    assert.equal(adapter.workerEnv[pathKey], process.env[pathKey]);
+  } finally {
+    keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
+  }
+});
+
 test('Claude adapter uses official streaming and explicit session resume', () => {
   const args = cliArgs({ type: 'claude' }, {}, { resume: true, sessionId: 'example-session' });
   assert.deepEqual(args, ['--print', '--verbose', '--output-format', 'stream-json', '--resume', 'example-session']);

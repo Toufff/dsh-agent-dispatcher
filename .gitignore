@@ -6,5 +6,6 @@ coverage/
 !.env.example
 *.log
 .local/
-.impeccable/
+.impeccable/*
+!.impeccable/design.json
 .DS_Store

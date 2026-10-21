@@ -17,12 +17,16 @@ export function cliArgs(config, task, attempt) {
 
 /** The worker owns durable execution receipts; it may outlive a plugin reload. */
 export class CliAdapter {
-  constructor(config, directory) { this.config = config; this.directory = directory; this.workers = new Map(); }
+  constructor(config, directory, secretKeys = []) {
+    this.config = config; this.directory = directory; this.workers = new Map();
+    this.workerEnv = Object.fromEntries(Object.entries(process.env)
+      .filter(([key]) => !secretKeys.some(secret => secret.toLowerCase() === key.toLowerCase()) && !/^(LINEAR_|DISPATCH_LINEAR_)/i.test(key)));
+  }
   file(attempt) { return path.join(this.directory, `${attempt.id}.json`); }
   async start({ task, attempt }) {
     await mkdir(this.directory, { recursive: true });
     const child = fork(fileURLToPath(new URL('./worker.js', import.meta.url)), [], {
-      stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true, detached: false
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true, detached: false, env: this.workerEnv
     });
     this.workers.set(attempt.id, child);
     child.once('exit', () => this.workers.delete(attempt.id));

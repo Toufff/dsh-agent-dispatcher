@@ -3,7 +3,7 @@ import path from 'node:path';
 
 const id = z.string().min(1).max(160);
 export const executorSchema = z.object({
-  id, label: id, type: z.enum(['codex', 'dsh', 'claude']), enabled: z.boolean(),
+  id, label: id, type: z.string().regex(/^[a-z][a-z0-9-]*$/), enabled: z.boolean(),
   command: z.string().optional(), args: z.array(z.string()).default([]),
   preset: z.string().optional(), sandbox: z.enum(['read-only', 'workspace-write']).default('workspace-write'),
   verified: z.boolean().default(false)

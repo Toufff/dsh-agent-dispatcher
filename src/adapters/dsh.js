@@ -2,6 +2,16 @@ import path from 'node:path';
 
 const belongs = (message, attempt) => message?.source?.rpcId === attempt.id;
 const pending = agent => [...agent.inbox.nextTurn, ...agent.inbox.nextStep];
+function coldPending(events) {
+  const queues = new Map();
+  for (const event of events) if (event.type === 'agent/inbox/spliced') {
+    const { target, start, removedCount, inserted } = event.data;
+    if (removedCount === undefined) return null;
+    const queue = queues.get(target) || [];
+    queue.splice(start, removedCount, ...inserted); queues.set(target, queue);
+  }
+  return [...queues.values()].flat();
+}
 
 export class DshAdapter {
   constructor(ctx, config = {}) { this.ctx = ctx; this.config = config; }
@@ -50,7 +60,8 @@ export class DshAdapter {
     if (agent) return agent.status === 'idle' && pending(agent).length === 0;
     const inspection = await this.ctx.sessionController.inspect(attempt.sessionId);
     const last = inspection.events.findLast(e => ['turn/start', 'turn/end'].includes(e.type));
-    return last?.type === 'turn/end';
+    const queued = coldPending(inspection.events);
+    return last?.type === 'turn/end' && queued !== null && queued.length === 0;
   }
   async stop(context) {
     const { attempt } = context;

@@ -76,6 +76,7 @@ export class Dispatcher {
   }
 
   #apply(task, attempt, result) {
+    const previous = task.status;
     const status = result?.status;
     if (status === 'rejected') {
       attempt.status = 'rejected';
@@ -91,6 +92,7 @@ export class Dispatcher {
     if (typeof result?.reason === 'string') attempt.reason = result.reason.slice(0, 1000);
     if (typeof result?.sessionId === 'string') attempt.sessionId = result.sessionId;
     if (typeof result?.runId === 'string') attempt.runId = result.runId;
+    if (previous !== task.status) task.events?.push({ action: task.status, at: new Date().toISOString(), attemptId: attempt.id });
   }
 
   reconcile() {
@@ -153,7 +155,10 @@ export class Dispatcher {
       } else if (action === 'retry') {
         if (!['failed', 'exhausted', 'stopped'].includes(task.status)) throw new Error('Stop or reconcile before retry');
         task.previousAttempts = [...(task.previousAttempts ?? []), ...task.attempts];
-        if (attempt?.accepted) task.session = { executor: attempt.executor, id: attempt.sessionId };
+        if (attempt?.accepted) {
+          task.session = { executor: attempt.executor, id: attempt.sessionId };
+          task.executors = [attempt.executor];
+        }
         task.attempts = []; task.status = 'queued'; task.report = 'pending';
       } else if (action === 'accept') {
         if (task.status !== 'review') throw new Error('Task is not ready for review');

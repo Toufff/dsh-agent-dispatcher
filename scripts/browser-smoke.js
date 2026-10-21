@@ -26,6 +26,10 @@ try {
   await page.screenshot({ path: '.impeccable/review/desktop.png', fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: '.impeccable/review/mobile.png', fullPage: true });
+  if (await page.locator('.detail').count()) {
+    await page.locator('.detail').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: '.impeccable/review/mobile-details.png', fullPage: true });
+  }
   assert.equal(await page.locator('.dispatch').evaluate(el => el.scrollWidth > el.clientWidth + 1), false, 'Mobile panel overflows');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ nativeHost: true, priorityRoundtrip: true, mobileOverflow: false, pageErrors: errors.length }));

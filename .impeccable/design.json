@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-21T14:26:52.421976+00:00",
+  "title": "Design System: DSH 任务派发",
+  "extensions": {
+    "shadows": [],
+    "motion": [
+      {
+        "name": "button-background",
+        "value": "background-color .12s ease-out",
+        "purpose": "仅 prefers-reduced-motion:no-preference 时启用。"
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "single-column",
+        "value": "760px"
+      }
+    ],
+    "theme": {
+      "query": "prefers-color-scheme:dark",
+      "scope": ".dispatch",
+      "source": "src/ui/style.css"
+    },
+    "focus": {
+      "value": "2px solid var(--d-blue)",
+      "offset": "3px"
+    },
+    "sourceFiles": [
+      "src/ui/style.css",
+      "src/ui/panel.jsx"
+    ],
+    "review": {
+      "verdict": "ship",
+      "basis": "最终 UI reviewer verdict，由主任务提供。"
+    }
+  },
+  "components": [
+    {
+      "name": "常规按钮",
+      "kind": "button",
+      "description": "常规按钮，按当前面板样式提取。",
+      "html": "<button class=\"ds-button\">暂停派发</button>",
+      "css": ".ds-button{font:14px/1.55 system-ui,sans-serif;color:var(--d-text,#242833);border:1px solid var(--d-border,#d9dde5);border-radius:6px;background:var(--d-bg,#fff);padding:7px 10px;min-height:36px;cursor:pointer}.ds-button:hover{background:var(--d-panel,#f5f6f8)}.ds-button:focus-visible{outline:2px solid var(--d-blue,#205abe);outline-offset:3px}.ds-button:disabled{opacity:.5;cursor:not-allowed}@media(prefers-reduced-motion:no-preference){.ds-button{transition:background-color .12s ease-out}}",
+      "refersTo": "button"
+    },
+    {
+      "name": "主按钮",
+      "kind": "button",
+      "description": "主按钮，按当前面板样式提取。",
+      "html": "<button class=\"ds-primary\">加入队列</button>",
+      "css": ".ds-primary{font:14px/1.55 system-ui,sans-serif;color:var(--d-text,#242833);border:1px solid var(--d-blue,#205abe);border-radius:6px;background:var(--d-blue,#205abe);color:#fff;padding:7px 10px;min-height:36px;cursor:pointer}.ds-primary:hover{background:var(--d-blue,#205abe)}.ds-primary:focus-visible{outline:2px solid var(--d-blue,#205abe);outline-offset:3px}.ds-primary:disabled{opacity:.5;cursor:not-allowed}@media(prefers-color-scheme:dark){.ds-primary{color:#142542}}@media(prefers-reduced-motion:no-preference){.ds-primary{transition:background-color .12s ease-out}}",
+      "refersTo": "button-primary"
+    },
+    {
+      "name": "任务输入",
+      "kind": "input",
+      "description": "任务输入，按当前面板样式提取。",
+      "html": "<label class=\"ds-field\">任务标题<input required placeholder=\"填写任务标题\"></label>",
+      "css": ".ds-field{font:14px/1.55 system-ui,sans-serif;color:var(--d-text,#242833);display:block}.ds-field input{font:14px/1.55 system-ui,sans-serif;color:var(--d-text,#242833);display:block;width:100%;margin-top:5px;border:1px solid var(--d-border,#d9dde5);border-radius:6px;background:var(--d-bg,#fff);padding:7px 10px;caret-color:var(--d-blue,#205abe)}.ds-field input:focus-visible{outline:2px solid var(--d-blue,#205abe);outline-offset:3px}"
+    },
+    {
+      "name": "选中队列行",
+      "kind": "nav",
+      "description": "选中队列行，按当前面板样式提取。",
+      "html": "<button class=\"ds-task\"><strong>示例任务</strong><span>待验收</span></button>",
+      "css": ".ds-task{font:14px/1.55 system-ui,sans-serif;color:var(--d-text,#242833);display:flex;align-items:center;justify-content:space-between;gap:16px;width:100%;text-align:left;border:0;border-bottom:1px solid var(--d-border,#d9dde5);border-radius:0;background:#edf3ff;padding:14px 12px;cursor:pointer}.ds-task span{font-size:12px;white-space:nowrap;color:#206044}.ds-task:hover{background:#edf3ff}.ds-task:focus-visible{outline:2px solid var(--d-blue,#205abe);outline-offset:3px}@media(prefers-color-scheme:dark){.ds-task,.ds-task:hover{background:#263851}.ds-task span{color:#8bd6ad}}@media(max-width:760px){.ds-task{align-items:flex-start}}@media(prefers-reduced-motion:no-preference){.ds-task{transition:background-color .12s ease-out}}",
+      "refersTo": "task-selected"
+    },
+    {
+      "name": "语义状态",
+      "kind": "custom",
+      "description": "语义状态，按当前面板样式提取。",
+      "html": "<span class=\"ds-status\">状态待核对</span>",
+      "css": ".ds-status{font:12px/1.55 system-ui,sans-serif;white-space:nowrap;color:#865800}@media(prefers-color-scheme:dark){.ds-status{color:#e4bd72}}"
+    },
+    {
+      "name": "空状态容器",
+      "kind": "card",
+      "description": "空状态容器，按当前面板样式提取。",
+      "html": "<div class=\"ds-empty\"><h3>还没有待处理任务</h3><p>先配置本地项目，再添加任务或启用 Linear 接单。</p></div>",
+      "css": ".ds-empty{font:14px/1.55 system-ui,sans-serif;color:var(--d-text,#242833);padding:36px 24px;background:var(--d-panel,#f5f6f8);text-align:center}.ds-empty h3{font-size:14px;margin:24px 0 8px}.ds-empty p{margin:8px auto 16px;max-width:72ch}",
+      "refersTo": "empty"
+    },
+    {
+      "name": "告警条",
+      "kind": "custom",
+      "description": "告警条，按当前面板样式提取。",
+      "html": "<div class=\"ds-notice\" role=\"alert\">连接状态待核对，请检查配置。</div>",
+      "css": ".ds-notice{font:14px/1.55 system-ui,sans-serif;padding:12px 16px;margin-bottom:20px;background:#fff4dc;color:#714d00;display:flex;justify-content:space-between;gap:16px}@media(prefers-color-scheme:dark){.ds-notice{background:#40331e;color:#f0d29c}}@media(max-width:760px){.ds-notice{flex-direction:column}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "沿用 DSH 原生风格",
+    "overview": "已确认方向：沿用 DSH 原生风格。以系统字体、中性底色、蓝色选择和明确的中文状态表达本机调度过程。界面保持操作面板的密度，让执行顺位、控制归属与验收状态容易辨认。",
+    "keyCharacteristics": [
+      "中文优先，状态同时使用文字和颜色。",
+      "平面分区，以留白和细分隔线建立层级。",
+      "继承宿主的原生操作感，支持系统深浅色偏好。"
+    ],
+    "rules": [],
+    "dos": [
+      "Do 沿用 DSH 原生风格和中文操作文案。",
+      "Do 用文字同时表达状态、控制归属和禁用原因的上下文。",
+      "Do 保留键盘焦点、上下移按钮、窄屏单列和减少动态偏好。",
+      "Do 将源代码 `src/ui/style.css` 与 `src/ui/panel.jsx` 作为实现事实来源，变更后同步本档案。"
+    ],
+    "donts": [
+      "Don't 为调度面板另建品牌视觉或装饰性阴影。",
+      "Don't 用颜色取代状态文字。",
+      "Don't 把执行完成与人工验收混为一个状态。"
+    ]
+  }
+}
