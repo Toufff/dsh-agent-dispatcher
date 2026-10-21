@@ -71,4 +71,6 @@ Recovery refuses removal while the recorded PID is alive. It never restarts task
 
 ## Validation
 
+Completed tasks offer **继续处理未完成事项**. This creates a distinct continuation with the previous result and the original issue link, preserving the old task. Repeated requests on the same parent deduplicate to one continuation. Its registered session is reused when the same executor is selected by the current local priority. A continuation is not permission to repeat completed work or override project approval rules.
+
 `npm test`, `npm run check`, and `npm run build` require no agent login. `node scripts/live-smoke.js codex` makes one real subscribed-agent request. Substitute `claude` only when you intend live Claude validation. `scripts/browser-smoke.js` requires an already running isolated DSH host and `DSH_TEST_URL`; it checks the real remote transport and priority save roundtrip using Edge by default. Set `PLAYWRIGHT_CHANNEL` for another installed compatible browser. Keep authentication-bearing URLs out of issues and commits.

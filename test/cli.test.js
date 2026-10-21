@@ -6,6 +6,13 @@ import os from 'node:os';
 import { CliAdapter, cliArgs } from '../src/adapters/cli.js';
 import { writeJson } from '../src/store.js';
 
+test('Codex automatic approval mode avoids the mutually exclusive sandbox option', () => {
+  const args = cliArgs({ type: 'codex', args: ['--approve-for-me'] }, {}, { resume: true, sessionId: 'session' });
+  assert.ok(args.includes('--approve-for-me'));
+  assert.ok(!args.includes('--sandbox'));
+  assert.ok(args.includes('resume'));
+});
+
 test('stale heartbeat is unknown even while the worker remains in memory', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'dispatch-stale-'));
   try {

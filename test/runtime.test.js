@@ -22,6 +22,21 @@ test('configuration uses compare-and-swap; task paths come only from local mappi
   assert.equal((await runtime.snapshot()).tasks[0].cwd, process.cwd());
 });
 
+test('continuation keeps history and issue identity and deduplicates repeated clicks', async () => {
+  const runtime = await fixture();
+  runtime.adapters.codex = { start: async () => ({ status: 'review', summary: 'Partial result', sessionId: 'original-session' }) };
+  await runtime.submit({ projectId: 'p', prompt: 'Work', issue: { id: 'issue' }, source: 'workspace/issue' });
+  await runtime.command({ action: 'resume' }); await runtime.dispatcher.tick();
+  const id = (await runtime.snapshot()).tasks[0].id;
+  await Promise.all([runtime.command({ action: 'continue', id }), runtime.command({ action: 'continue', id })]);
+  const state = await runtime.snapshot();
+  assert.equal(state.tasks.length, 2);
+  assert.equal(state.tasks[0].status, 'review');
+  assert.equal(state.tasks[1].issue.id, 'issue');
+  assert.equal(state.tasks[1].session.id, 'original-session');
+  assert.match(state.tasks[1].prompt, /Partial result/);
+});
+
 test('active task permits priority changes despite JSON object property order', async () => {
   const runtime = await fixture();
   await runtime.submit({ projectId: 'p', prompt: 'Synthetic task' });

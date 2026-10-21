@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 export function cliArgs(config, task, attempt) {
   if (config.type === 'codex') {
     const common = ['--json', '--color', 'never'];
-    return ['exec', '--sandbox', config.sandbox ?? 'workspace-write', ...(config.args ?? []), ...(attempt.resume
+    const sandbox = config.args?.includes('--approve-for-me') ? [] : ['--sandbox', config.sandbox ?? 'workspace-write'];
+    return ['exec', ...sandbox, ...(config.args ?? []), ...(attempt.resume
       ? ['resume', ...common.filter(v => !['--color', 'never'].includes(v)), attempt.sessionId, '-']
       : [...common, '-'])];
   }
