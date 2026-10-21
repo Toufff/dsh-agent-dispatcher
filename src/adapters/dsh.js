@@ -58,7 +58,9 @@ export class DshAdapter {
     if (!agent) return { status: await this.idle(context) ? 'stopped' : 'unknown' };
     for (const message of pending(agent)) if (belongs(message, attempt)) agent.inbox.remove(message.id);
     agent.cancel({ kind: 'user' }, { keepInbox: true });
-    const idle = await Promise.race([agent.whenIdle().then(() => true), new Promise(r => setTimeout(() => r(false), 5000))]);
+    let timer;
+    const idle = await Promise.race([agent.whenIdle().then(() => true), new Promise(r => { timer = setTimeout(() => r(false), 5000); })]);
+    clearTimeout(timer);
     return { status: idle && !pending(agent).some(m => belongs(m, attempt)) ? 'stopped' : 'unknown' };
   }
   async health() { return { available: Boolean(this.ctx.sessionController), verification: 'host-service' }; }

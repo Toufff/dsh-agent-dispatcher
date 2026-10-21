@@ -1,14 +1,15 @@
 import { fork } from 'node:child_process';
-import { readFile, mkdir } from 'node:fs/promises';
+import { readFile, mkdir, access } from 'node:fs/promises';
+import { writeJson } from '../store.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export function cliArgs(config, task, attempt) {
   if (config.type === 'codex') {
     const common = ['--json', '--color', 'never'];
-    return ['exec', ...(config.args ?? []), ...(attempt.resume
+    return ['exec', '--sandbox', config.sandbox ?? 'workspace-write', ...(config.args ?? []), ...(attempt.resume
       ? ['resume', ...common.filter(v => !['--color', 'never'].includes(v)), attempt.sessionId, '-']
-      : [...common, '--sandbox', config.sandbox ?? 'workspace-write', '-'])];
+      : [...common, '-'])];
   }
   return ['--print', '--verbose', '--output-format', 'stream-json',
     ...(config.args ?? []), ...(attempt.resume ? ['--resume', attempt.sessionId] : ['--session-id', attempt.sessionId])];
@@ -38,6 +39,8 @@ export class CliAdapter {
     try {
       const receipt = JSON.parse(await readFile(this.file(attempt), 'utf8'));
       if (['running', 'waiting'].includes(receipt.status) && !this.workers.has(attempt.id)) {
+        if (!receipt.heartbeat || Date.now() - receipt.heartbeat > 15000)
+          return { ...receipt, status: 'unknown', reason: 'Execution heartbeat is stale' };
         try { process.kill(receipt.workerPid, 0); }
         catch { return { ...receipt, status: 'unknown', reason: 'Worker disappeared without terminal receipt' }; }
       }
@@ -51,15 +54,23 @@ export class CliAdapter {
   async stop(context) {
     const current = await this.reconcile(context);
     if (['review', 'failed', 'stopped', 'rejected'].includes(current.status)) return { status: 'stopped' };
+    // The original worker owns termination. A reloaded plugin never kills a stored PID.
+    await writeJson(`${this.file(context.attempt)}.stop`, { stop: true });
     const worker = this.workers.get(context.attempt.id);
-    // Never kill a PID from an old receipt: PIDs can be reused by unrelated processes.
-    if (!worker?.connected) return { status: 'unknown', reason: 'Reconnect manually before stopping an orphaned worker' };
-    worker.send({ stop: true });
+    if (worker?.connected) worker.send({ stop: true });
     for (let n = 0; n < 50; n++) {
       await new Promise(resolve => setTimeout(resolve, 100));
       if (await this.idle(context)) return { status: 'stopped' };
     }
     return { status: 'unknown', reason: 'Termination not confirmed' };
   }
-  async health() { return { available: Boolean(this.config.command), verification: this.config.verified ? 'verified' : 'unverified' }; }
+  async health() {
+    const command = this.config.command || this.config.type;
+    const candidates = path.isAbsolute(command) ? [command] : (process.env.PATH || '').split(path.delimiter)
+      .flatMap(directory => [path.join(directory, command), ...(process.platform === 'win32' ? [path.join(directory, `${command}.exe`)] : [])]);
+    let available = false;
+    for (const candidate of candidates) { try { await access(candidate); available = true; break; } catch {} }
+    return { available, verification: this.config.verified ? 'verified' : 'unverified' };
+  }
+  async verifyReturn() { return null; } // Official CLIs expose no cross-process manual-session lease.
 }

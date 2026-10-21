@@ -1,12 +1,13 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { writeJson } from '../store.js';
+import { access } from 'node:fs/promises';
 
-let child, receipt, file, chain = Promise.resolve(), stopping = false, completed = false, started = false;
-function save() { const copy = structuredClone(receipt); chain = chain.then(() => writeJson(file, copy)); return chain; }
+let child, receipt, file, timer, chain = Promise.resolve(), stopping = false, completed = false, started = false;
+function save() { receipt.heartbeat = Date.now(); const copy = structuredClone(receipt); chain = chain.then(() => writeJson(file, copy)); return chain; }
 function send(value) { if (process.connected) process.send(value); }
 process.on('message', async input => {
-  if (input.stop) {
+  if (input.stop && !stopping) {
     stopping = true;
     if (child?.pid) {
       if (process.platform === 'win32') {
@@ -27,8 +28,13 @@ process.on('message', async input => {
       receipt.status = 'running'; receipt.pid = child.pid;
       try { await save(); send(receipt); } catch { send({ status: 'unknown' }); }
       child.stdin.end(input.prompt);
+      timer = setInterval(async () => {
+        try { await access(`${file}.stop`); process.emit('message', { stop: true }); } catch {}
+        save().catch(() => {});
+      }, 1000);
     });
     child.once('error', async error => {
+      clearInterval(timer);
       receipt.status = ['ENOENT', 'EACCES'].includes(error.code) ? 'rejected' : 'unknown';
       receipt.reason = error.code || 'spawn-failed';
       try { await save(); } finally { send(receipt); process.disconnect?.(); }
@@ -53,6 +59,7 @@ process.on('message', async input => {
       save().catch(() => {});
     });
     child.once('close', async code => {
+      clearInterval(timer);
       if (receipt.status === 'rejected') return;
       receipt.status = stopping ? 'stopped' : code === 0 && completed ? 'review' : 'failed';
       receipt.exitCode = code;

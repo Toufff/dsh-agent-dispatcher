@@ -33,3 +33,14 @@ export class DomainStore {
   async load() { return structuredClone(this.domain.global.get()); }
   async save(state) { await this.domain.global.set(structuredClone(state)); }
 }
+
+/** Cross-process exclusion. Stale locks require explicit recovery after confirming the owner is gone. */
+export async function acquireLease(directory) {
+  await mkdir(directory, { recursive: true });
+  const file = path.join(directory, 'host.lock');
+  let handle;
+  try { handle = await open(file, 'wx', 0o600); }
+  catch (e) { if (e.code === 'EEXIST') throw new Error('Dispatcher host lock exists. Stop the other host or recover its stale lock before restarting.'); throw e; }
+  await handle.writeFile(JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+  return async () => { await handle.close(); await unlink(file); };
+}

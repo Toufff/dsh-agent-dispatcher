@@ -63,7 +63,7 @@ export class Runtime {
       await this.dispatcher.update(state => { state.paused = request.action === 'pause'; });
     else if (request.action === 'reconcile') await this.dispatcher.reconcile();
     else if (request.action === 'poll') await this.intake();
-    else await this.dispatcher.action(request.id, request.action);
+    else await this.dispatcher.action(request.id, request.action, request);
     return this.snapshot();
   }
   client(mapping) {

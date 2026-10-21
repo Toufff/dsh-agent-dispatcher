@@ -35,7 +35,8 @@
     "dist",
     "README.md",
     "docs",
-    "skills"
+    "skills",
+    "cordis.patch.yml"
   ],
   "dsh": {
     "client": {
@@ -45,6 +46,11 @@
         "@deepseek-ai/dsh-client-ui-layout",
         "@deepseek-ai/dsh-client-ui-sidebar",
         "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    },
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
       ]
     }
   }

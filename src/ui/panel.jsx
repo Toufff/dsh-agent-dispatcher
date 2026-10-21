@@ -6,6 +6,7 @@ export function Panel({ api }) {
   const [draft, setDraft] = useState(null), [revision, setRevision] = useState(0), [selected, select] = useState(null);
   const [showConfig, config] = useState(false), [drag, setDrag] = useState(null), [raw, setRaw] = useState('');
   const [newTask, setTask] = useState({ projectId: '', title: '', prompt: '' });
+  const [confirmedIdle, setConfirmedIdle] = useState(false);
   useEffect(() => { let live = true; const refresh = () => api.snapshot().then(v => { if (live) setData(v); }).catch(e => { if (live) setError(e.message); });
     refresh(); const timer = setInterval(refresh, 2500); return () => { live = false; clearInterval(timer); }; }, [api]);
   async function run(request) { setBusy(true); setError(''); try { setData(await api.command(request)); return true; }
@@ -24,7 +25,7 @@ export function Panel({ api }) {
     {(error || data.errors?.length > 0) && <div className="notice" role="alert">{error || data.errors.join('；')}<button onClick={() => run({ action: 'reconcile' })} disabled={busy}>重新核对</button></div>}
     <div className="dispatch-grid"><aside><h2>执行优先级</h2><p className="muted">拖动调整顺位，或使用上下移按钮。只在明确未启动时尝试下一位。</p>
       <ol className="executors">{settings.executors.map((executor, index) => <li key={executor.id} draggable={!busy} onDragStart={() => setDrag(index)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); reorder(drag, index); setDrag(null); }}>
-        <span className="rank">{index + 1}</span><div className="executor-info"><strong>{executor.label}</strong><span className="muted">{executor.type === 'claude' && !executor.verified ? '待协作者实机验证' : data.health[executor.id]?.available ? '适配器可用' : '尚未检查'}</span></div>
+        <span className="rank">{index + 1}</span><div className="executor-info"><strong>{executor.label}</strong><span className="muted">{executor.type === 'claude' && !executor.verified ? '待协作者实机验证' : !data.health[executor.id] ? '尚未检查' : data.health[executor.id].available ? '适配器可用' : '适配器不可用，请检查配置'}</span></div>
         <label className="toggle"><input aria-label={`启用 ${executor.label}`} type="checkbox" checked={executor.enabled} onChange={e => edit({ ...settings, executors: settings.executors.map(x => x.id === executor.id ? { ...x, enabled: e.target.checked } : x) })}/>启用</label>
         <div className="rank-controls"><button aria-label={`上移 ${executor.label}`} disabled={index === 0 || busy} onClick={() => reorder(index, index - 1)}>上移</button><button aria-label={`下移 ${executor.label}`} disabled={index === settings.executors.length - 1 || busy} onClick={() => reorder(index, index + 1)}>下移</button></div></li>)}</ol>
       {draft && <div className="actions"><button className="primary" disabled={busy} onClick={async () => { if (await run({ action: 'configure', settings: draft, revision })) setDraft(null); }}>保存顺序</button><button onClick={() => setDraft(null)}>撤销调整</button></div>}
@@ -39,7 +40,7 @@ export function Panel({ api }) {
       {task && <article className="detail"><h2>{task.title}</h2><p className="muted">{task.owner === 'human' ? '由你控制会话，自动派发暂停等待归还。' : '由调度器控制本轮执行。'}</p><div className="actions">
         <button disabled={busy || terminal.includes(task.status) || task.owner === 'human'} onClick={() => run({ action: 'stop', id: task.id })}>停止任务</button>
         <button disabled={busy || task.owner === 'human'} onClick={() => run({ action: 'takeover', id: task.id })}>人工接管</button>
-        {task.owner === 'human' && <button disabled={busy} onClick={() => run({ action: 'return', id: task.id })}>归还控制</button>}
+        {task.owner === 'human' && <><label><input type="checkbox" checked={confirmedIdle} onChange={e => setConfirmedIdle(e.target.checked)}/>我已结束人工会话，确认可继续派发</label><button disabled={busy || !confirmedIdle} onClick={async () => { if (await run({ action: 'return', id: task.id, confirmedIdle })) setConfirmedIdle(false); }}>归还控制</button></>}
         {['failed', 'exhausted', 'stopped'].includes(task.status) && <button disabled={busy} onClick={() => run({ action: 'retry', id: task.id })}>重试任务</button>}
         {task.status === 'review' && <button className="primary" disabled={busy} onClick={() => run({ action: 'accept', id: task.id })}>确认验收</button>}
         {task.issue?.url?.startsWith('https://linear.app/') && <a href={task.issue.url} target="_blank" rel="noreferrer">打开 Linear issue</a>}</div>

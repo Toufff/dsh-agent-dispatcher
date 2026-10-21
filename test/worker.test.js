@@ -1,0 +1,35 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { fork } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { CliAdapter } from '../src/adapters/cli.js';
+
+for (const protocol of ['codex', 'claude', 'incomplete']) test(`worker executes and parses ${protocol} protocol`, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'dispatch-worker-'));
+  try {
+    const worker = fork(new URL('../src/adapters/worker.js', import.meta.url), [], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const exited = once(worker, 'exit');
+    worker.send({ command: process.execPath, args: [path.resolve('scripts/agent-fixture.mjs'), protocol],
+      file: path.join(directory, 'attempt.json'), cwd: directory, prompt: 'Synthetic', sessionId: 'initial' });
+    await exited;
+    const result = JSON.parse(await readFile(path.join(directory, 'attempt.json'), 'utf8'));
+    assert.equal(result.status, protocol === 'incomplete' ? 'failed' : 'review');
+    if (protocol !== 'incomplete') assert.equal(result.summary, `SYNTHETIC_${protocol.toUpperCase()}_OK`);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+test('reloaded adapter stops through the original worker without killing stored PIDs', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'dispatch-worker-'));
+  try {
+    const worker = fork(new URL('../src/adapters/worker.js', import.meta.url), [], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const acknowledged = once(worker, 'message'), exited = once(worker, 'exit');
+    worker.send({ command: process.execPath, args: [path.resolve('scripts/agent-fixture.mjs'), 'hang'],
+      file: path.join(directory, 'attempt.json'), cwd: directory, prompt: 'Synthetic', sessionId: 'initial' });
+    await acknowledged;
+    const restarted = new CliAdapter({ type: 'codex' }, directory);
+    assert.equal((await restarted.stop({ attempt: { id: 'attempt' } })).status, 'stopped');
+    await exited;
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

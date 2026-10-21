@@ -31,12 +31,21 @@ export class LinearClient {
   }
   async report(item) {
     // Client-chosen comment identity makes timeout retries idempotent.
-    const existing = await this.query('query($id:ID!) { issue(id:$id) { comments(first:250) { nodes { id } } } }', { id: item.issueId });
-    if (!existing.issue?.comments.nodes.some(c => c.id === item.id)) {
-      await this.query('mutation($input:CommentCreateInput!) { commentCreate(input:$input) { success } }',
+    let cursor = null, found = false, currentState;
+    do {
+      const existing = await this.query('query($id:String!, $after:String) { issue(id:$id) { state { type } comments(first:100, after:$after) { nodes { id } pageInfo { hasNextPage endCursor } } } }', { id: item.issueId, after: cursor });
+      currentState = existing.issue.state.type;
+      found = existing.issue.comments.nodes.some(c => c.id === item.id);
+      cursor = existing.issue.comments.pageInfo.hasNextPage ? existing.issue.comments.pageInfo.endCursor : null;
+    } while (!found && cursor);
+    if (!found) {
+      const result = await this.query('mutation($input:CommentCreateInput!) { commentCreate(input:$input) { success } }',
         { input: { id: item.id, issueId: item.issueId, body: item.body } });
+      if (!result.commentCreate.success) throw new Error('Linear comment was not confirmed');
     }
-    await this.query('mutation($id:String!, $input:IssueUpdateInput!) { issueUpdate(id:$id,input:$input) { success } }',
+    if (['completed', 'canceled'].includes(currentState)) return;
+    const result = await this.query('mutation($id:String!, $input:IssueUpdateInput!) { issueUpdate(id:$id,input:$input) { success } }',
       { id: item.issueId, input: { stateId: item.stateId } });
+    if (!result.issueUpdate.success) throw new Error('Linear state update was not confirmed');
   }
 }

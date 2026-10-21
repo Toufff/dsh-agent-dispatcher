@@ -122,7 +122,7 @@ export class Dispatcher {
     });
   }
 
-  action(id, action) {
+  action(id, action, { confirmedIdle = false } = {}) {
     return this.update(async state => {
       const task = state.tasks.find(t => t.id === id);
       if (!task) throw new Error('Task not found');
@@ -145,8 +145,9 @@ export class Dispatcher {
       } else if (action === 'return') {
         if (task.owner !== 'human') throw new Error('Task is not manually owned');
         if (attempt) {
-          const result = await bounded(() => this.adapters[attempt.executor]?.idle({ task, attempt }));
-          if (result !== true) throw new Error('Session idle state is unconfirmed');
+          const adapter = this.adapters[attempt.executor];
+          const result = await bounded(() => adapter?.verifyReturn ? adapter.verifyReturn({ task, attempt }) : adapter?.idle({ task, attempt }));
+          if (result !== true && !(result === null && confirmedIdle)) throw new Error('Session idle state is unconfirmed; finish the manual session and confirm before returning');
         }
         task.owner = 'scheduler'; task.status = 'stopped';
       } else if (action === 'retry') {
