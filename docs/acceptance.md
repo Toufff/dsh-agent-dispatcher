@@ -13,6 +13,8 @@
 
 ## Explicit limits
 
+Completion cleanup regression: real child-process fixtures cover a successful terminal event followed by a lingering process, and a matching Codex session completion without a terminal stdout event. Both require process exit before review. Old completion records, newer unfinished/aborted turns and FIFO exclusion during cleanup have regression coverage.
+
 Receipt recovery regression: injected transient and exhausted write failures now leave later completion writes usable, with bounded retries and error-code-only local diagnostics. Stale heartbeats are detected even when an adapter retains the worker reference. A real Codex marker task passed after the fix. An affected completed session was recovered from its matching original completion record without starting the task again.
 
 Claude Code CLI passed real authenticated execution, packaged DSH-host dispatch, human takeover/return and same-session resume on Windows. Tests used a no-tools, no-file-change marker task. Tool permission prompts, real coding workloads and Claude Desktop visibility were not tested. The default executor remains disabled until locally configured.

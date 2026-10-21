@@ -81,7 +81,7 @@ export class Dispatcher {
     if (status === 'rejected') {
       attempt.status = 'rejected';
       task.status = 'queued';
-    } else if (['running', 'waiting', 'review', 'failed'].includes(status)) {
+    } else if (['running', 'finishing', 'waiting', 'review', 'failed'].includes(status)) {
       attempt.status = task.status = status;
       attempt.accepted = true;
     } else {

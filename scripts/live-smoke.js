@@ -12,7 +12,7 @@ const context = { task: { cwd: process.cwd(), prompt: 'Do not use tools or chang
   attempt: { id: randomUUID(), sessionId: randomUUID() } };
 let result = await adapter.start(context);
 const until = Date.now() + 180000;
-while (Date.now() < until && ['running', 'starting', 'unknown'].includes(result.status)) {
+while (Date.now() < until && ['running', 'starting', 'finishing', 'unknown'].includes(result.status)) {
   await new Promise(resolve => setTimeout(resolve, 1000)); result = await adapter.reconcile(context);
 }
 if (result.status !== 'review' || !result.summary.includes('DISPATCH_SMOKE_OK')) {

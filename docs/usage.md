@@ -59,6 +59,8 @@ CLI print mode cannot host every interactive approval UI. If the tool exits for 
 
 ## Persistence and recovery
 
+CLI completion first enters **执行完成，正在清理进程**. The queue remains occupied until the owned process closes. After a successful completion record, a CLI that lingers for 15 seconds is terminated; an unconfirmed cleanup stays unknown. Codex additionally checks the matching local session's latest turn event every five seconds, requiring a completion timestamp after this attempt started. This compatibility fallback depends on Codex's local transcript format; missing or unrecognized records never imply completion. Do not run another writer in the same session during automatic execution.
+
 Task state is stored in the DSH `agent_dispatcher` storage domain. CLI execution receipts live in the plugin's private runtime directory, default `$DSH_HOME/agent-dispatcher` or `~/.dsh/agent-dispatcher`. A custom plugin `directory` config changes the receipt/lock directory. Treat both domain and runtime files as private; they can contain task text and local outputs.
 
 One host owns the runtime directory through `host.lock`. Always use the same runtime directory for hosts sharing the same DSH domain storage. Stop the old host before starting another. An abnormal process kill may leave a stale lock. After verifying the owner is gone:

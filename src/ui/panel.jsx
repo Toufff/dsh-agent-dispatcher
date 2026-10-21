@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { AgentIcon } from './agent-icon.jsx';
-const labels = { queued: '排队中', starting: '正在启动', running: '执行中', waiting: '等待输入', busy: '会话忙碌', unknown: '状态待核对', review: '待验收', failed: '执行失败', exhausted: '无可用执行器', stopped: '已停止', stopping: '正在停止', manual: '人工接管', accepted: '已验收' };
+const labels = { queued: '排队中', starting: '正在启动', running: '执行中', finishing: '执行完成，正在清理进程', waiting: '等待输入', busy: '会话忙碌', unknown: '状态待核对', review: '待验收', failed: '执行失败', exhausted: '无可用执行器', stopped: '已停止', stopping: '正在停止', manual: '人工接管', accepted: '已验收' };
 const agentLabel = executor => executor?.type === 'codex' && executor.label === 'Codex' ? 'ChatGPT' : executor?.label;
 const terminal = ['failed', 'exhausted', 'stopped', 'review', 'accepted'];
 export function Panel({ api }) {

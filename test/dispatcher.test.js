@@ -48,7 +48,7 @@ test('only definitive pre-start rejection permits ordered fallback', async () =>
   assert.equal(task.attempts[1].sessionId, 'synthetic-session');
 });
 
-for (const outcome of ['unknown', 'waiting', 'failed', 'review']) {
+for (const outcome of ['unknown', 'waiting', 'finishing', 'failed', 'review']) {
   test(`${outcome} never starts the next executor`, async () => {
     let second = 0;
     const store = new MemoryStore();
@@ -107,4 +107,23 @@ test('completion permits next FIFO task but remains pending human review', async
   await dispatcher.tick();
   assert.equal(calls, 2);
   assert.deepEqual((await store.load()).tasks.map(t => t.status), ['review', 'running']);
+});
+
+test('finishing keeps the execution slot until process cleanup is confirmed', async () => {
+  const store = new MemoryStore();
+  let calls = 0, status = 'finishing';
+  const dispatcher = new Dispatcher({ store, adapters: { first: {
+    start: async () => { calls++; return { status: 'running' }; },
+    reconcile: async () => ({ status })
+  } } });
+  await dispatcher.enqueue(input);
+  await dispatcher.enqueue({ ...input, round: '2' });
+  await dispatcher.tick();
+  await dispatcher.reconcile();
+  await dispatcher.tick();
+  assert.equal(calls, 1);
+  status = 'review';
+  await dispatcher.reconcile();
+  await dispatcher.tick();
+  assert.equal(calls, 2);
 });

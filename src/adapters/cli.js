@@ -43,7 +43,7 @@ export class CliAdapter {
   async reconcile({ attempt }) {
     try {
       const receipt = JSON.parse(await readFile(this.file(attempt), 'utf8'));
-      if (['running', 'waiting'].includes(receipt.status)) {
+      if (['running', 'finishing', 'waiting'].includes(receipt.status)) {
         if (!receipt.heartbeat || Date.now() - receipt.heartbeat > 15000)
           return { ...receipt, status: 'unknown', reason: 'Execution heartbeat is stale' };
         try { process.kill(receipt.workerPid, 0); }
