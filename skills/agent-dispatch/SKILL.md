@@ -11,4 +11,4 @@ Use the scheduler's recorded task and attempt IDs. Do not launch an extra execut
 
 Separate completion evidence from acceptance. Summarize changed behavior, checks performed, unresolved limitations and review links. Keep tokens, local paths and raw transcripts out of external reports. An agent finishing work does not authorize marking an issue accepted or merging a pull request.
 
-Use the native DSH task-dispatch panel and documented runtime APIs. Read docs/usage.md for setup and recovery. Codex and DSH have live acceptance coverage; Claude has contract coverage and awaits collaborator live validation. Do not infer desktop session visibility or cross-machine coordination beyond those documented limits.
+Use the native DSH task-dispatch panel and documented runtime APIs. Read docs/usage.md for setup and recovery. Codex, DSH and Claude CLI have live marker-task acceptance coverage; Claude also passed same-session resume through the host. Do not infer desktop session visibility or cross-machine coordination beyond those documented limits.

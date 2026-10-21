@@ -13,7 +13,7 @@
 
 ## Explicit limits
 
-Claude's adapter is implemented and tested with synthetic official-protocol events. Its real login, permissions, resume and Desktop workflows remain for the collaborator's live validation. It is disabled by default.
+Claude Code CLI passed real authenticated execution, packaged DSH-host dispatch, human takeover/return and same-session resume on Windows. Tests used a no-tools, no-file-change marker task. Tool permission prompts, real coding workloads and Claude Desktop visibility were not tested. The default executor remains disabled until locally configured.
 
 One receiving host is supported. There is no distributed exactly-once guarantee, unrestricted external-session discovery or enforcement over manually launched writers. A session view does not itself transfer ownership. CLI manual-return confirmation is an operator assertion where the official runtime exposes no cross-process lease.
 

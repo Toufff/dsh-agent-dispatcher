@@ -23,12 +23,15 @@ try {
   await page.getByRole('button', { name: '保存顺序', exact: true }).click();
   await page.getByRole('button', { name: '保存顺序', exact: true }).waitFor({ state: 'hidden' });
   await mkdir('.impeccable/review', { recursive: true });
-  await page.screenshot({ path: '.impeccable/review/desktop.png', fullPage: true });
+  await page.screenshot({ path: '.impeccable/review/desktop.png', fullPage: true, animations: 'disabled' });
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.screenshot({ path: '.impeccable/review/desktop-dark.png', fullPage: true, animations: 'disabled' });
+  await page.emulateMedia({ colorScheme: 'light' });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({ path: '.impeccable/review/mobile.png', fullPage: true });
+  await page.screenshot({ path: '.impeccable/review/mobile.png', fullPage: true, animations: 'disabled' });
   if (await page.locator('.detail').count()) {
     await page.locator('.detail').scrollIntoViewIfNeeded();
-    await page.screenshot({ path: '.impeccable/review/mobile-details.png', fullPage: true });
+    await page.screenshot({ path: '.impeccable/review/mobile-details.png', fullPage: true, animations: 'disabled' });
   }
   assert.equal(await page.locator('.dispatch').evaluate(el => el.scrollWidth > el.clientWidth + 1), false, 'Mobile panel overflows');
   assert.deepEqual(errors, []);

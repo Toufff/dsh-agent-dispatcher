@@ -30,7 +30,7 @@ All adapters implement start and reconciliation; stop must confirm termination b
 | --- | --- | --- |
 | DSH | Native session controller | Live execution, takeover and resume passed |
 | Codex | Official CLI JSON protocol | Live CLI and packaged-host execution passed |
-| Claude Code | Official CLI, stream JSON and resume | Contract tests passed; collaborator validates live |
+| Claude Code | Official CLI, stream JSON and resume | Live execution and same-session resume passed |
 
 Use official executables with their existing login. Never extract subscription OAuth credentials, proxy subscription model endpoints or share accounts. Invoke commands without a shell. Resume only explicitly registered task sessions; never choose the most recent session heuristically.
 
@@ -46,8 +46,8 @@ The DSH panel will expose draggable executor priority (plus keyboard controls), 
 
 1. Scheduling state machine and failure/restart tests (initial commit).
 2. DSH storage and remote service integration; persistent queue and ownership.
-3. DSH and Codex adapters with isolated live validation; Claude CLI contract tests.
+3. DSH and Codex adapters with isolated live validation; Claude CLI contract and live resume tests.
 4. Linear intake and result outbox; local project mappings.
 5. Native DSH priority editor and task inspection; end-to-end validation.
 
-These stages are implemented; see acceptance.md for verified scope and remaining live-Claude validation. Human acceptance remains separate from an agent's completion report. The host adds a cross-process runtime-directory lock; only one receiver may use a given DSH domain store.
+These stages are implemented; see acceptance.md for verified scope and remaining permission and Desktop validation. Human acceptance remains separate from an agent's completion report. The host adds a cross-process runtime-directory lock; only one receiver may use a given DSH domain store.

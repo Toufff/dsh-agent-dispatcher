@@ -33,6 +33,14 @@
     "review": {
       "verdict": "ship",
       "basis": "最终 UI reviewer verdict，由主任务提供。"
+    },
+    "agentIcons": {
+      "source": "src/ui/icons",
+      "prioritySize": "24px",
+      "attemptSize": "20px",
+      "claudeLight": "#ad502d",
+      "claudeDark": "#e8a082",
+      "accessibleLabel": "Adjacent visible executor name"
     }
   },
   "components": [

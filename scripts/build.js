@@ -8,5 +8,5 @@ await build({ entryPoints: ['src/adapters/worker.js'], outfile: 'dist/worker.js'
 // Worker resolves its own source modules, preserving the same official CLI path in packed installs.
 const result = await build({ entryPoints: ['src/ui/client.jsx'], bundle: true, platform: 'browser', format: 'cjs',
   external: ['react', 'react/jsx-runtime', 'react-dom'], write: false,
-  loader: { '.css': 'text' } });
+  loader: { '.css': 'text', '.svg': 'text' } });
 await writeFile('dist/client.js', `window.__ModuleLoader__.load({id:"dsh-agent-dispatcher",factory:(require)=>{var module={exports:{}};var exports=module.exports;\n${result.outputFiles[0].text}\nreturn module.exports;}});`);

@@ -2,7 +2,7 @@
 
 Local task dispatch across DSH, Codex and Claude Code. Linear holds requirements and acceptance; the recipient controls local executors, directories and sessions.
 
-**Version 0.1:** a working plugin for DSH 0.2.1-rc.2. Native DSH and official Codex CLI execution have passed live acceptance. Claude Code CLI is implemented and protocol-tested; live Claude validation remains with a collaborator and the default executor is disabled. See [acceptance evidence](docs/acceptance.md).
+**Version 0.1:** a working plugin for DSH 0.2.1-rc.2. Native DSH, official Codex CLI and official Claude Code CLI execution have passed live acceptance. Claude also passed takeover/return and same-session resume through the packaged host. Its default executor remains disabled until locally configured. See [acceptance evidence](docs/acceptance.md).
 
 The Chinese panel provides draggable executor priority, keyboard reorder controls, local project mappings, a persistent FIFO queue, attempt history, pause, stop, takeover, return, retry and human acceptance. Linear polling and a separate durable outbox connect human-assigned issues to local execution.
 

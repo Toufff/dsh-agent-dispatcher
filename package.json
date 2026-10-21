@@ -41,7 +41,9 @@
     "docs",
     "skills",
     "cordis.patch.yml",
-    "scripts/recover-lock.js"
+    "scripts/recover-lock.js",
+    "src/ui/icons/LICENSE",
+    "src/ui/icons/README.md"
   ],
   "dsh": {
     "client": {
