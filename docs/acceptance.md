@@ -13,6 +13,8 @@
 
 ## Explicit limits
 
+Receipt recovery regression: injected transient and exhausted write failures now leave later completion writes usable, with bounded retries and error-code-only local diagnostics. Stale heartbeats are detected even when an adapter retains the worker reference. A real Codex marker task passed after the fix. An affected completed session was recovered from its matching original completion record without starting the task again.
+
 Claude Code CLI passed real authenticated execution, packaged DSH-host dispatch, human takeover/return and same-session resume on Windows. Tests used a no-tools, no-file-change marker task. Tool permission prompts, real coding workloads and Claude Desktop visibility were not tested. The default executor remains disabled until locally configured.
 
 One receiving host is supported. There is no distributed exactly-once guarantee, unrestricted external-session discovery or enforcement over manually launched writers. A session view does not itself transfer ownership. CLI manual-return confirmation is an operator assertion where the official runtime exposes no cross-process lease.

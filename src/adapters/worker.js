@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { writeJson } from '../store.js';
+import { receiptWriter } from './receipt-writer.js';
 import { access } from 'node:fs/promises';
 
-let child, receipt, file, timer, chain = Promise.resolve(), stopping = false, completed = false, started = false;
-function save() { receipt.heartbeat = Date.now(); const copy = structuredClone(receipt); chain = chain.then(() => writeJson(file, copy)); return chain; }
+let child, receipt, file, timer, persist, stopping = false, completed = false, started = false;
+function save() { receipt.heartbeat = Date.now(); return persist(receipt); }
 function send(value) { if (process.connected) process.send(value); }
 process.on('message', async input => {
   if (input.stop && !stopping) {
@@ -18,7 +18,7 @@ process.on('message', async input => {
     return;
   }
   if (started) return;
-  started = true; file = input.file;
+  started = true; file = input.file; persist = receiptWriter(file);
   receipt = { status: 'starting', sessionId: input.sessionId, workerPid: process.pid, summary: '' };
   try {
     await save();
@@ -37,7 +37,9 @@ process.on('message', async input => {
       clearInterval(timer);
       receipt.status = ['ENOENT', 'EACCES'].includes(error.code) ? 'rejected' : 'unknown';
       receipt.reason = error.code || 'spawn-failed';
-      try { await save(); } finally { send(receipt); process.disconnect?.(); }
+      try { await save(); send(receipt); }
+      catch { send({ status: 'unknown', reason: 'Terminal receipt persistence failed' }); }
+      finally { if (process.connected) process.disconnect(); }
     });
     child.stdin.on('error', () => {});
     // stderr is deliberately not persisted: third-party diagnostics may contain credentials.
@@ -64,7 +66,9 @@ process.on('message', async input => {
       receipt.status = stopping ? 'stopped' : code === 0 && completed ? 'review' : 'failed';
       receipt.exitCode = code;
       if (!completed && !stopping) receipt.reason ||= 'No successful completion event';
-      try { await save(); } finally { if (process.connected) process.disconnect(); }
+      try { await save(); }
+      catch { send({ status: 'unknown', reason: 'Terminal receipt persistence failed' }); }
+      finally { if (process.connected) process.disconnect(); }
     });
   } catch {
     send({ status: 'unknown', reason: 'Receipt persistence failed' });

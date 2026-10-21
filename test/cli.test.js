@@ -4,6 +4,17 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { CliAdapter, cliArgs } from '../src/adapters/cli.js';
+import { writeJson } from '../src/store.js';
+
+test('stale heartbeat is unknown even while the worker remains in memory', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'dispatch-stale-'));
+  try {
+    const adapter = new CliAdapter({ type: 'codex' }, directory);
+    adapter.workers.set('attempt', {});
+    await writeJson(path.join(directory, 'attempt.json'), { status: 'running', heartbeat: Date.now() - 60000, workerPid: process.pid });
+    assert.equal((await adapter.reconcile({ attempt: { id: 'attempt' } })).status, 'unknown');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 test('worker environment excludes Linear credentials but preserves normal runtime environment', () => {
   const keys = ['DISPATCH_LINEAR_TEST_SECRET', 'CUSTOM_DISPATCH_TEST_SECRET'];
