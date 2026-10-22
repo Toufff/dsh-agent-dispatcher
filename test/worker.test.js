@@ -8,17 +8,25 @@ import path from 'node:path';
 import { CliAdapter } from '../src/adapters/cli.js';
 
 // Includes two OS process launches; keep runtime cleanup assertions independent of host load.
-for (const protocol of ['codex', 'codex-linger', 'codex-file-linger', 'claude', 'incomplete']) test(`worker executes and parses ${protocol} protocol`, { timeout: 60000 }, async () => {
+for (const protocol of ['codex', 'codex-linger', 'codex-file-linger', 'codex-inherited', 'claude', 'incomplete']) test(`worker executes and parses ${protocol} protocol`, { timeout: 60000 }, async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'dispatch-worker-'));
   try {
     const worker = fork(new URL('../src/adapters/worker.js', import.meta.url), [], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], env: { ...process.env, CODEX_HOME: directory } });
     const exited = once(worker, 'exit');
     worker.send({ command: process.execPath, args: [path.resolve('scripts/agent-fixture.mjs'), protocol],
-      file: path.join(directory, 'attempt.json'), cwd: directory, prompt: 'Synthetic', sessionId: 'initial', completionGraceMs: 200, type: protocol.startsWith('codex') ? 'codex' : protocol });
+      file: path.join(directory, 'attempt.json'), cwd: directory, prompt: 'Synthetic', sessionId: 'initial', completionGraceMs: protocol === 'codex-inherited' ? 15000 : 200, type: protocol.startsWith('codex') ? 'codex' : protocol });
     await exited;
     const result = JSON.parse(await readFile(path.join(directory, 'attempt.json'), 'utf8'));
     assert.equal(result.status, protocol === 'incomplete' ? 'failed' : 'review');
     if (protocol !== 'incomplete') assert.equal(result.summary, `SYNTHETIC_${protocol.split('-')[0].toUpperCase()}_OK`);
+    if (protocol === 'codex-inherited') {
+      assert.ok(result.processExitedAt);
+      assert.equal(result.exitCode, 0);
+      const pid = Number(await readFile(path.join(directory, 'descendant.pid'), 'utf8'));
+      // Worker must finish without waiting for or killing the independent descendant.
+      assert.doesNotThrow(() => process.kill(pid, 0));
+      process.kill(pid);
+    }
     if (protocol.endsWith('linger')) {
       assert.equal(result.completionSource, protocol === 'codex-file-linger' ? 'session-task-complete' : 'cli-turn-completed');
       assert.match(result.reason, /cleaned up/);

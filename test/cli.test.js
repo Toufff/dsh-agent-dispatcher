@@ -5,6 +5,30 @@ import path from 'node:path';
 import os from 'node:os';
 import { CliAdapter, cliArgs } from '../src/adapters/cli.js';
 import { writeJson } from '../src/store.js';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+
+test('completed orphan recovery requires both processes absent and honors durable stop', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'dispatch-orphan-'));
+  try {
+    const child = spawn(process.execPath, ['-e', ''], { windowsHide: true });
+    await once(child, 'close');
+    const adapter = new CliAdapter({ type: 'codex' }, directory);
+    const context = { attempt: { id: 'attempt' } };
+    const file = path.join(directory, 'attempt.json');
+    const receipt = { status: 'unknown', completedAt: new Date().toISOString(), completionSource: 'cli-turn-completed', summary: 'finished', pid: child.pid, workerPid: process.pid };
+    await writeJson(file, receipt);
+    assert.equal((await adapter.reconcile(context)).status, 'unknown');
+    await writeJson(file, { ...receipt, workerPid: child.pid, pid: process.pid });
+    assert.equal((await adapter.reconcile(context)).status, 'unknown');
+    await writeJson(file, { ...receipt, workerPid: child.pid, completedAt: null });
+    assert.equal((await adapter.reconcile(context)).status, 'unknown');
+    await writeJson(file, { ...receipt, workerPid: child.pid });
+    assert.equal((await adapter.reconcile(context)).status, 'review');
+    await writeJson(`${file}.stop`, { stop: true });
+    assert.equal((await adapter.reconcile(context)).status, 'stopped');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 test('Codex automatic approval mode avoids the mutually exclusive sandbox option', () => {
   const args = cliArgs({ type: 'codex', args: ['--approve-for-me'] }, {}, { resume: true, sessionId: 'session' });

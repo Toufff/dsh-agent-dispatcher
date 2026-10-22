@@ -2,6 +2,7 @@ const protocol = process.argv[2];
 const emit = event => console.log(JSON.stringify(event));
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 process.stdin.resume();
 process.stdin.on('end', () => {
   if (protocol === 'codex-file-linger') {
@@ -14,7 +15,12 @@ process.stdin.on('end', () => {
   if (protocol === 'claude') {
     emit({ type: 'system', session_id: 'synthetic-claude-session' });
     emit({ type: 'result', is_error: false, result: 'SYNTHETIC_CLAUDE_OK' });
-  } else if (['codex', 'codex-linger'].includes(protocol)) {
+  } else if (['codex', 'codex-linger', 'codex-inherited'].includes(protocol)) {
+    if (protocol === 'codex-inherited') {
+      const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true, detached: true });
+      writeFileSync(path.join(process.cwd(), 'descendant.pid'), String(descendant.pid));
+      descendant.unref();
+    }
     emit({ type: 'thread.started', thread_id: 'synthetic-codex-session' });
     emit({ type: 'item.completed', item: { type: 'agent_message', text: 'SYNTHETIC_CODEX_OK' } });
     emit({ type: 'turn.completed' });

@@ -43,6 +43,21 @@ export class CliAdapter {
   async reconcile({ attempt }) {
     try {
       const receipt = JSON.parse(await readFile(this.file(attempt), 'utf8'));
+      // Recover a completed legacy worker only after BOTH recorded processes
+      // are absent. No stored PID is killed and ambiguous/permission errors
+      // retain the execution slot. Completion alone never proves quiescence.
+      if (['unknown', 'finishing'].includes(receipt.status) && receipt.completedAt &&
+          ['cli-turn-completed', 'cli-result', 'session-task-complete'].includes(receipt.completionSource) &&
+          typeof receipt.summary === 'string' && receipt.summary &&
+          [receipt.pid, receipt.workerPid].every(pid => {
+            if (!Number.isInteger(pid) || pid <= 0) return false;
+            try { process.kill(pid, 0); return false; } catch (error) { return error.code === 'ESRCH'; }
+          })) {
+        let stopped = false;
+        try { await access(`${this.file(attempt)}.stop`); stopped = true; }
+        catch (error) { if (error.code !== 'ENOENT') return { ...receipt, status: 'unknown', reason: 'Stop intent could not be checked' }; }
+        return { ...receipt, status: stopped ? 'stopped' : receipt.exitCode != null && receipt.exitCode !== 0 ? 'failed' : 'review', reason: 'Completion recorded; CLI and worker confirmed absent' };
+      }
       if (['running', 'finishing', 'waiting'].includes(receipt.status)) {
         if (!receipt.heartbeat || Date.now() - receipt.heartbeat > 15000)
           return { ...receipt, status: 'unknown', reason: 'Execution heartbeat is stale' };

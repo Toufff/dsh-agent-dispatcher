@@ -8,9 +8,9 @@ import os from 'node:os';
 import { codexCompletion } from './codex-completion.js';
 
 let child, receipt, file, timer, persist, stopping = false, completed = false, started = false;
-let finishTimer, cleanupTimer, cleanup = false, closed = false, sessionFile, observing = false, nextObservation = 0;
+let finishTimer, cleanupTimer, drainTimer, cleanup = false, closed = false, exited = false, sessionFile, observing = false, nextObservation = 0;
 function terminate() {
-  if (!child?.pid || closed) return;
+  if (!child?.pid || closed || exited) return;
   if (process.platform === 'win32') {
     const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
     killer.on('error', () => {});
@@ -91,8 +91,9 @@ process.on('message', async input => {
       }
       save().catch(() => {});
     });
-    child.once('close', async code => {
-      closed = true; clearTimeout(finishTimer); clearTimeout(cleanupTimer);
+    const finalize = async code => {
+      if (closed) return;
+      closed = true; clearTimeout(finishTimer); clearTimeout(cleanupTimer); clearTimeout(drainTimer);
       clearInterval(timer);
       if (receipt.status === 'rejected') return;
       receipt.status = stopping ? 'stopped' : completed && (code === 0 || cleanup) ? 'review' : 'failed';
@@ -102,6 +103,20 @@ process.on('message', async input => {
       try { await save(); }
       catch { send({ status: 'unknown', reason: 'Terminal receipt persistence failed' }); }
       finally { if (process.connected) process.disconnect(); }
+    };
+    child.once('close', finalize);
+    child.once('exit', code => {
+      exited = true;
+      receipt.processExitedAt = new Date().toISOString(); receipt.exitCode = code;
+      clearTimeout(finishTimer); clearTimeout(cleanupTimer);
+      // A descendant can inherit stdout/stderr after the CLI itself exits.
+      // Drain already queued output, then detach our pipes; never kill a reused
+      // PID or production services merely to receive Node's close event.
+      drainTimer = setTimeout(() => {
+        if (closed) return;
+        child.stdout.destroy(); child.stderr.destroy(); child.stdin.destroy();
+        finalize(code).catch(() => {});
+      }, 1000);
     });
   } catch {
     send({ status: 'unknown', reason: 'Receipt persistence failed' });
