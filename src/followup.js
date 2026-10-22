@@ -10,8 +10,8 @@ export const waitSchema = z.object({
 }).strict().superRefine((wait, ctx) => {
   if (wait.kind === 'time' && !wait.notBefore)
     ctx.addIssue({ code: 'custom', message: 'Time waits require an exact timestamp with timezone' });
-  if (wait.expiresAt && (!wait.notBefore || Date.parse(wait.expiresAt) <= Date.parse(wait.notBefore)))
-    ctx.addIssue({ code: 'custom', message: 'Window end must follow an explicit start' });
+  if (wait.expiresAt && wait.notBefore && Date.parse(wait.expiresAt) <= Date.parse(wait.notBefore))
+    ctx.addIssue({ code: 'custom', message: 'Window end must follow its start' });
 });
 
 export function wakeEvent(wait, activity, policy, now, ownCommentIds = []) {

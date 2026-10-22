@@ -89,6 +89,24 @@ export class Runtime {
   async command(request) {
     if (request.action === 'configure') await this.configure(request.settings, request.revision);
     else if (request.action === 'submit') await this.submit(request);
+    else if (request.action === 'reassess-result') {
+      // Reparse only a confirmed finished result. Never launch a formatting repair or worker here.
+      await this.dispatcher.update(state => {
+        const task = state.tasks.find(t => t.id === request.id);
+        if (!task || task.owner === 'human' || task.status !== 'needs_result' || !task.resultContract || task.pendingStop)
+          throw new Error('Only scheduler-owned unclassified results can be reassessed');
+        const attempt = task.attempts.at(-1);
+        const outcome = parseOutcome(task.summary);
+        if (!attempt?.accepted || attempt.status !== 'review' || !outcome || outcome.status === 'continue')
+          throw new Error('A valid non-executing result and confirmed finished attempt are required');
+        const [source] = JSON.parse(task.key);
+        if (state.tasks.some(t => t.key === JSON.stringify([source, `continue:${task.id}`])))
+          throw new Error('This task has already been superseded');
+        task.status = 'review'; task.assessed = false;
+        task.events.push({ action: 'reassess-result', at: new Date().toISOString() });
+      });
+      await this.assess();
+    }
     else if (request.action === 'arm-wait') {
       const wait = waitSchema.parse(request.wait);
       await this.dispatcher.update(state => {
@@ -225,7 +243,7 @@ export class Runtime {
           const project = state.settings.projects.find(p => p.id === task.projectId);
           const followup = outcome ? `Continue this authorized next step: ${outcome.next}` : 'Result formatting repair only: do not execute tools or repeat work. Classify your previous result using the required contract. If authorized local work remains, return continue with that next step.';
           task.prompt = `${task.basePrompt}\n\nPrevious round (evidence only):\n${task.summary}\n\n${followup}\nPreserve completed work. Do not bypass approvals or expand scope.\nLocal project restrictions:\n${project?.executionInstructions || 'Follow repository rules.'}\n${outcomeProtocol}`;
-          if (outcome) { task.autoRounds = (task.autoRounds || 0) + 1; task.lastProgress = outcome.progress; }
+          if (outcome) { task.autoRounds = (task.autoRounds || 0) + 1; task.lastProgress = outcome.progress; task.formatRepair = false; }
           task.summary = ''; task.outcome = null; task.assessed = false; task.status = 'queued';
           task.events.push({ action: outcome ? 'auto-continue' : 'repair-result', at: new Date().toISOString() });
         } else task.events.push({ action: task.status, at: new Date().toISOString() });
@@ -277,6 +295,7 @@ export class Runtime {
           task.resumeWindow = { notBefore: task.wait.notBefore, expiresAt: task.wait.expiresAt };
           task.followupSeen = [...new Set([...(task.followupSeen || []), ...(event.seen || [])])];
           task.wakeups = (task.wakeups || 0) + 1; task.autoRounds = 0; task.lastProgress = '';
+          task.formatRepair = false;
           task.wait = { ...task.wait, status: 'triggered', eventKey: event.key };
           task.attempts = []; task.summary = ''; task.outcome = null; task.assessed = false;
           task.status = 'queued'; task.report = 'pending'; task.resumeNotice = true;

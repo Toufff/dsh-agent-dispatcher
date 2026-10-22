@@ -19,6 +19,7 @@ Work until the acceptance conditions are met or no authorized useful next step r
 End your final response with exactly one <dispatch-result>JSON</dispatch-result> block:
 {"status":"complete|continue|blocked|decision","evidence":["verification actually performed"],"remaining":["unfinished requirement"],"next":"concrete authorized next step, or empty","progress":"new evidence or change this round, or empty if none","blockers":[{"owner":"responsible party","reason":"specific dependency","resumeWhen":"observable resumption condition"}]}
 Use complete only when ALL requirements are verified, with nonempty evidence and no remaining items/blockers/next. Use continue if useful authorized local work remains, even when other items are externally blocked. Use blocked only when no local step remains; name dependency owners and resumption conditions. Use decision only for a concrete human decision/permission. Report failures and incomplete validation honestly. Do not put credentials in the result. The full structured result stays local; only the opt-in publicSummary and safe wait details may be shared.
+For blocked/decision, next may describe the conditional future step or be empty; it never authorizes automatic execution. Only continue executes a next step. Linear waits may have an expiresAt without notBefore; that is a monitoring deadline, not a new execution window. Time waits always require notBefore. If both timestamps exist, expiresAt must be later.
 For blocked results you MAY add "wait":{"kind":"linear|time","condition":"what must be verified","issueId":"parent issue ID or its direct child (optional)","notBefore":"ISO timestamp with timezone (optional for linear, required for time)","expiresAt":"ISO end of an explicitly authorized window (optional)"}. Omit unused fields. A proposed window is NOT an authorized window. Use a linear wait for pending confirmation. A time wake only schedules a recheck; it grants no permission. Never use decision for a condition that can simply be checked later. If a child handoff is needed, record its existing ID; do not invent or duplicate tickets.
 You MAY add "publicSummary" containing a concise shareable business update: completed work, actual validation, remaining work, responsible party, and exact resumption condition/time with timezone. Exclude local paths, credentials, transcripts and private identifiers. Only locally opted-in projects publish this field. Never claim a proposal, simulated test or process exit is production acceptance.
 `;
@@ -31,7 +32,8 @@ export function parseOutcome(summary) {
   if (result.wait && result.status !== 'blocked') return null;
   if (result.status === 'complete' && (!result.evidence.length || result.remaining.length || result.blockers.length || result.next.trim())) return null;
   if (result.status === 'continue' && (!result.next.trim() || !result.remaining.length)) return null;
-  if (['blocked', 'decision'].includes(result.status) && (!result.blockers.length || !result.remaining.length || result.next.trim())) return null;
+  // A blocked next step describes what follows the dependency; it is not a command to execute.
+  if (['blocked', 'decision'].includes(result.status) && (!result.blockers.length || !result.remaining.length)) return null;
   return result;
 }
 

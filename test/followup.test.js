@@ -201,3 +201,66 @@ test('queued issue is rechecked before execution and a reassigned issue does not
  const original=f.runtime.linearFactory; f.runtime.linearFactory=()=>({...original(),eligible:async()=>{throw new Error('reassigned');}});
  await f.runtime.dispatcher.tick();assert.equal(f.starts,1);assert.match((await f.runtime.snapshot()).tasks[0].admissionError,/复核未通过/);
 });
+
+test('reassessment recovers a stored result without executing and preserves reply cursor across restart', async () => {
+  const f = await fixture();
+  const id = (await f.runtime.snapshot()).tasks[0].id;
+  await f.runtime.dispatcher.update(s => {
+    const t = s.tasks[0]; t.status = 'needs_result'; t.outcome = null; t.formatRepair = true;
+    t.wait.status = 'resolved'; t.attempts[0].startedAt = '2030-01-01T10:00:00Z';
+    t.summary = contract('blocked', { next: 'Verify the receipt before any change',
+      wait: { kind: 'linear', issueId: 'child', condition: 'Receipt', expiresAt: '2030-01-01T21:30:00+08:00' } });
+  });
+  const before = (await f.runtime.snapshot()).tasks[0];
+  await f.runtime.command({ action: 'reassess-result', id });
+  const recovered = (await f.runtime.snapshot()).tasks[0];
+  assert.equal(f.starts, 1); assert.equal(recovered.status, 'blocked'); assert.equal(recovered.wait.status, 'watching');
+  assert.equal(recovered.wait.armedAt, before.attempts[0].startedAt);
+  assert.equal(recovered.wait.expiresAt, '2030-01-01T21:30:00+08:00');
+  assert.deepEqual(recovered.attempts, before.attempts); assert.equal(recovered.summary, before.summary);
+  await assert.rejects(f.runtime.command({ action: 'reassess-result', id }), /unclassified/);
+  const next = await new Runtime({ store: f.store, directory: os.tmpdir(), env: { TEST_TOKEN: 'synthetic' }, linearFactory: f.factory }).init();
+  next.adapters.codex = f.adapter;
+  f.setComments([comment('receipt', 'peer', '2030-01-01T10:01:00Z')]);
+  await next.monitor(); await next.monitor();
+  assert.equal((await next.snapshot()).tasks[0].wakeups, 1);
+  await next.dispatcher.tick(); assert.equal(f.starts, 2);
+});
+
+test('reassessment rejects execution outcomes, human ownership and superseded results', async () => {
+  const f = await fixture(); const id = (await f.runtime.snapshot()).tasks[0].id;
+  await f.runtime.dispatcher.update(s => {
+    const t = s.tasks[0]; t.status = 'needs_result';
+    t.summary = contract('continue', { next: 'Run more tools' });
+  });
+  await assert.rejects(f.runtime.command({ action: 'reassess-result', id }), /non-executing/);
+  await f.runtime.dispatcher.update(s => { s.tasks[0].owner = 'human'; });
+  await assert.rejects(f.runtime.command({ action: 'reassess-result', id }), /scheduler-owned/);
+  await f.runtime.dispatcher.update(s => { s.tasks[0].owner = 'scheduler'; s.tasks[0].summary = contract('blocked'); });
+  await f.runtime.command({ action: 'continue', id });
+  await assert.rejects(f.runtime.command({ action: 'reassess-result', id }), /superseded/);
+  assert.equal(f.starts, 1);
+});
+
+test('each external wake gets one formatting repair, not a lifetime budget or an infinite loop', async () => {
+  const f = await fixture();
+  await f.runtime.dispatcher.update(s => { s.tasks[0].formatRepair = true; });
+  f.setComments([comment()]); await f.runtime.monitor();
+  assert.equal((await f.runtime.snapshot()).tasks[0].formatRepair, false);
+  await f.runtime.dispatcher.tick();
+  await f.runtime.dispatcher.update(s => { s.tasks[0].summary = 'bad result'; });
+  await f.runtime.assess();
+  assert.equal((await f.runtime.snapshot()).tasks[0].status, 'queued');
+  assert.match((await f.runtime.snapshot()).tasks[0].prompt, /do not execute tools/);
+  // Use a separate fake formatting-only adapter to validate its bounded retry.
+  f.runtime.adapters.codex = { start: async () => ({ status: 'review', sessionId: 'registered', summary: 'still bad' }) };
+  await f.runtime.dispatcher.tick(); await f.runtime.assess();
+  assert.equal((await f.runtime.snapshot()).tasks[0].status, 'needs_result');
+  await f.runtime.assess(); assert.equal((await f.runtime.snapshot()).tasks[0].status, 'needs_result');
+});
+
+test('expiry-only reply monitoring expires without executing a waiting next step', async () => {
+  const f = await fixture({ kind: 'linear', condition: 'receipt before deadline', expiresAt: '2000-01-01T00:00:00Z' });
+  f.setComments([comment()]); await f.runtime.monitor(); await f.runtime.dispatcher.tick();
+  assert.equal((await f.runtime.snapshot()).tasks[0].wait.status, 'expired'); assert.equal(f.starts, 1);
+});
