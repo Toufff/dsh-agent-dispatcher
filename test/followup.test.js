@@ -107,6 +107,43 @@ test('wake ceiling and disabled executor prevent a notification-driven loop', as
   await f.runtime.monitor(); assert.equal((await f.runtime.snapshot()).tasks[0].status, 'blocked');
 });
 
+test('expired queued continuation preserves evidence and can explicitly rearm the same session', async () => {
+  const f = await fixture();
+  const summary = contract('continue', { next: 'Continue isolated validation', remaining: ['isolated validation'], progress: 'new local evidence' });
+  await f.runtime.dispatcher.update(s => {
+    const t = s.tasks[0]; t.status = 'review'; t.assessed = false; t.summary = summary;
+    t.resumeWindow = { expiresAt: '2000-01-01T00:01:00Z' };
+  });
+  await f.runtime.assess(); await f.runtime.dispatcher.tick();
+  let t = (await f.runtime.snapshot()).tasks[0];
+  assert.equal(t.status, 'blocked'); assert.equal(t.attempts.length, 0);
+  assert.equal(t.summary, summary); assert.equal(f.starts, 1);
+  const oldWait = structuredClone(t.wait);
+  await f.runtime.command({ action: 'arm-wait', id: t.id, wait: {
+    kind: 'time', condition: 'New local validation interval; production remains forbidden',
+    notBefore: new Date(Date.now()-1000).toISOString(), expiresAt: new Date(Date.now()+60000).toISOString()
+  } });
+  const next = await new Runtime({ store: f.store, directory: os.tmpdir(), env: { TEST_TOKEN: 'synthetic' }, linearFactory: f.factory }).init();
+  next.adapters.codex = f.adapter;
+  await next.monitor(); await next.dispatcher.tick();
+  t = (await next.snapshot()).tasks[0];
+  assert.equal(f.starts, 2); assert.equal(t.attempts[0].sessionId, 'registered');
+  assert.ok(t.waitHistory.some(w => w.id === oldWait.id));
+  assert.ok(t.prompt.includes(summary));
+});
+
+test('missing current attempts never allow rearming or continuing an unrelated historical session', async () => {
+  const f = await fixture();
+  await f.runtime.dispatcher.update(s => {
+    const t=s.tasks[0]; t.previousAttempts=t.attempts; t.attempts=[];
+    t.session={executor:'codex',id:'different-session'};
+  });
+  const t=(await f.runtime.snapshot()).tasks[0];
+  await assert.rejects(f.runtime.command({action:'arm-wait',id:t.id,wait:{kind:'linear',condition:'recheck',issueId:'child'}}), /confirmed finished/);
+  await assert.rejects(f.runtime.command({action:'continue',id:t.id}), /unconfirmed/);
+  assert.equal(f.starts,1);
+});
+
 test('local mapping change and closed parent fail closed; completed child can wake parent', async () => {
   const f = await fixture(); f.setComments([comment()]);
   await f.runtime.dispatcher.update(s => { s.settings.projects[0].cwd = os.tmpdir(); });

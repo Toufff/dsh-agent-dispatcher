@@ -58,6 +58,10 @@ export class Dispatcher {
       if (!task || task.status !== 'queued' || task.owner === 'human') return;
       if (task.resumeWindow?.expiresAt && Date.now() >= Date.parse(task.resumeWindow.expiresAt)) {
         task.status = 'blocked'; task.assessed = true; task.report = 'pending'; task.resumeNotice = false;
+        if (!task.attempts.length && !task.summary && task.rounds?.length) {
+          task.summary = task.rounds.at(-1).summary;
+          task.outcome = task.rounds.at(-1).outcome;
+        }
         if (task.wait) task.wait.status = 'expired';
         task.events.push({ action: 'window-expired', at: new Date().toISOString() });
         await this.store.save(state); return;
