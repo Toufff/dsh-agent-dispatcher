@@ -48,6 +48,7 @@ if(cfg.scenario==='peer') {
 }
 const browser=await chromium.launch({channel:'msedge',headless:true});
 const page=await browser.newPage({viewport:{width:1440,height:1000}});
+let panelConnected=false;
 page.on('pageerror',e=>receipt.errors.push(e.message));
 async function configure(settings) {
   await page.getByRole('button',{name:'配置项目与连接',exact:true}).click();
@@ -63,11 +64,17 @@ try {
   // This changes only the designated test issue. The real polling path creates
   // the local task; the driver never writes task or attempt state.
   if(!verifyExisting)await client.query('mutation($id:String!,$input:IssueUpdateInput!){issueUpdate(id:$id,input:$input){success}}',{id:cfg.issueId,input:{description:prompt,stateId:cfg.project.linear.readyStateId}});
-  const hostUrl=fs.readFileSync(cfg.hostLog,'utf8').match(/http:\/\/127\.0\.0\.1:\d+\/\?token=\S+/)?.[0];
+  let hostUrl;
+  const readyDeadline=Date.now()+60000;
+  while(!hostUrl && Date.now()<readyDeadline) {
+    hostUrl=fs.readFileSync(cfg.hostLog,'utf8').match(/http:\/\/127\.0\.0\.1:\d+\/\?token=\S+/)?.[0];
+    if(!hostUrl)await new Promise(r=>setTimeout(r,500));
+  }
   assert.ok(hostUrl,'Authenticated host URL unavailable');
   await page.goto(hostUrl);
   await page.getByRole('button',{name:'任务派发',exact:true}).click();
   await page.getByRole('heading',{name:'执行优先级',exact:true}).waitFor();
+  panelConnected=true;
   const settings=structuredClone(original);
   for(const p of settings.projects){if(p.linear)p.linear.enabled=false;if(p.followup)p.followup.enabled=false;}
   for(const e of settings.executors)e.enabled=e.id===cfg.executor;
@@ -126,7 +133,7 @@ finally {
   // evidence or cause the next coordinator to replay a completed issue.
   save();
   try {
-  if(!receipt.keepWatching) {
+  if(!receipt.keepWatching && panelConnected) {
   // Native host/client hot reload can return the tab to its workspace screen.
   if(!await page.getByRole('heading',{name:'执行优先级',exact:true}).count())await page.getByRole('button',{name:'任务派发',exact:true}).click();
   await page.getByRole('heading',{name:'执行优先级',exact:true}).waitFor();
