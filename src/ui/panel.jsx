@@ -61,7 +61,7 @@ export function Panel({ api }) {
           <p>只监听保存后的新回复；kind 为 linear 或 time。time 必须提供带时区的 notBefore，有结束时间时填写 expiresAt。保存不会立即重跑任务，也不会授权额外操作。</p>
           <button disabled={busy}>保存恢复条件</button><button type="button" onClick={() => setWaitTask(null)}>取消</button></form>}
         {task.wait && <section aria-label="恢复条件"><h3>恢复条件</h3><p>{task.wait.condition}</p>
-          <p>{data.paused ? '派发暂停，不会自动恢复' : !data.settings.projects.find(p => p.id === task.projectId)?.followup?.enabled ? '此项目未启用自动恢复' : waitLabels[task.wait.status] || task.wait.status}</p>
+          <p>{data.paused ? '派发暂停，不会自动恢复' : !data.settings.projects.find(p => p.id === task.projectId)?.followup?.enabled ? '此项目未启用自动恢复' : task.wait.status === 'expired' && data.settings.projects.find(p => p.id === task.projectId)?.followup?.observeAfterExpiry ? '执行窗口已过期，仍监听协作者回复；不会启动执行' : waitLabels[task.wait.status] || task.wait.status}</p>
           <p>{task.wait.kind === 'linear' ? `等待指定协作者更新：${task.wait.issueId || '尚未指定 issue'}` : '等待明确时间后重新检查'}</p>
           {task.wait.notBefore && <p>最早核对：<time>{task.wait.notBefore}</time></p>}
           {task.wait.expiresAt && <p>窗口截止：<time>{task.wait.expiresAt}</time>（过期不执行）</p>}

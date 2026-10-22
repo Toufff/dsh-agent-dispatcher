@@ -87,7 +87,7 @@ export class Runtime {
     if (session && !state.tasks.some(t => t.cwd === project.cwd && [...t.attempts, ...(t.previousAttempts ?? [])]
       .some(a => a.executor === session.executor && a.sessionId === session.id)))
       throw new Error('Only a registered task session can be resumed');
-    const executors = state.settings.executors.filter(e => e.enabled).map(e => e.id);
+    const executors = session ? [session.executor] : state.settings.executors.filter(e => e.enabled).map(e => e.id);
     const basePrompt = prompt;
     prompt = `${prompt}\n\nLocal project restrictions:\n${project.executionInstructions || 'Follow local repository instructions and existing permissions.'}\n${outcomeProtocol}`;
     return this.dispatcher.enqueue({ projectId, title, prompt, basePrompt, resultContract: true, session, issue, cwd: project.cwd, executors,

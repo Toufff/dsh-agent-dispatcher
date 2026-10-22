@@ -220,3 +220,18 @@ test('execution failure reports once; repeated report transport failures are vis
  offline=false;await runtime.dispatcher.update(s=>{s.outbox[0].nextAt=0;});await runtime.report();await runtime.report();await runtime.dispatcher.tick();
  s=await runtime.snapshot();assert.equal(s.tasks[0].report,'sent');assert.equal(s.errors.length,0);assert.equal(starts,1);assert.equal(sends,4);
 });
+
+test('manual continuation preserves the registered executor after priority changes, and explicit retry resets budgets', async () => {
+ const runtime=await fixture();let codex=0,dsh=0;
+ runtime.adapters.codex={start:async()=>{codex++;return {status:'review',sessionId:'original',summary:result('blocked')};}};
+ runtime.adapters.dsh={start:async()=>{dsh++;return {status:'running'};}};
+ await runtime.submit({projectId:'p',prompt:'Synthetic'});await runtime.command({action:'resume'});await runtime.dispatcher.tick();await runtime.assess();
+ const id=(await runtime.snapshot()).tasks[0].id;
+ await runtime.dispatcher.update(s=>{s.settings.executors.reverse();});
+ await runtime.command({action:'continue',id});await runtime.dispatcher.tick();await runtime.assess();
+ let s=await runtime.snapshot();assert.equal(codex,2);assert.equal(dsh,0);assert.equal(s.tasks[1].attempts[0].sessionId,'original');
+ await runtime.command({action:'stop',id:s.tasks[1].id});
+ await runtime.dispatcher.update(s=>{s.tasks[1].formatRepair=true;s.tasks[1].autoRounds=3;});
+ await runtime.command({action:'retry',id:s.tasks[1].id});s=await runtime.snapshot();
+ assert.equal(s.tasks[1].formatRepair,false);assert.equal(s.tasks[1].autoRounds,0);
+});
