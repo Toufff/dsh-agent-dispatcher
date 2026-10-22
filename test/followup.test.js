@@ -264,3 +264,30 @@ test('expiry-only reply monitoring expires without executing a waiting next step
   f.setComments([comment()]); await f.runtime.monitor(); await f.runtime.dispatcher.tick();
   assert.equal((await f.runtime.snapshot()).tasks[0].wait.status, 'expired'); assert.equal(f.starts, 1);
 });
+
+test('expired waits keep opt-in reply observation across restart, never execute or consume the future resume cursor', async () => {
+ const f=await fixture({kind:'linear',condition:'Receipt',issueId:'child',expiresAt:'2000-01-01T00:00:00Z'});
+ await f.runtime.dispatcher.update(s=>{s.settings.projects[0].followup.observeAfterExpiry=true;s.tasks[0].waitProject=structuredClone(s.settings.projects[0]);});
+ f.fail(true);await f.runtime.monitor();let t=(await f.runtime.snapshot()).tasks[0];assert.equal(t.wait.status,'expired');assert.ok(t.wait.error);
+ f.fail(false);const reply=comment();f.setComments([reply]);await f.runtime.monitor();await f.runtime.report();
+ t=(await f.runtime.snapshot()).tasks[0];assert.ok(t.wait.pendingUpdate);assert.equal(t.wait.error,undefined);assert.equal(t.followupSeen,undefined);
+ const next=await new Runtime({store:f.store,directory:os.tmpdir(),env:{TEST_TOKEN:'synthetic'},linearFactory:f.factory}).init();next.adapters.codex=f.adapter;
+ await next.monitor();await next.report();await next.dispatcher.tick();
+ assert.equal(f.starts,1);assert.equal(f.reports.length,1);assert.match(f.reports[0].body,/窗口过期后已收到/);
+ assert.equal((await next.snapshot()).tasks[0].wait.expiresAt,'2000-01-01T00:00:00Z');
+});
+
+test('deadline is enforced locally even if a time-wait eligibility service is unavailable', async () => {
+ const f=await fixture({kind:'time',condition:'Deadline',notBefore:'2000-01-01T00:00:00Z',expiresAt:'2000-01-01T01:00:00Z'});
+ let calls=0;f.runtime.linearFactory=()=>({eligible:async()=>{calls++;throw new Error('offline');}});
+ await f.runtime.monitor();assert.equal((await f.runtime.snapshot()).tasks[0].wait.status,'expired');assert.equal(calls,0);assert.equal(f.starts,1);
+});
+
+test('explicit cursor-preserving rearm does not lose replies received during maintenance', async()=>{
+ const f=await fixture();const before=(await f.runtime.snapshot()).tasks[0];
+ f.setComments([comment('maintenance-reply','peer',new Date(Date.parse(before.wait.armedAt)+1).toISOString())]);
+ await f.runtime.command({action:'arm-wait',id:before.id,preserveCursor:true,wait:{kind:'linear',condition:'Verify receipt',issueId:'child'}});
+ assert.equal((await f.runtime.snapshot()).tasks[0].wait.armedAt,before.wait.armedAt);
+ assert.equal((await f.runtime.snapshot()).tasks[0].waitHistory.length,1);
+ await f.runtime.monitor();assert.equal((await f.runtime.snapshot()).tasks[0].wakeups,1);
+});

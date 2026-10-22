@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { captureResultText } from '../result-text.js';
 
 const belongs = (message, attempt) => message?.source?.rpcId === attempt.id;
 const pending = agent => [...agent.inbox.nextTurn, ...agent.inbox.nextStep];
@@ -47,13 +48,15 @@ export class DshAdapter {
     if (index < 0) return { status: 'unknown', reason: 'Prompt admission not found in durable history' };
     if (agent?.status === 'running' || agent && pending(agent).some(m => belongs(m, attempt))) return { status: 'running' };
     const suffix = events.slice(index);
-    const end = suffix.findLast(event => event.type === 'turn/end');
+    const endIndex = suffix.findIndex(event => event.type === 'turn/end');
+    const end = suffix[endIndex];
     if (!end) return { status: 'unknown', reason: 'No confirmed turn completion' };
-    const message = suffix.findLast(event => event.type === 'assistant/message');
+    // A later manual/queued turn in the same session is not this attempt's receipt.
+    const message = suffix.slice(0, endIndex).findLast(event => event.type === 'assistant/message');
     const content = message?.data?.message?.content ?? message?.data?.content ?? [];
     return { status: end.data.reason.kind === 'completed' ? 'review' : 'failed',
       reason: end.data.reason.kind,
-      summary: Array.isArray(content) ? content.filter(p => p.type === 'text').map(p => p.text).join('\n').slice(-12000) : '' };
+      summary: Array.isArray(content) ? captureResultText(content.filter(p => p.type === 'text').map(p => p.text).join('\n')) : '' };
   }
   async idle({ attempt }) {
     const agent = this.ctx.agents?.get(attempt.sessionId);

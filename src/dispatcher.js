@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { captureResultText } from './result-text.js';
 
 export const terminal = new Set(['review', 'failed', 'exhausted', 'stopped', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result']);
 async function bounded(operation, ms = 15000) {
@@ -11,11 +12,12 @@ async function bounded(operation, ms = 15000) {
 /** A single-owner kernel. store.save must durably replace the aggregate atomically. */
 export class Dispatcher {
   #tail = Promise.resolve();
-  constructor({ store, adapters, id = randomUUID, beforeStart }) {
+  constructor({ store, adapters, id = randomUUID, beforeStart, enabled }) {
     this.store = store;
     this.adapters = adapters;
     this.id = id;
     this.beforeStart = beforeStart;
+    this.enabled = enabled;
   }
 
   #exclusive(fn) {
@@ -81,7 +83,7 @@ export class Dispatcher {
         let result;
         try {
           const adapter = this.adapters[executor];
-          result = adapter ? await bounded(() => adapter.start(structuredClone({ task, attempt })))
+          result = adapter && (!this.enabled || this.enabled(executor, state)) ? await bounded(() => adapter.start(structuredClone({ task, attempt })))
             : { status: 'rejected', reason: 'Adapter unavailable; not started' };
         } catch {
           result = { status: 'unknown' };
@@ -91,6 +93,7 @@ export class Dispatcher {
         if (attempt.status !== 'rejected') return;
       }
       task.status = 'exhausted';
+      task.executionNotice = true; task.report = 'pending';
       await this.store.save(state);
     });
   }
@@ -108,11 +111,15 @@ export class Dispatcher {
       attempt.status = task.status = 'unknown';
     }
     if (status === 'busy') attempt.status = task.status = 'busy';
-    if (typeof result?.summary === 'string') task.summary = result.summary.slice(0, 12000);
+    if (typeof result?.summary === 'string') task.summary = captureResultText(result.summary);
     if (typeof result?.reason === 'string') attempt.reason = result.reason.slice(0, 1000);
     if (typeof result?.sessionId === 'string') attempt.sessionId = result.sessionId;
     if (typeof result?.runId === 'string') attempt.runId = result.runId;
-    if (previous !== task.status) task.events?.push({ action: task.status, at: new Date().toISOString(), attemptId: attempt.id });
+    if (previous !== task.status) {
+      task.report = 'pending';
+      task.executionNotice = ['running', 'failed', 'unknown'].includes(task.status);
+      task.events?.push({ action: task.status, at: new Date().toISOString(), attemptId: attempt.id });
+    }
   }
 
   reconcile() {

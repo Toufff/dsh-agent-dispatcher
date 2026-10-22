@@ -2,7 +2,7 @@ import path from 'node:path';
 import { stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { Dispatcher, terminal } from './dispatcher.js';
-import { outcomeProtocol, parseOutcome, outcomeReports } from './outcome.js';
+import { outcomeProtocol, parseOutcome, inspectOutcome, outcomeReports } from './outcome.js';
 import { settingsSchema } from './config.js';
 import { CliAdapter } from './adapters/cli.js';
 import { DshAdapter } from './adapters/dsh.js';
@@ -21,7 +21,9 @@ export class Runtime {
       for (const type of ['codex', 'claude']) this.registry.register(type, (config, deps) => new CliAdapter(config, path.join(deps.directory, 'runs'), deps.secretKeys));
       this.registry.register('dsh', (config, deps) => new DshAdapter(deps.ctx, config));
     }
-    this.dispatcher = new Dispatcher({ store, adapters: this.adapters, beforeStart: async (task, state) => {
+    this.dispatcher = new Dispatcher({ store, adapters: this.adapters,
+      enabled: (executor, state) => Boolean(state.settings.executors.find(e => e.id === executor)?.enabled),
+      beforeStart: async (task, state) => {
       if (!task.issue?.id) return;
       const mapping = state.settings.projects.find(p => p.id === task.projectId)?.linear;
       if (!mapping?.enabled) throw new Error('Linear dispatch disabled');
@@ -52,7 +54,12 @@ export class Runtime {
       this.adapters[config.id] = adapter;
     }
   }
-  async snapshot() { return { ...await this.store.load(), health: this.health, errors: this.errors }; }
+  async snapshot() {
+    const state = await this.store.load();
+    const reportErrors = state.outbox.filter(i => i.status === 'pending' && i.tries >= 3)
+      .map(i => `${state.tasks.find(t => t.id === i.taskId)?.issue?.identifier || 'Linear'} 回写已失败 ${i.tries} 次，自动重试中；不会重跑任务。`);
+    return { ...state, health: this.health, errors: [...this.errors, ...reportErrors] };
+  }
   async configure(settings, revision) {
     settings = settingsSchema.parse(settings);
     await this.dispatcher.update(state => {
@@ -123,8 +130,14 @@ export class Runtime {
         if (!project?.followup?.enabled) throw new Error('Enable local follow-up policy first');
         if (wait.kind === 'linear' && (!task.issue?.id || !project.linear?.enabled || !project.followup.commentAuthorIds.length))
           throw new Error('Linear mapping and trusted collaborator IDs are required');
+        const previous = task.wait;
+        if (request.preserveCursor && (!previous?.armedAt || previous.kind !== wait.kind ||
+            (previous.issueId || task.issue?.id) !== (wait.issueId || task.issue?.id)))
+          throw new Error('Cursor preservation requires the same existing wait kind and issue');
+        if (previous) { task.waitHistory ||= []; task.waitHistory.push(structuredClone(previous)); }
         task.wait = { ...wait, issueId: wait.issueId || task.issue?.id, id: randomUUID(),
-          armedAt: new Date().toISOString(), seen: task.followupSeen || [], status: 'watching' };
+          armedAt: request.preserveCursor ? previous.armedAt : new Date().toISOString(),
+          seen: task.followupSeen || [], status: 'watching' };
         task.waitProject = structuredClone(project); task.status = 'blocked'; task.assessed = true;
         task.report = 'pending'; task.resumeNotice = false;
         task.events.push({ action: 'arm-wait', at: new Date().toISOString() });
@@ -176,15 +189,22 @@ export class Runtime {
   }
   async report() {
     await this.dispatcher.update(state => {
-      for (const task of state.tasks.filter(t => (outcomeReports[t.status] || t.resumeNotice) && t.issue && t.report === 'pending' && (t.assessed || t.resumeNotice))) {
+      for (const task of state.tasks.filter(t => (outcomeReports[t.status] || t.resumeNotice) && t.issue && t.report === 'pending' &&
+          (t.assessed || t.resumeNotice || t.executionNotice && (['running', 'failed', 'exhausted'].includes(t.status) ||
+            t.status === 'unknown' && Date.now() - Date.parse(t.events.at(-1)?.at || t.createdAt) >= 60000)))) {
         const mapping = state.settings.projects.find(p => p.id === task.projectId)?.linear;
         task.reportVersion = (task.reportVersion || 0) + 1;
         state.outbox.push({ id: randomUUID(), taskId: task.id, projectId: task.projectId,
           reportVersion: task.reportVersion, taskStatus: task.status,
-          issueId: task.issue.id, stateId: ['review', 'accepted'].includes(task.status) ? mapping?.reviewStateId : task.resumeNotice ? mapping?.activeStateId : mapping?.blockedStateId || mapping?.activeStateId,
+          issueId: task.issue.id, stateId: ['review', 'accepted'].includes(task.status) ? mapping?.reviewStateId : task.resumeNotice || task.status === 'running' ? mapping?.activeStateId : mapping?.blockedStateId || mapping?.activeStateId,
           body: reportBody(task, mapping, Object.values(this.env).filter(v => typeof v === 'string' && v.length > 12)),
           status: 'pending', tries: 0 });
         task.report = 'queued'; task.resumeNotice = false;
+      }
+      // Supersede obsolete retries immediately, not only when their backoff expires.
+      for (const item of state.outbox.filter(i => i.status === 'pending')) {
+        const task = state.tasks.find(t => t.id === item.taskId);
+        if (!task || task.reportVersion !== item.reportVersion || task.status !== item.taskStatus) item.status = 'superseded';
       }
     });
     const state = await this.store.load();
@@ -199,12 +219,14 @@ export class Runtime {
         await this.client(project.linear).report(item, project.linear);
         await this.dispatcher.update(s => {
           s.outbox.find(i => i.id === item.id).status = 'sent';
+          delete s.outbox.find(i => i.id === item.id).lastError;
           const task = s.tasks.find(t => t.id === item.taskId);
           if (task.reportVersion === item.reportVersion && task.status === item.taskStatus) task.report = 'sent';
         });
       } catch {
         await this.dispatcher.update(s => {
           const entry = s.outbox.find(i => i.id === item.id); entry.tries++;
+          entry.lastError = 'Linear request failed; retrying without reexecution';
           entry.nextAt = Date.now() + Math.min(300000, 5000 * 2 ** Math.min(entry.tries, 6));
         });
       }
@@ -212,10 +234,19 @@ export class Runtime {
   }
   async assess() {
     await this.dispatcher.update(state => {
-      for (const task of state.tasks.filter(t => t.status === 'review' && !t.assessed && t.owner !== 'human')) {
+      for (const task of state.tasks.filter(t => (t.status === 'review' && !t.assessed || t.status === 'needs_result') && t.owner !== 'human')) {
+        if (task.status === 'needs_result') {
+          const stored = parseOutcome(task.summary), attempt = task.attempts.at(-1);
+          const [source] = JSON.parse(task.key);
+          if (!task.resultContract || !stored || stored.status === 'continue' || task.pendingStop ||
+              !attempt?.accepted || attempt.status !== 'review' ||
+              state.tasks.some(t => t.key === JSON.stringify([source, `continue:${task.id}`]))) continue;
+          task.events.push({ action: 'reassess-result', at: new Date().toISOString() });
+        }
         // Legacy results are never silently replayed or treated as verified completion.
         if (!task.resultContract) { task.status = 'needs_result'; task.assessed = true; continue; }
-        const outcome = parseOutcome(task.summary);
+        const { outcome, error } = inspectOutcome(task.summary);
+        if (error) task.resultError = error; else delete task.resultError;
         task.outcome = outcome; task.assessed = true;
         task.report = 'pending'; task.resumeNotice = false;
         const attempt = task.attempts.at(-1);
@@ -241,7 +272,7 @@ export class Runtime {
           task.session = { executor: attempt.executor, id: attempt.sessionId };
           task.executors = [attempt.executor]; task.attempts = [];
           const project = state.settings.projects.find(p => p.id === task.projectId);
-          const followup = outcome ? `Continue this authorized next step: ${outcome.next}` : 'Result formatting repair only: do not execute tools or repeat work. Classify your previous result using the required contract. If authorized local work remains, return continue with that next step.';
+          const followup = outcome ? `Continue this authorized next step: ${outcome.next}` : `Result formatting repair only: do not execute tools or repeat work. Classify your previous result using the required contract. Validation error: ${error}. If authorized local work remains, return continue with that next step.`;
           task.prompt = `${task.basePrompt}\n\nPrevious round (evidence only):\n${task.summary}\n\n${followup}\nPreserve completed work. Do not bypass approvals or expand scope.\nLocal project restrictions:\n${project?.executionInstructions || 'Follow repository rules.'}\n${outcomeProtocol}`;
           if (outcome) { task.autoRounds = (task.autoRounds || 0) + 1; task.lastProgress = outcome.progress; task.formatRepair = false; }
           task.summary = ''; task.outcome = null; task.assessed = false; task.status = 'queued';
@@ -251,31 +282,49 @@ export class Runtime {
     });
   }
   async monitor() {
+    // Local deadlines cannot depend on a successful network read.
+    await this.dispatcher.update(state => {
+      for (const task of state.tasks) if (task.status === 'blocked' && task.owner !== 'human' &&
+          task.wait?.status === 'watching' && task.wait.expiresAt && Date.now() >= Date.parse(task.wait.expiresAt)) {
+        task.wait.status = 'expired'; task.wait.expiredAt = new Date().toISOString(); task.report = 'pending';
+        task.events.push({ action: 'window-expired', at: task.wait.expiredAt });
+      }
+    });
     const snapshot = await this.store.load();
-    for (const old of snapshot.tasks.filter(t => t.status === 'blocked' && t.owner !== 'human' && t.wait?.status === 'watching')) {
+    for (const old of snapshot.tasks.filter(t => t.status === 'blocked' && t.owner !== 'human' && ['watching', 'expired'].includes(t.wait?.status))) {
       const [source] = JSON.parse(old.key);
       if (snapshot.tasks.some(t => t.key === JSON.stringify([source, `continue:${old.id}`]))) continue;
       const project = snapshot.settings.projects.find(p => p.id === old.projectId);
       if (!project?.followup?.enabled || snapshot.paused) continue;
+      const observing = old.wait.status === 'expired';
+      if (observing && (!project.followup.observeAfterExpiry || !project.linear?.enabled || !old.issue?.id || !project.followup.commentAuthorIds.length)) continue;
       if (snapshot.tasks.some(t => t.owner === 'human' && t.cwd === old.cwd)) continue;
       try {
         if (!isDeepStrictEqual(project, old.waitProject)) throw new Error('Local project configuration changed; explicitly rearm this wait');
         if (old.wait.kind === 'linear' && (!project.linear?.enabled || !project.followup.commentAuthorIds.length || !old.issue?.id))
           throw new Error('Configure Linear and trusted comment authors before monitoring');
-        if (old.wait.kind === 'time' && old.issue?.id) {
+        if (!observing && old.wait.kind === 'time' && old.issue?.id) {
           if (!project.linear?.enabled) throw new Error('Enable Linear before resuming an issue timer');
           await this.client(project.linear).eligible(project.linear, old.issue.id);
         }
-        const activity = old.wait.kind === 'linear' ? await this.client(project.linear).activity(project.linear, old.wait.issueId, old.issue.id) : null;
-        const event = wakeEvent(old.wait, activity, { ...project.followup, assigneeId: project.linear?.assigneeId }, Date.now(), snapshot.outbox.map(i => i.id));
+        const activity = old.wait.kind === 'linear' || observing ? await this.client(project.linear).activity(project.linear, old.wait.issueId, old.issue.id) : null;
+        const event = wakeEvent(observing ? { ...old.wait, kind: 'linear', notBefore: undefined, expiresAt: undefined,
+          seen: [...(old.wait.seen || []), ...(old.wait.observedRevisions || [])] } : old.wait,
+          activity, { ...project.followup, assigneeId: project.linear?.assigneeId }, Date.now(), snapshot.outbox.map(i => i.id));
         await this.dispatcher.update(state => {
           const task = state.tasks.find(t => t.id === old.id);
-          if (!task || task.status !== 'blocked' || task.owner === 'human' || task.wait?.id !== old.wait.id || task.wait.status !== 'watching') return;
+          if (!task || task.status !== 'blocked' || task.owner === 'human' || task.wait?.id !== old.wait.id || task.wait.status !== old.wait.status) return;
           if (state.paused || state.tasks.some(t => t.owner === 'human' && t.cwd === task.cwd) ||
             state.tasks.some(t => t.key === JSON.stringify([source, `continue:${old.id}`])) ||
             !isDeepStrictEqual(project, state.settings.projects.find(p => p.id === task.projectId))) return;
           task.wait.lastCheckedAt = new Date().toISOString(); delete task.wait.error;
+          delete task.wait.errorSince;
           if (!event) return;
+          if (observing) {
+            task.wait.observedRevisions = [...new Set([...(task.wait.observedRevisions || []), ...(event.seen || [])])];
+            task.wait.pendingUpdate = { key: event.key, receivedAt: task.wait.lastCheckedAt };
+            task.report = 'pending'; return; // Keep the expired execution gate; a reply cannot extend it.
+          }
           if (event.expired) { task.wait.status = 'expired'; task.report = 'pending'; return; }
           const attempt = task.attempts.at(-1);
           if (!state.settings.executors.find(e => e.id === attempt?.executor)?.enabled) {
@@ -303,9 +352,10 @@ export class Runtime {
         });
       } catch (error) {
         await this.dispatcher.update(state => { const task = state.tasks.find(t => t.id === old.id);
-          if (task?.wait?.id === old.wait.id && task.wait.status === 'watching') {
+          if (task?.wait?.id === old.wait.id && task.wait.status === old.wait.status) {
             task.wait.lastCheckedAt = new Date().toISOString();
             task.wait.error = String(error.message).slice(0, 300);
+            task.wait.errorSince ||= task.wait.lastCheckedAt;
           }
         });
       }

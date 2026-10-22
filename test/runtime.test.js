@@ -178,3 +178,45 @@ test('delayed stop receipt completes pending takeover across restart without rel
  await next.dispatcher.reconcile();assert.equal((await next.snapshot()).tasks[0].owner,'scheduler');
  stopped=true;await next.dispatcher.reconcile();const task=(await next.snapshot()).tasks[0];assert.equal(task.status,'manual');assert.equal(task.owner,'human');assert.equal(task.pendingStop,undefined);
 });
+
+test('disabled queued executor is skipped before start; disabling a running executor does not lose its receipt', async () => {
+ const runtime = await fixture(); let first = 0, second = 0;
+ runtime.adapters.codex = { start: async () => { first++; return { status: 'running' }; } };
+ runtime.adapters.dsh = { start: async () => { second++; return { status: 'running' }; }, reconcile: async () => ({ status: 'review', summary: result('complete') }) };
+ await runtime.submit({ projectId: 'p', prompt: 'Synthetic task' });
+ await runtime.dispatcher.update(s => { s.paused = false; s.settings.executors.find(e => e.id === 'codex').enabled = false; });
+ await runtime.dispatcher.tick(); assert.equal(first, 0); assert.equal(second, 1);
+ await runtime.dispatcher.update(s => { s.settings.executors.find(e => e.id === 'dsh').enabled = false; });
+ await runtime.dispatcher.reconcile(); await runtime.assess();
+ assert.equal((await runtime.snapshot()).tasks[0].status, 'review');
+});
+
+test('long adapter result is classified without an unnecessary replay or formatting round', async () => {
+ const runtime = await fixture(); let starts = 0;
+ runtime.adapters.codex = { start: async () => { starts++; return { status: 'review', sessionId: 'same', summary: 'details '.repeat(5000) + result('blocked') }; } };
+ await runtime.submit({ projectId: 'p', prompt: 'Synthetic' }); await runtime.command({ action: 'resume' });
+ await runtime.dispatcher.tick(); await runtime.assess(); await runtime.dispatcher.tick();
+ assert.equal(starts, 1); assert.equal((await runtime.snapshot()).tasks[0].status, 'blocked');
+});
+
+test('stored classifiable result self-recovers on a normal cycle without any new execution', async () => {
+ const runtime = await fixture(); let starts = 0;
+ runtime.adapters.codex = { start: async () => { starts++; return { status: 'review', sessionId: 'same', summary: result('blocked') }; } };
+ await runtime.submit({ projectId: 'p', prompt: 'Synthetic' }); await runtime.command({ action: 'resume' }); await runtime.dispatcher.tick();
+ await runtime.dispatcher.update(s => { s.tasks[0].status = 'needs_result'; s.tasks[0].assessed = true; });
+ await runtime.assess(); await runtime.assess();
+ assert.equal(starts, 1); const task=(await runtime.snapshot()).tasks[0]; assert.equal(task.status, 'blocked');
+ assert.equal(task.events.filter(e=>e.action==='reassess-result').length,1);
+});
+
+test('execution failure reports once; repeated report transport failures are visible and never restart work', async () => {
+ let starts=0, sends=0, offline=true;
+ const runtime=await fixture({env:{TEST_TOKEN:'synthetic'},linearFactory:()=>({eligible:async()=>({}),report:async()=>{sends++;if(offline)throw new Error('network');}})});
+ await runtime.dispatcher.update(s=>{s.paused=false;s.settings.projects[0].linear={enabled:true,tokenEnv:'TEST_TOKEN',activeStateId:'active'};});
+ runtime.adapters.codex={start:async()=>{starts++;return {status:'failed',sessionId:'original'};}};
+ await runtime.submit({projectId:'p',prompt:'Example',issue:{id:'issue'}});await runtime.dispatcher.tick();await runtime.report();
+ for(let i=0;i<2;i++){await runtime.dispatcher.update(s=>{s.outbox[0].nextAt=0;});await runtime.report();}
+ let s=await runtime.snapshot();assert.equal(s.outbox.length,1);assert.equal(s.outbox[0].tries,3);assert.match(s.errors.join(''),/3 次/);
+ offline=false;await runtime.dispatcher.update(s=>{s.outbox[0].nextAt=0;});await runtime.report();await runtime.report();await runtime.dispatcher.tick();
+ s=await runtime.snapshot();assert.equal(s.tasks[0].report,'sent');assert.equal(s.errors.length,0);assert.equal(starts,1);assert.equal(sends,4);
+});

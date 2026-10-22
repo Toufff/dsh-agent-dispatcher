@@ -12,6 +12,7 @@ export const projectSchema = z.object({
   id, label: id, cwd: z.string().refine(path.isAbsolute, 'Use an absolute local directory'),
   executionInstructions: z.string().max(6000).optional(),
   followup: z.object({ enabled: z.boolean(), commentAuthorIds: z.array(id).max(30),
+    observeAfterExpiry: z.boolean().optional(),
     maxWakeups: z.number().int().min(1).max(50).default(8) }).strict().optional(),
   linear: z.object({ workspaceId: id, projectId: id, assigneeId: id, readyStateId: id,
     reviewStateId: id, activeStateId: id.optional(), blockedStateId: id.optional(), tokenEnv: z.string().regex(/^[A-Z][A-Z0-9_]+$/),

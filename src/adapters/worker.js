@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { receiptWriter } from './receipt-writer.js';
+import { captureResultText } from '../result-text.js';
 import { access } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -56,7 +57,7 @@ process.on('message', async input => {
             const result = await codexCompletion(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), receipt.sessionId, startedAt, sessionFile);
             sessionFile = result.file;
             if (result.completion && !closed) {
-              if (typeof result.completion.summary === 'string') receipt.summary = result.completion.summary.slice(-12000);
+              if (typeof result.completion.summary === 'string') receipt.summary = captureResultText(result.completion.summary);
               finish(input, 'session-task-complete');
             }
           } catch {} finally { observing = false; }
@@ -76,16 +77,16 @@ process.on('message', async input => {
     child.stderr.resume();
     const lines = createInterface({ input: child.stdout });
     lines.on('line', line => {
-      if (line.length > 200000) return;
+      if (line.length > 2000000) { receipt.reason = 'CLI event exceeded the bounded decoder limit'; return; }
       let event; try { event = JSON.parse(line); } catch { return; }
       if (event.type === 'thread.started') receipt.sessionId = event.thread_id;
       if (event.type === 'system' && event.session_id) receipt.sessionId = event.session_id;
-      if (event.type === 'item.completed' && event.item?.type === 'agent_message') receipt.summary = event.item.text?.slice(-12000) || '';
+      if (event.type === 'item.completed' && event.item?.type === 'agent_message') receipt.summary = captureResultText(event.item.text);
       if (event.type === 'turn.completed') finish(input, 'cli-turn-completed');
       if (event.type === 'turn.failed' || event.type === 'error') receipt.reason = 'Agent reported an error';
       if (event.type === 'result') {
         if (!event.is_error) finish(input, 'cli-result');
-        receipt.summary = String(event.result ?? '').slice(-12000);
+        receipt.summary = captureResultText(event.result);
         if (event.is_error) receipt.reason = 'Agent reported an error';
       }
       save().catch(() => {});

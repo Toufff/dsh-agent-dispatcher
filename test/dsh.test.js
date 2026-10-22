@@ -36,3 +36,16 @@ test('DSH missing admission evidence stays unknown even if another turn complete
   } });
   assert.equal((await adapter.reconcile({ attempt: { id: 'absent', sessionId: 'session' } })).status, 'unknown');
 });
+
+test('DSH receipt uses its first completed turn, not a later unrelated session result', async () => {
+ const events=[
+  {type:'agent/inbox/spliced',data:{inserted:[{source:{rpcId:'attempt'}}]}},
+  {type:'assistant/message',data:{content:[{type:'text',text:'Owned result'}]}},
+  {type:'turn/end',data:{reason:{kind:'completed'}}},
+  {type:'assistant/message',data:{content:[{type:'text',text:'Unrelated result'}]}},
+  {type:'turn/end',data:{reason:{kind:'failed'}}}
+ ];
+ const adapter=new DshAdapter({agents:{get:()=>undefined},sessionController:{inspect:async()=>({events})}});
+ const result=await adapter.reconcile({attempt:{id:'attempt',sessionId:'session'}});
+ assert.equal(result.status,'review');assert.equal(result.summary,'Owned result');
+});

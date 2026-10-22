@@ -24,20 +24,31 @@ For blocked results you MAY add "wait":{"kind":"linear|time","condition":"what m
 You MAY add "publicSummary" containing a concise shareable business update: completed work, actual validation, remaining work, responsible party, and exact resumption condition/time with timezone. Exclude local paths, credentials, transcripts and private identifiers. Only locally opted-in projects publish this field. Never claim a proposal, simulated test or process exit is production acceptance.
 `;
 
-export function parseOutcome(summary) {
+export function inspectOutcome(summary) {
+  const invalid = error => ({ outcome: null, error });
   const matches = [...(summary || '').matchAll(/<dispatch-result>([\s\S]*?)<\/dispatch-result>/g)];
-  if (matches.length !== 1 || summary.slice(matches[0].index + matches[0][0].length).trim()) return null;
+  if (matches.length !== 1) return invalid('Return exactly one dispatch-result block.');
+  if (summary.slice(matches[0].index + matches[0][0].length).trim()) return invalid('The dispatch-result block must be the last content.');
   let result;
-  try { result = schema.parse(JSON.parse(matches[0][1])); } catch { return null; }
-  if (result.wait && result.status !== 'blocked') return null;
-  if (result.status === 'complete' && (!result.evidence.length || result.remaining.length || result.blockers.length || result.next.trim())) return null;
-  if (result.status === 'continue' && (!result.next.trim() || !result.remaining.length)) return null;
+  try { result = JSON.parse(matches[0][1]); } catch { return invalid('The dispatch-result block must contain valid JSON.'); }
+  const parsed = schema.safeParse(result);
+  // Field paths and validator codes only: never echo private field values into diagnostic reports.
+  if (!parsed.success) return invalid(parsed.error.issues.slice(0, 6).map(i => `${i.path.join('.') || 'result'}: ${i.code}`).join('; '));
+  result = parsed.data;
+  if (result.wait && result.status !== 'blocked') return invalid('Only blocked results may include wait.');
+  if (result.status === 'complete' && (!result.evidence.length || result.remaining.length || result.blockers.length || result.next.trim())) return invalid('Complete requires evidence and empty remaining, blockers and next.');
+  if (result.status === 'continue' && (!result.next.trim() || !result.remaining.length)) return invalid('Continue requires remaining work and a concrete next step.');
   // A blocked next step describes what follows the dependency; it is not a command to execute.
-  if (['blocked', 'decision'].includes(result.status) && (!result.blockers.length || !result.remaining.length)) return null;
-  return result;
+  if (['blocked', 'decision'].includes(result.status) && (!result.blockers.length || !result.remaining.length)) return invalid('Blocked/decision requires remaining work and named blockers.');
+  return { outcome: result, error: null };
 }
+export const parseOutcome = summary => inspectOutcome(summary).outcome;
 
 export const outcomeReports = {
+  running: '本地 agent 已实际启动，正在处理；尚未完成。',
+  failed: '本轮执行失败，已保留原会话与现场；不会换执行器重跑。接收方需核对执行回执后恢复。',
+  exhausted: '本机执行器均明确未能启动，任务未执行；接收方需恢复可用执行器。',
+  unknown: '本地执行回执持续不明确，正在自动核对；为防止重复操作，暂不启动另一执行器。',
   accepted: '接收方已在本地确认验收；Linear 的最终 Done 状态仍由人工管理。',
   review: '本地 agent 报告需求已完成并提供验证证据，等待人工验收；尚未标记 Done。',
   blocked: '本地执行存在外部依赖，当前无可继续的本地步骤；等待依赖满足后续办。尚未完成，不需要验收。',

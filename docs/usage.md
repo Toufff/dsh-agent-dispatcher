@@ -45,7 +45,7 @@ Intake polls every 30 seconds while the host runs; **检查 Linear** performs an
 
 Deduplication uses workspace + issue + explicit `round`, never `updatedAt`. Returning an issue to the ready state does not automatically run the same round again. Use local retry, or deliberately advance the round for a new dispatch cycle. Changing a project's round affects every eligible issue in that project.
 
-Successful execution queues a fixed, privacy-preserving completion comment and moves the issue to the configured review state. Raw output, local paths, session IDs and executor names are not sent. Review results locally or publish a separately reviewed PR/report. This conservative first version does not automatically publish a detailed agent summary. Outbox retries retain a client-generated comment ID and do not rerun coding. Completed/canceled issues are not moved backward. **本地确认验收** records local acceptance; mark the issue Done in Linear when appropriate.
+Classified completion queues a privacy-preserving comment and moves the issue to the configured review state. Starts and execution failures also receive deduplicated status updates. Raw output, local paths, session IDs and executor names are not sent. Opt-in `shareProgress` can publish an explicit shareable business summary. Outbox retries retain a client-generated comment ID and do not rerun coding. Completed/canceled issues are not moved backward. **本地确认验收** records local acceptance; mark the issue Done in Linear when appropriate.
 
 ## Sessions and intervention
 
@@ -73,7 +73,7 @@ Recovery refuses removal while the recorded PID is alive. It never restarts task
 
 ## Validation
 
-Each successful execution is classified before reporting: **完成待验收**, **等待外部条件**, **需要决策或授权**, **续办已暂停：进展或次数限制**, or **结果待分类**. Useful authorized local work continues automatically in the original session, up to three work continuations. A missing result contract receives one formatting-only repair. History is preserved. These limits are fixed in this version. Pausing prevents any new automatic turn.
+Each successful execution is classified before reporting: **完成待验收**, **等待外部条件**, **需要决策或授权**, **续办已暂停：进展或次数限制**, or **结果待分类**. Useful authorized local work continues automatically in the original session, up to three work continuations. A missing result contract receives one formatting-only repair per work round with specific validation diagnostics. A stored result that becomes valid after a parser update can recover without rerunning the agent (only non-executing outcomes). History is preserved. These limits are fixed in this version. Pausing prevents any new automatic turn.
 
 Set optional project `executionInstructions` for local restrictions that must survive continuation, such as offline-only validation during trading hours. These are prompt restrictions, not an OS sandbox or a trading-calendar service; they persist until locally changed. Set optional Linear `activeStateId` and/or `blockedStateId` to keep unfinished issues out of review. Without either mapping, unfinished results add a status comment without changing the issue state.
 
@@ -82,6 +82,10 @@ To enable external-condition monitoring, add `followup: {"enabled": true, "comme
 Set `linear.shareProgress: true` only when you want the agent's explicit `publicSummary` and safe wait condition shared with collaborators. Include completed work, next responsible party, required receipt and exact times in that summary; never put credentials or local paths there. The plugin has a conservative disclosure guard but no comprehensive DLP. Full transcripts remain local. See architecture.md for deduplication, ownership and reporting limitations.
 
 For maintenance startup, `DISPATCH_START_PAUSED=1` persists a paused queue before the host begins cycling. The panel can explicitly resume after configuration is verified.
+
+Set `followup.observeAfterExpiry: true` to keep receiving trusted replies after an execution window expires. The panel and Linear will show a pending reply, but no agent is started and the old window stays expired. Confirm the new timing locally and use **设置恢复条件**. When updating the same watched issue/type during maintenance, check **保留原监听起点** to retain replies received in the meantime; leaving it unchecked ignores older comments. Both modes preserve the consumed execution cursor and prior wait history.
+
+Repeated Linear write failures show an automatic retry count in the panel. Restoring connectivity retries reporting only; it never reruns the coding task. An obsolete report is superseded as soon as a newer task state exists. Sustained unknown execution is reported but never automatically replayed; verify the original session/receipt before intervention.
 
 Completed tasks offer **继续处理未完成事项**. This creates a distinct continuation with the previous result and the original issue link, preserving the old task. Repeated requests on the same parent deduplicate to one continuation. Its registered session is reused when the same executor is selected by the current local priority. A continuation is not permission to repeat completed work or override project approval rules.
 

@@ -16,6 +16,7 @@ export function reportBody(task, mapping, secrets) {
     if (shareable(wait.condition, secrets) && mapping?.shareProgress) body += `\n需核对：${wait.condition}`;
     if (wait.notBefore) body += `\n最早核对时间：${wait.notBefore}`;
     if (wait.expiresAt) body += `\n窗口截止：${wait.expiresAt}（过期不执行）`;
+    if (wait.pendingUpdate) body += '\n窗口过期后已收到新的协作者回复，已保留记录；接收方需确认新的有效窗口，未启动执行。';
   }
   return body;
 }

@@ -11,6 +11,7 @@ export function Panel({ api }) {
   const [newTask, setTask] = useState({ projectId: '', title: '', prompt: '' });
   const [confirmedIdle, setConfirmedIdle] = useState(false);
   const [waitDraft, setWaitDraft] = useState(''), [waitTask, setWaitTask] = useState(null);
+  const [preserveCursor, setPreserveCursor] = useState(false);
   useEffect(() => { let live = true; const refresh = () => api.snapshot().then(v => { if (live) setData(v); }).catch(e => { if (live) setError(e.message); });
     refresh(); const timer = setInterval(refresh, 2500); return () => { live = false; clearInterval(timer); }; }, [api]);
   async function run(request) { setBusy(true); setError(''); try { setData(await api.command(request)); return true; }
@@ -54,7 +55,8 @@ export function Panel({ api }) {
         <h3>执行记录</h3>{!task.attempts.length && <p className="muted">尚未派发。</p>}{task.attempts.map(a => <div className="attempt" key={a.id}><strong className="agent-name"><AgentIcon type={data.settings.executors.find(e => e.id === a.executor)?.type}/>{agentLabel(data.settings.executors.find(e => e.id === a.executor)) || a.executor}</strong><span className={`status ${a.status}`}>{a.status === 'review' ? '本轮执行结束' : labels[a.status] || a.status}</span>{a.reason && <p>{a.reason}</p>}{a.sessionId && <><code>{a.sessionId}</code>{data.settings.executors.find(e => e.id === a.executor)?.type === 'dsh' ? <button onClick={() => api.openSession(a.sessionId)}>打开 DSH 会话</button> : <p className="muted">在对应工具中使用此会话 ID 恢复；查看会话不自动接管。</p>}</>}</div>)}
         <h3>结果与下一步</h3><p>{labels[task.status]} · 已自动续办 {task.autoRounds || 0}/3 轮 · 条件变化唤醒 {task.wakeups || 0} 次</p>
         {task.admissionError && <p role="alert">{task.admissionError}</p>}
-        {waitTask === task.id && <form onSubmit={async e => { e.preventDefault(); try { if (await run({ action: 'arm-wait', id: task.id, wait: JSON.parse(waitDraft) })) setWaitTask(null); } catch { setError('恢复条件 JSON 格式有误。'); } }}>
+        {waitTask === task.id && <form onSubmit={async e => { e.preventDefault(); try { if (await run({ action: 'arm-wait', id: task.id, wait: JSON.parse(waitDraft), preserveCursor })) { setWaitTask(null); setPreserveCursor(false); } } catch { setError('恢复条件 JSON 格式有误。'); } }}>
+          <label><input type="checkbox" checked={preserveCursor} onChange={e => setPreserveCursor(e.target.checked)}/>保留原监听起点，核对期间收到的回复（仅同一事项和等待类型）</label>
           <label>恢复条件 JSON<textarea required rows={8} value={waitDraft} onChange={e => setWaitDraft(e.target.value)}/></label>
           <p>只监听保存后的新回复；kind 为 linear 或 time。time 必须提供带时区的 notBefore，有结束时间时填写 expiresAt。保存不会立即重跑任务，也不会授权额外操作。</p>
           <button disabled={busy}>保存恢复条件</button><button type="button" onClick={() => setWaitTask(null)}>取消</button></form>}
@@ -65,8 +67,10 @@ export function Panel({ api }) {
           {task.wait.expiresAt && <p>窗口截止：<time>{task.wait.expiresAt}</time>（过期不执行）</p>}
           {task.wait.lastCheckedAt && <p>上次检查：{new Date(task.wait.lastCheckedAt).toLocaleString()}</p>}
           {task.wait.error && <p role="alert">监听失败：{task.wait.error}。恢复条件未被确认。</p>}
+          {task.wait.pendingUpdate && <p role="status">窗口过期后收到新回复（{new Date(task.wait.pendingUpdate.receivedAt).toLocaleString()}），已保留；确认新窗口后才能执行。</p>}
           <p className="muted">评论和时间只触发重新核对，不代表授权；原会话和本地限制保持不变。</p></section>}
         {task.outcome?.blockers?.map((b, i) => <p key={i}><strong>{b.owner}</strong>：{b.reason}<br/>恢复条件：{b.resumeWhen}</p>)}
+        {task.resultError && <p role="alert">结果校验：{task.resultError}。格式修复只整理已有证据，不应重复执行工作。</p>}
         {task.status === 'stalled' && <p>已停止重复尝试。请查看本轮结果和历史证据，确定新方案后再续办，无需验收。</p>}
         <pre>{task.summary || '等待 agent 返回执行结果。'}</pre><p className="muted">Linear 回写：{task.issue ? ({ pending: '待生成', queued: '等待发送或重试', sent: '已发送' })[task.report] : '本地任务，无需回写'}。启用 shareProgress 后同步可分享摘要；完整执行记录保留在本机。</p>
         {!!task.rounds?.length && <details><summary>自动续办的历史结果</summary>{task.rounds.map((r, i) => <pre key={i}>{r.summary}</pre>)}</details>}
