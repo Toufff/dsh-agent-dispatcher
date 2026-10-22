@@ -20,6 +20,8 @@
 
 ## Explicit limits
 
+Result recovery update (2026-10-22, `0147262`): all **72 tests passed locally**; [Windows and Ubuntu CI](https://github.com/Toufff/dsh-agent-dispatcher/actions/runs/39785943276) passed tests, check and build. Regression cases cover conditional blocked next steps, expiry-only Linear waits, bounded per-work-round formatting repair, restart-safe stored-result reassessment, and rejection of human-owned/superseded/executing continuations. A real previously rejected result was reparsed in the authenticated native panel: its original summary/session/attempt were unchanged, the task returned to blocked/watching, a fresh monitoring check was recorded, and the Linear outbox confirmed sent. Browser page errors: zero. No business operation was replayed. Host startup was slow under local load; this patch does not claim to fix machine or production health. Production migration/release acceptance remains outstanding.
+
 Completion cleanup regression: real child-process fixtures cover a successful terminal event followed by a lingering process, and a matching Codex session completion without a terminal stdout event. Both require process exit before review. Old completion records, newer unfinished/aborted turns and FIFO exclusion during cleanup have regression coverage.
 
 Receipt recovery regression: injected transient and exhausted write failures now leave later completion writes usable, with bounded retries and error-code-only local diagnostics. Stale heartbeats are detected even when an adapter retains the worker reference. A real Codex marker task passed after the fix. An affected completed session was recovered from its matching original completion record without starting the task again.
