@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-const terminal = new Set(['review', 'failed', 'exhausted', 'stopped', 'accepted']);
+export const terminal = new Set(['review', 'failed', 'exhausted', 'stopped', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result']);
 async function bounded(operation, ms = 15000) {
   let timer;
   try { return await Promise.race([Promise.resolve().then(operation), new Promise(resolve => {
@@ -23,7 +23,7 @@ export class Dispatcher {
     return result;
   }
 
-  enqueue({ source, round, cwd, prompt, executors, title = source, projectId, issue, session }) {
+  enqueue({ source, round, cwd, prompt, executors, title = source, projectId, issue, session, resultContract = false, basePrompt }) {
     return this.#exclusive(async () => {
       if (!source || !round || !cwd || !prompt || !executors?.length)
         throw new Error('source, explicit round, local cwd, prompt and executors required');
@@ -34,7 +34,8 @@ export class Dispatcher {
       const existing = state.tasks.find(t => t.key === key);
       if (existing) return existing.id;
       const task = { id: this.id(), key, cwd, prompt, title, executors: [...executors],
-        status: 'queued', attempts: [], report: 'pending', owner: 'scheduler', events: [],
+        status: 'queued', attempts: [], report: 'pending', owner: 'scheduler', events: [], resultContract,
+        ...(basePrompt ? { basePrompt } : {}),
         createdAt: new Date().toISOString(), ...(projectId ? { projectId } : {}),
         ...(issue ? { issue } : {}), ...(session ? { session } : {}) };
       state.tasks.push(task);
@@ -159,9 +160,10 @@ export class Dispatcher {
           task.session = { executor: attempt.executor, id: attempt.sessionId };
           task.executors = [attempt.executor];
         }
-        task.attempts = []; task.status = 'queued'; task.report = 'pending';
+        task.attempts = []; task.status = 'queued'; task.report = 'pending'; task.assessed = false; task.outcome = null;
       } else if (action === 'accept') {
         if (task.status !== 'review') throw new Error('Task is not ready for review');
+        if (!task.resultContract || task.outcome?.status !== 'complete') throw new Error('Completion evidence has not been classified');
         task.status = 'accepted';
       } else throw new Error('Unsupported task action');
       task.events.push({ action, at: new Date().toISOString() });

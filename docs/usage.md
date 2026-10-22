@@ -73,6 +73,12 @@ Recovery refuses removal while the recorded PID is alive. It never restarts task
 
 ## Validation
 
+Each successful execution is classified before reporting: **完成待验收**, **等待外部条件**, **需要决策或授权**, **续办已暂停：进展或次数限制**, or **结果待分类**. Useful authorized local work continues automatically in the original session, up to three work continuations. A missing result contract receives one formatting-only repair. History is preserved. These limits are fixed in this version. Pausing prevents any new automatic turn.
+
+Set optional project `executionInstructions` for local restrictions that must survive continuation, such as offline-only validation during trading hours. These are prompt restrictions, not an OS sandbox or a trading-calendar service; they persist until locally changed. Set optional Linear `activeStateId` and/or `blockedStateId` to keep unfinished issues out of review. Without either mapping, unfinished results add a fixed status comment without changing the issue state. Detailed outputs, blocker owners and resumption conditions remain local; they are not automatically sent to collaborators. External-condition monitoring is not yet implemented.
+
+For maintenance startup, `DISPATCH_START_PAUSED=1` persists a paused queue before the host begins cycling. The panel can explicitly resume after configuration is verified.
+
 Completed tasks offer **继续处理未完成事项**. This creates a distinct continuation with the previous result and the original issue link, preserving the old task. Repeated requests on the same parent deduplicate to one continuation. Its registered session is reused when the same executor is selected by the current local priority. A continuation is not permission to repeat completed work or override project approval rules.
 
 `npm test`, `npm run check`, and `npm run build` require no agent login. `node scripts/live-smoke.js codex` makes one real subscribed-agent request. Substitute `claude` only when you intend live Claude validation. `scripts/browser-smoke.js` requires an already running isolated DSH host and `DSH_TEST_URL`; it checks the real remote transport and priority save roundtrip using Edge by default. Set `PLAYWRIGHT_CHANNEL` for another installed compatible browser. Keep authentication-bearing URLs out of issues and commits.

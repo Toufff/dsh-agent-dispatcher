@@ -10,8 +10,9 @@ export const executorSchema = z.object({
 }).strict();
 export const projectSchema = z.object({
   id, label: id, cwd: z.string().refine(path.isAbsolute, 'Use an absolute local directory'),
+  executionInstructions: z.string().max(6000).optional(),
   linear: z.object({ workspaceId: id, projectId: id, assigneeId: id, readyStateId: id,
-    reviewStateId: id, tokenEnv: z.string().regex(/^[A-Z][A-Z0-9_]+$/),
+    reviewStateId: id, activeStateId: id.optional(), blockedStateId: id.optional(), tokenEnv: z.string().regex(/^[A-Z][A-Z0-9_]+$/),
     enabled: z.boolean().default(false), since: z.string().datetime(),
     round: id.default('1') }).strict().optional()
 }).strict();

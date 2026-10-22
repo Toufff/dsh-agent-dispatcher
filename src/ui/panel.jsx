@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { AgentIcon } from './agent-icon.jsx';
-const labels = { queued: '排队中', starting: '正在启动', running: '执行中', finishing: '执行完成，正在清理进程', waiting: '等待输入', busy: '会话忙碌', unknown: '状态待核对', review: '待验收', failed: '执行失败', exhausted: '无可用执行器', stopped: '已停止', stopping: '正在停止', manual: '人工接管', accepted: '已验收' };
+const labels = { queued: '排队中', starting: '正在启动', running: '执行中', finishing: '执行完成，正在清理进程', waiting: '等待输入', busy: '会话忙碌', unknown: '状态待核对', review: '完成待验收', blocked: '等待外部条件', decision: '需要决策或授权', stalled: '续办已暂停：进展或次数限制', needs_result: '结果待分类', failed: '执行失败', exhausted: '无可用执行器', stopped: '已停止', stopping: '正在停止', manual: '人工接管', accepted: '已验收', 'auto-continue': '自动继续未完成事项', 'repair-result': '自动补全结果分类' };
 const agentLabel = executor => executor?.type === 'codex' && executor.label === 'Codex' ? 'ChatGPT' : executor?.label;
-const terminal = ['failed', 'exhausted', 'stopped', 'review', 'accepted'];
+const terminal = ['failed', 'exhausted', 'stopped', 'review', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result'];
 export function Panel({ api }) {
   const [data, setData] = useState(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState(null), [revision, setRevision] = useState(0), [selected, select] = useState(null);
@@ -44,12 +44,16 @@ export function Panel({ api }) {
         <button disabled={busy || task.owner === 'human'} onClick={() => run({ action: 'takeover', id: task.id })}>人工接管</button>
         {task.owner === 'human' && <><label><input type="checkbox" checked={confirmedIdle} onChange={e => setConfirmedIdle(e.target.checked)}/>我已结束人工会话，确认可继续派发</label><button disabled={busy || !confirmedIdle} onClick={async () => { if (await run({ action: 'return', id: task.id, confirmedIdle })) setConfirmedIdle(false); }}>归还控制</button></>}
         {['failed', 'exhausted', 'stopped'].includes(task.status) && <button disabled={busy} onClick={() => run({ action: 'retry', id: task.id })}>重试任务</button>}
-        {task.status === 'review' && <button className="primary" disabled={busy} onClick={() => run({ action: 'accept', id: task.id })}>本地确认验收</button>}
-        {['review', 'accepted'].includes(task.status) && <button disabled={busy || task.owner === 'human'} onClick={() => run({ action: 'continue', id: task.id })}>继续处理未完成事项</button>}
+        {task.status === 'review' && task.outcome?.status === 'complete' && <button className="primary" disabled={busy} onClick={() => run({ action: 'accept', id: task.id })}>本地确认验收</button>}
+        {['review', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result'].includes(task.status) && <button disabled={busy || task.owner === 'human'} onClick={() => run({ action: 'continue', id: task.id })}>继续处理未完成事项</button>}
         {task.issue?.url?.startsWith('https://linear.app/') && <a href={task.issue.url} target="_blank" rel="noreferrer">打开 Linear issue</a>}</div>
-        <h3>执行记录</h3>{!task.attempts.length && <p className="muted">尚未派发。</p>}{task.attempts.map(a => <div className="attempt" key={a.id}><strong className="agent-name"><AgentIcon type={data.settings.executors.find(e => e.id === a.executor)?.type}/>{agentLabel(data.settings.executors.find(e => e.id === a.executor)) || a.executor}</strong><span className={`status ${a.status}`}>{labels[a.status] || a.status}</span>{a.reason && <p>{a.reason}</p>}{a.sessionId && <><code>{a.sessionId}</code>{data.settings.executors.find(e => e.id === a.executor)?.type === 'dsh' ? <button onClick={() => api.openSession(a.sessionId)}>打开 DSH 会话</button> : <p className="muted">在对应工具中使用此会话 ID 恢复；查看会话不自动接管。</p>}</>}</div>)}
-        <h3>结果与验收</h3><pre>{task.summary || '等待 agent 返回执行结果。'}</pre><p className="muted">Linear 回写：{task.issue ? ({ pending: '待生成', queued: '等待发送或重试', sent: '已发送' })[task.report] : '本地任务，无需回写'}</p>
-        <details><summary>历史与操作记录</summary>{(task.previousAttempts || []).map(a => <p key={a.id}>{agentLabel(data.settings.executors.find(e => e.id === a.executor)) || a.executor} · {labels[a.status] || a.status} · {a.sessionId}</p>)}{task.events?.map((event, i) => <p key={i}><time>{new Date(event.at).toLocaleString()}</time> · {labels[event.action] || event.action}</p>)}</details></article>}
+        <h3>执行记录</h3>{!task.attempts.length && <p className="muted">尚未派发。</p>}{task.attempts.map(a => <div className="attempt" key={a.id}><strong className="agent-name"><AgentIcon type={data.settings.executors.find(e => e.id === a.executor)?.type}/>{agentLabel(data.settings.executors.find(e => e.id === a.executor)) || a.executor}</strong><span className={`status ${a.status}`}>{a.status === 'review' ? '本轮执行结束' : labels[a.status] || a.status}</span>{a.reason && <p>{a.reason}</p>}{a.sessionId && <><code>{a.sessionId}</code>{data.settings.executors.find(e => e.id === a.executor)?.type === 'dsh' ? <button onClick={() => api.openSession(a.sessionId)}>打开 DSH 会话</button> : <p className="muted">在对应工具中使用此会话 ID 恢复；查看会话不自动接管。</p>}</>}</div>)}
+        <h3>结果与下一步</h3><p>{labels[task.status]} · 已自动续办 {task.autoRounds || 0}/3 轮</p>
+        {task.outcome?.blockers?.map((b, i) => <p key={i}><strong>{b.owner}</strong>：{b.reason}<br/>恢复条件：{b.resumeWhen}</p>)}
+        {task.status === 'stalled' && <p>已停止重复尝试。请查看本轮结果和历史证据，确定新方案后再续办，无需验收。</p>}
+        <pre>{task.summary || '等待 agent 返回执行结果。'}</pre><p className="muted">Linear 回写：{task.issue ? ({ pending: '待生成', queued: '等待发送或重试', sent: '已发送' })[task.report] : '本地任务，无需回写'}。仅同步状态通知，详细证据和阻塞条件保留在本机。</p>
+        {!!task.rounds?.length && <details><summary>自动续办的历史结果</summary>{task.rounds.map((r, i) => <pre key={i}>{r.summary}</pre>)}</details>}
+        <details><summary>历史与操作记录</summary>{(task.previousAttempts || []).map(a => <p key={a.id}>{agentLabel(data.settings.executors.find(e => e.id === a.executor)) || a.executor} · {a.status === 'review' ? '本轮执行结束' : labels[a.status] || a.status} · {a.sessionId}</p>)}{task.events?.map((event, i) => <p key={i}><time>{new Date(event.at).toLocaleString()}</time> · {labels[event.action] || event.action}</p>)}</details></article>}
     </section></div>
     {showConfig && <section className="configuration"><h2>本机项目与连接配置</h2><p>填写本地目录、执行器命令和 Linear 标识。tokenEnv 只填写环境变量名，密钥不应填写在这里。</p>
       <details><summary>新增项目格式</summary><pre>{JSON.stringify({ id: 'my-project', label: '我的项目', cwd: '/absolute/project/path' }, null, 2)}</pre><p>可选 linear 字段：workspaceId、projectId、assigneeId、readyStateId、reviewStateId、tokenEnv、enabled、since（ISO 时间）、round。since 限制首次接单范围。</p></details>

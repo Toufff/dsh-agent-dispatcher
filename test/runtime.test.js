@@ -57,13 +57,79 @@ test('outbox retry does not reexecute coding; repeated intake is deduplicated', 
     state.paused = false;
     state.settings.projects[0].linear = { enabled: true, tokenEnv: 'TEST_TOKEN', workspaceId: 'w', round: '1', reviewStateId: 'review' };
   });
-  runtime.adapters.codex = { start: async () => { starts++; return { status: 'review' }; } };
-  await runtime.intake(); await runtime.intake(); await runtime.dispatcher.tick(); await runtime.report();
+  runtime.adapters.codex = { start: async () => { starts++; return { status: 'review', summary: result('complete') }; } };
+  await runtime.intake(); await runtime.intake(); await runtime.dispatcher.tick(); await runtime.assess(); await runtime.report();
   await runtime.dispatcher.update(state => { state.outbox[0].nextAt = 0; });
   await runtime.report(); await runtime.dispatcher.tick();
   const state = await runtime.snapshot();
   assert.equal(state.tasks.length, 1); assert.equal(starts, 1); assert.equal(reports, 2);
   assert.equal(state.tasks[0].report, 'sent'); assert.ok(!state.outbox[0].body.includes(process.cwd()));
+});
+
+function result(status, extra = {}) {
+  return `<dispatch-result>${JSON.stringify({ status, evidence: ['isolated test passed'], remaining: status === 'complete' ? [] : ['unfinished work'], next: status === 'continue' ? 'test alternative locally' : '', progress: 'new test evidence', blockers: ['blocked', 'decision'].includes(status) ? [{ owner: 'peer', reason: 'window unavailable', resumeWhen: 'agreed window and receipt' }] : [], ...extra })}</dispatch-result>`;
+}
+
+test('automatic continuation resumes the same executor and survives restart without duplication', async () => {
+  const runtime = await fixture(); let starts = 0;
+  runtime.adapters.codex = { start: async ({ attempt }) => {
+    starts++; if (starts > 1) assert.equal(attempt.resume, true);
+    return { status: 'review', sessionId: 'original', summary: result(starts === 1 ? 'continue' : 'blocked') };
+  } };
+  await runtime.submit({ projectId: 'p', prompt: 'Work' });
+  await runtime.command({ action: 'resume' }); await runtime.dispatcher.tick();
+  await runtime.assess(); await runtime.assess();
+  let task = (await runtime.snapshot()).tasks[0];
+  assert.equal(task.status, 'queued'); assert.equal(task.autoRounds, 1);
+  const restarted = await new Runtime({ store: runtime.store, directory: os.tmpdir() }).init();
+  restarted.adapters.codex = runtime.adapters.codex;
+  await restarted.assess(); await restarted.dispatcher.tick(); await restarted.assess();
+  task = (await restarted.snapshot()).tasks[0];
+  assert.equal(starts, 2); assert.equal(task.status, 'blocked');
+  assert.equal(task.rounds.length, 1);
+  await assert.rejects(restarted.command({ action: 'accept', id: task.id }), /not ready/);
+});
+
+test('missing result gets one formatting-only repair and never becomes ready for acceptance', async () => {
+  const runtime = await fixture();
+  runtime.adapters.codex = { start: async () => ({ status: 'review', sessionId: 'original', summary: 'partial work' }) };
+  await runtime.submit({ projectId: 'p', prompt: 'Work' }); await runtime.command({ action: 'resume' });
+  await runtime.dispatcher.tick(); await runtime.assess();
+  assert.match((await runtime.snapshot()).tasks[0].prompt, /do not execute tools/);
+  await runtime.dispatcher.tick(); await runtime.assess(); await runtime.dispatcher.tick();
+  assert.equal((await runtime.snapshot()).tasks[0].status, 'needs_result');
+});
+
+test('pause prevents auto execution; repeated progress stops automatic retries', async () => {
+  const runtime = await fixture(); let starts = 0;
+  runtime.adapters.codex = { start: async () => { starts++; return { status: 'review', sessionId: 'original', summary: result('continue') }; } };
+  await runtime.submit({ projectId: 'p', prompt: 'Work' }); await runtime.command({ action: 'resume' });
+  await runtime.dispatcher.tick(); await runtime.command({ action: 'pause' }); await runtime.assess(); await runtime.dispatcher.tick();
+  assert.equal(starts, 1);
+  await runtime.command({ action: 'resume' }); await runtime.dispatcher.tick(); await runtime.assess();
+  assert.equal((await runtime.snapshot()).tasks[0].status, 'stalled');
+});
+
+test('automatic continuation has a durable three-round ceiling and preserves local restrictions', async () => {
+  const runtime = await fixture(); let starts = 0;
+  await runtime.dispatcher.update(s => { s.settings.projects[0].executionInstructions = 'No production writes'; });
+  runtime.adapters.codex = { start: async ({ task }) => {
+    assert.match(task.prompt, /No production writes/);
+    return { status: 'review', sessionId: 'original', summary: result('continue', { progress: `evidence ${++starts}` }) };
+  } };
+  await runtime.submit({ projectId: 'p', prompt: 'Work' }); await runtime.command({ action: 'resume' });
+  for (let i = 0; i < 6; i++) { await runtime.dispatcher.tick(); await runtime.assess(); }
+  assert.equal(starts, 4); assert.equal((await runtime.snapshot()).tasks[0].status, 'stalled');
+});
+
+test('blocked report contains no local output and does not request a review-state transition', async () => {
+  const runtime = await fixture();
+  runtime.adapters.codex = { start: async () => ({ status: 'review', summary: result('blocked') }) };
+  await runtime.submit({ projectId: 'p', prompt: 'Work', issue: { id: 'issue' } }); await runtime.command({ action: 'resume' });
+  await runtime.dispatcher.tick(); await runtime.assess(); await runtime.report();
+  const item = (await runtime.snapshot()).outbox[0];
+  assert.equal(item.stateId, undefined); assert.match(item.body, /不需要验收/);
+  assert.ok(!item.body.includes('window unavailable'));
 });
 test('file store excludes a second owner and survives reopen', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'dispatch-store-'));

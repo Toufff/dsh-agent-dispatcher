@@ -19,3 +19,15 @@ test('report retries find the exact comment and never regress a completed issue'
   await client.report({ id: 'comment', issueId: 'issue', stateId: 'review', body: 'Synthetic' });
   assert.equal(queries.length, 1); assert.ok(!queries[0].includes('mutation'));
 });
+
+test('unfinished notification without a configured state never updates issue state', async () => {
+  const queries = [];
+  const client = new LinearClient('synthetic', async (url, request) => {
+    const data = JSON.parse(request.body); queries.push(data.query);
+    return { ok: true, json: async () => ({ data: { issue: { state: { type: 'started' }, comments: {
+      nodes: [{ id: 'comment' }], pageInfo: { hasNextPage: false, endCursor: null }
+    } } } }) };
+  });
+  await client.report({ id: 'comment', issueId: 'issue', body: 'Blocked' });
+  assert.equal(queries.length, 1);
+});

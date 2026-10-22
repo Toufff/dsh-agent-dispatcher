@@ -43,7 +43,7 @@ export class LinearClient {
         { input: { id: item.id, issueId: item.issueId, body: item.body } });
       if (!result.commentCreate.success) throw new Error('Linear comment was not confirmed');
     }
-    if (['completed', 'canceled'].includes(currentState)) return;
+    if (!item.stateId || ['completed', 'canceled'].includes(currentState)) return;
     const result = await this.query('mutation($id:String!, $input:IssueUpdateInput!) { issueUpdate(id:$id,input:$input) { success } }',
       { id: item.issueId, input: { stateId: item.stateId } });
     if (!result.issueUpdate.success) throw new Error('Linear state update was not confirmed');

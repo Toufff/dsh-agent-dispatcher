@@ -11,7 +11,7 @@ The first policy is an ordered list of enabled executors and FIFO tasks, with on
 - Persist an attempt intent before starting an executor. Snapshot executor order per task.
 - Only a confirmed rejection before execution permits fallback. Busy waits; approvals wait for human action; an uncertain start blocks pending reconciliation.
 - A crash after intent persistence does not replay the start. Reconcile the recorded attempt using its stable ID.
-- A running failure preserves the workspace and requires an explicit decision. Process exit zero means ready for review, not human acceptance.
+- A running failure preserves the workspace and requires an explicit decision. Successful process completion enters result assessment, not human acceptance. A validated result contract distinguishes completed requirements, useful local continuation, external blockers and human decisions.
 - Persist result reporting separately. A failed Linear update must never restart coding.
 - Deduplicate intake by workspace, issue and explicit dispatch round, not issue modification time.
 - Managed concurrency does not prevent writes by unrelated manual sessions.
@@ -51,3 +51,11 @@ The DSH panel will expose draggable executor priority (plus keyboard controls), 
 5. Native DSH priority editor and task inspection; end-to-end validation.
 
 These stages are implemented; see acceptance.md for verified scope and remaining permission and Desktop validation. Human acceptance remains separate from an agent's completion report. The host adds a cross-process runtime-directory lock; only one receiver may use a given DSH domain store.
+
+## Result assessment and bounded continuation
+
+New tasks append a local structured result contract. Completion requires evidence and no remaining work, next step or blockers. Agent reports are claims, not independent proof of correctness; final acceptance remains human. Mixed tasks continue independent authorized work before waiting on external dependencies. Missing/malformed contracts get one formatting-only repair in the same registered session, then stop as unclassified. Legacy tasks are not automatically replayed.
+
+Automatic continuations remain in the same task, executor and session, preserving every round and its attempts. Requeue and history are persisted in one aggregate update. Restart cannot duplicate a queued continuation. Pause prevents execution; failures and ambiguous process state never trigger continuation. Three automatic work rounds are allowed; empty or exactly repeated progress stops earlier. This bounded heuristic cannot detect semantically equivalent paraphrases, so the hard ceiling also applies.
+
+Local project executionInstructions are appended to each round and cannot be set by an incoming issue. They are agent instructions, not a command sandbox; runtime permissions and project-specific production gates remain required. External blockers release the execution slot and require explicit continuation after the condition is satisfied; automatic monitoring of peer comments/windows is not implemented.
