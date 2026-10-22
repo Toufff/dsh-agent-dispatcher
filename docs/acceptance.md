@@ -3,6 +3,7 @@
 ## Verified
 
 - Result-assessment update (2026-10-22): 46 automated tests pass, including same-session automatic continuation, restart deduplication, pause, a durable three-round ceiling, repeated-progress stopping, one formatting-only repair, completion evidence validation and unfinished-result reporting without forcing review. Browser checks pass for the native host, priority roundtrip and mobile overflow. These tests verify routing behavior; they do not independently prove an agent's business claims.
+- A real in-progress issue also returned a valid mixed result (useful local work plus external dependencies). The packaged host automatically resumed the original Codex session, preserved the first round and displayed one automatic continuation without human acceptance. Local offline-only restrictions were retained. This validates continuation admission, not completion of the underlying business issue.
 
 - DSH 0.2.1-rc.2 web profile loads the host package and browser contribution through the normal plugin loader. The native sidebar opens the panel, authenticated remote methods read/write state, and configuration persists.
 - A real native DSH session returned the requested synthetic marker. The result moved to review, and the panel opened the exact original session.
