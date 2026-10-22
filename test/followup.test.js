@@ -81,6 +81,40 @@ test('API failure stays blocked and retries without losing the reply', async () 
   f.fail(false); await f.runtime.monitor(); assert.equal((await f.runtime.snapshot()).tasks[0].status, 'queued');
 });
 
+test('sustained monitor failure is durable, reported once, and recovery never reexecutes work', async () => {
+  const f = await fixture(); await f.runtime.report(); const baseline=f.reports.length;
+  f.fail(true);
+  await f.runtime.monitor(); await f.runtime.report();
+  await f.runtime.monitor(); await f.runtime.report();
+  assert.equal(f.reports.length,baseline);
+  await f.runtime.monitor(); await f.runtime.report();
+  assert.equal(f.reports.length,baseline+1);
+  assert.match(f.reports.at(-1).body,/监听连续失败/);
+  assert.doesNotMatch(f.reports.at(-1).body,/Temporary read failure/);
+  const next=await new Runtime({store:f.store,directory:os.tmpdir(),env:{TEST_TOKEN:'synthetic'},linearFactory:f.factory}).init();
+  next.adapters.codex=f.adapter;
+  await next.monitor();await next.report();
+  assert.equal(f.reports.length,baseline+1);
+  assert.match((await next.snapshot()).errors.join(''),/4 次/);
+  f.fail(false);await next.monitor();await next.report();await next.dispatcher.tick();
+  assert.equal(f.reports.length,baseline+2);assert.match(f.reports.at(-1).body,/监听已于/);
+  await next.monitor();await next.report();
+  assert.equal(f.reports.length,baseline+2);assert.equal(f.starts,1);
+  assert.equal((await next.snapshot()).tasks[0].status,'blocked');
+  assert.equal((await next.snapshot()).errors.length,0);
+});
+
+test('disabled original executor accumulates a visible fault without fallback or losing a reply',async()=>{
+  const f=await fixture();f.setComments([comment()]);
+  await f.runtime.dispatcher.update(s=>{s.settings.executors.find(e=>e.id==='codex').enabled=false;});
+  for(let i=0;i<3;i++)await f.runtime.monitor();
+  let t=(await f.runtime.snapshot()).tasks[0];assert.equal(t.wait.errorCount,3);assert.equal(t.wait.failureNotified,true);
+  assert.equal(f.starts,1);assert.equal(t.followupSeen,undefined);
+  await f.runtime.dispatcher.update(s=>{s.settings.executors.find(e=>e.id==='codex').enabled=true;});
+  await f.runtime.monitor();await f.runtime.dispatcher.tick();await f.runtime.assess();
+  t=(await f.runtime.snapshot()).tasks[0];assert.equal(f.starts,2);assert.equal(t.status,'review');assert.equal(t.wait.error,undefined);
+});
+
 test('time wait survives restart and never wakes before exact offset timestamp', async () => {
   const future = new Date(Date.now() + 60000).toISOString();
   const f = await fixture({ kind: 'time', condition: 'recheck after authorized interval', notBefore: future });

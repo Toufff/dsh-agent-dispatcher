@@ -13,6 +13,9 @@ export function reportBody(task, mapping, secrets) {
   if (task.wait) {
     const wait = task.wait;
     body += `\n\n恢复监控：${wait.status}。`;
+    // Never publish arbitrary exception text (paths/tokens may occur in it).
+    if (wait.failureNotified) body += '\n本地条件监听连续失败至少 3 次，正在自动复核；目前无法确认新回复或恢复条件，未启动执行。接收方需检查本地连接、配置和原执行器。';
+    else if (wait.recoveredAt) body += `\n本地条件监听已于 ${wait.recoveredAt} 恢复，后续仍按原条件核对；恢复连接不等于任务完成或新增授权。`;
     if (shareable(wait.condition, secrets) && mapping?.shareProgress) body += `\n需核对：${wait.condition}`;
     if (wait.notBefore) body += `\n最早核对时间：${wait.notBefore}`;
     if (wait.expiresAt) body += `\n窗口截止：${wait.expiresAt}（过期不执行）`;

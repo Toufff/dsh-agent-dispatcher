@@ -1,5 +1,14 @@
 # Version 0.1 acceptance — 2026-10-21
 
+## Additional acceptance — 2026-10-23
+
+- **90/90 regression tests** pass locally, including sustained condition-monitor failure reporting, restart deduplication, recovery without execution, and disabled-original-executor recovery without fallback or losing the reply. Syntax/schema checks and build pass.
+- Fresh real Linear intake through the native host passed Codex's confirmed missing-executable fallback, two-round actual file creation/readback, same-session automatic continuation, real In Review reporting and another polling interval without duplicate execution. Existing production task attempts remained unchanged.
+- Fresh native DSH test passed initial malformed output → one formatting repair → timer → original-session completion, three accepted attempts, one wakeup, real Linear readback. The first test coordinator cleanup encountered a client reload leaving the panel; a verify-only pass restored settings without rerunning the agent. The reusable runner now reopens the panel and saves evidence before cleanup.
+- Fresh Claude Code CLI native-host intake passed two accepted attempts in one session, one timer wake, four successful report IDs, In Review readback and duplicate-poll exclusion. Existing production attempts were unchanged; original settings were restored with dispatch paused. No new Claude Desktop visibility or real coding-workload claim is made by this no-tools timer test.
+- The new opt-in runner is `scripts/native-acceptance.js`; `--verify-existing` verifies a finished receipt and cleans up without changing the issue or replaying work. Private configuration and execution evidence are never committed. See [incident review](incident-review.md).
+- Real collaborator reply acceptance is tracked separately. Owner-authored replies and mock comments do not establish a real cross-person roundtrip. Do not infer production migration completion from these tests.
+
 ## Verified
 
 - External-wait update (2026-10-22): regression coverage includes trusted author filtering, completed-child receipts, parent ownership, edited-comment deduplication, atomic disk restart, failed persistence, manual takeover races, expired windows, stale outbox suppression, delayed stop confirmation and local rearming. Native-host timer tasks passed real Codex and DSH same-session continuation once each. The official Linear client successfully read a real collaborator reply with project/parent validation. This does not claim a production migration or a complete live peer-triggered deployment was performed.

@@ -25,6 +25,28 @@ function previousResult(task, attempt) {
   return task.summary || task.rounds?.findLast(round => round.attempts?.some(a => a.id === attempt?.id))?.summary || '';
 }
 
+function monitorFailure(task, message) {
+  task.wait.error = String(message).slice(0, 300);
+  task.wait.errorSince ||= task.wait.lastCheckedAt;
+  task.wait.errorCount = (task.wait.errorCount || 0) + 1;
+  if (task.wait.errorCount >= 3 && !task.wait.failureNotified) {
+    task.wait.failureNotified = true;
+    delete task.wait.recoveredAt;
+    task.report = 'pending';
+    task.events.push({ action: 'monitor-failed', at: task.wait.lastCheckedAt });
+  }
+}
+
+function monitorRecovered(task) {
+  if (task.wait.failureNotified) {
+    task.wait.recoveredAt = task.wait.lastCheckedAt;
+    task.report = 'pending';
+    task.events.push({ action: 'monitor-recovered', at: task.wait.lastCheckedAt });
+  }
+  delete task.wait.error; delete task.wait.errorSince;
+  delete task.wait.errorCount; delete task.wait.failureNotified;
+}
+
 export class Runtime {
   constructor({ store, ctx = {}, directory, linearFactory = token => new LinearClient(token), env = process.env, registry }) {
     this.store = store; this.ctx = ctx; this.directory = directory; this.env = env;
@@ -71,7 +93,9 @@ export class Runtime {
     const state = await this.store.load();
     const reportErrors = state.outbox.filter(i => i.status === 'pending' && i.tries >= 3)
       .map(i => `${state.tasks.find(t => t.id === i.taskId)?.issue?.identifier || 'Linear'} 回写已失败 ${i.tries} 次，自动重试中；不会重跑任务。`);
-    return { ...state, health: this.health, errors: [...this.errors, ...reportErrors] };
+    const monitorErrors = state.tasks.filter(t => t.wait?.failureNotified && t.status === 'blocked')
+      .map(t => `${t.issue?.identifier || t.title}: 条件监听连续失败 ${t.wait.errorCount} 次，自动复核中；未启动执行。`);
+    return { ...state, health: this.health, errors: [...this.errors, ...reportErrors, ...monitorErrors] };
   }
   async configure(settings, revision) {
     settings = settingsSchema.parse(settings);
@@ -333,25 +357,26 @@ export class Runtime {
           if (state.paused || state.tasks.some(t => t.owner === 'human' && t.cwd === task.cwd) ||
             state.tasks.some(t => t.key === JSON.stringify([source, `continue:${old.id}`])) ||
             !isDeepStrictEqual(project, state.settings.projects.find(p => p.id === task.projectId))) return;
-          task.wait.lastCheckedAt = new Date().toISOString(); delete task.wait.error;
-          delete task.wait.errorSince;
-          if (!event) return;
+          task.wait.lastCheckedAt = new Date().toISOString();
+          if (!event) { monitorRecovered(task); return; }
           if (observing) {
+            monitorRecovered(task);
             task.wait.observedRevisions = [...new Set([...(task.wait.observedRevisions || []), ...(event.seen || [])])];
             task.wait.pendingUpdate = { key: event.key, receivedAt: task.wait.lastCheckedAt };
             task.report = 'pending'; return; // Keep the expired execution gate; a reply cannot extend it.
           }
-          if (event.expired) { task.wait.status = 'expired'; task.report = 'pending'; return; }
+          if (event.expired) { monitorRecovered(task); task.wait.status = 'expired'; task.report = 'pending'; return; }
           const attempt = registeredAttempt(task);
           if (!state.settings.executors.find(e => e.id === attempt?.executor)?.enabled) {
-            task.wait.error = 'Original executor is disabled; enable it locally before resuming'; return;
+            monitorFailure(task, 'Original executor is disabled; enable it locally before resuming'); return;
           }
           if ((task.wakeups || 0) >= (project.followup.maxWakeups || 8)) {
             task.wait.status = 'limit'; task.report = 'pending'; return;
           }
           if (!attempt?.sessionId || !this.adapters[attempt.executor]) {
-            task.wait.error = 'Original registered executor/session unavailable'; return;
+            monitorFailure(task, 'Original registered executor/session unavailable'); return;
           }
+          monitorRecovered(task);
           task.rounds ||= [];
           task.rounds.push({ summary: task.summary, outcome: task.outcome, attempts: task.attempts, wait: task.wait, at: new Date().toISOString() });
           task.previousAttempts = [...(task.previousAttempts || []), ...task.attempts];
@@ -368,10 +393,10 @@ export class Runtime {
         });
       } catch (error) {
         await this.dispatcher.update(state => { const task = state.tasks.find(t => t.id === old.id);
-          if (task?.wait?.id === old.wait.id && task.wait.status === old.wait.status) {
+          if (task?.wait?.id === old.wait.id && task.wait.status === old.wait.status && task.status === 'blocked' &&
+              task.owner !== 'human' && !state.paused) {
             task.wait.lastCheckedAt = new Date().toISOString();
-            task.wait.error = String(error.message).slice(0, 300);
-            task.wait.errorSince ||= task.wait.lastCheckedAt;
+            monitorFailure(task, error.message);
           }
         });
       }
