@@ -1,9 +1,10 @@
 import { z } from 'zod';
+import { waitSchema } from './followup.js';
 import { createTypertRemoteInfo } from '@deepseek-ai/dsh-typert-protocol/remote-info';
 
 const codec = (schema, name) => ({ mode: 'strict', typeSymbol: `dsh-agent-dispatcher#${name}`, create: () => schema });
 const commandSchema = z.object({ action: z.enum(['configure', 'submit', 'pause', 'resume', 'poll', 'reconcile',
-  'stop', 'takeover', 'return', 'retry', 'accept', 'continue']), id: z.string().optional(), settings: z.json().optional(),
+  'stop', 'takeover', 'return', 'retry', 'accept', 'continue', 'arm-wait']), id: z.string().optional(), settings: z.json().optional(), wait: waitSchema.optional(),
   revision: z.number().optional(), confirmedIdle: z.boolean().optional(), projectId: z.string().optional(), title: z.string().max(300).optional(),
   prompt: z.string().min(1).max(100000).optional(),
   session: z.object({ executor: z.string(), id: z.string() }).optional() }).strict();

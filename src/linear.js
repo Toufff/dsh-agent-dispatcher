@@ -29,7 +29,37 @@ export class LinearClient {
     } while (cursor);
     return issues;
   }
-  async report(item) {
+  async eligible(mapping, parentId) {
+    const identity = await this.query('query { organization { id } }');
+    if (identity.organization.id !== mapping.workspaceId) throw new Error('Linear token belongs to another workspace');
+    const parent = (await this.query('query($id:String!) { issue(id:$id) { id project { id } assignee { id } state { type } } }', { id: parentId })).issue;
+    if (!parent || parent.project?.id !== mapping.projectId || parent.assignee?.id !== mapping.assigneeId || ['completed', 'canceled'].includes(parent.state?.type))
+      throw new Error('Parent issue is closed, reassigned or outside the mapped project; local continuation remains stopped');
+    return parent;
+  }
+  async activity(mapping, issueId, parentId) {
+    const parent = await this.eligible(mapping, parentId);
+    let cursor = null, comments = [], issue;
+    do {
+      const data = await this.query(`query($id:String!, $after:String) {
+        issue(id:$id) { id identifier project { id } parent { id } assignee { id } state { type }
+          comments(first:100, after:$after) { nodes { id body createdAt updatedAt user { id } }
+            pageInfo { hasNextPage endCursor } } }
+      }`, { id: issueId, after: cursor });
+      issue = data.issue;
+      if (!issue || issue.project?.id !== mapping.projectId || (issue.id !== parentId && issue.parent?.id !== parentId))
+        throw new Error('Follow-up must target the mapped issue or its direct child in the same project');
+      comments.push(...issue.comments.nodes);
+      if (comments.length > 5000) throw new Error('Follow-up comment history is too broad');
+      cursor = issue.comments.pageInfo.hasNextPage ? issue.comments.pageInfo.endCursor : null;
+    } while (cursor);
+    return { ...issue, comments, parentState: parent.state };
+  }
+  async report(item, mapping) {
+    if (mapping) {
+      const identity = await this.query('query { organization { id } }');
+      if (identity.organization.id !== mapping.workspaceId) throw new Error('Linear token belongs to another workspace');
+    }
     // Client-chosen comment identity makes timeout retries idempotent.
     let cursor = null, found = false, currentState;
     do {

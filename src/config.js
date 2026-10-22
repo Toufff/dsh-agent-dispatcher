@@ -11,9 +11,11 @@ export const executorSchema = z.object({
 export const projectSchema = z.object({
   id, label: id, cwd: z.string().refine(path.isAbsolute, 'Use an absolute local directory'),
   executionInstructions: z.string().max(6000).optional(),
+  followup: z.object({ enabled: z.boolean(), commentAuthorIds: z.array(id).max(30),
+    maxWakeups: z.number().int().min(1).max(50).default(8) }).strict().optional(),
   linear: z.object({ workspaceId: id, projectId: id, assigneeId: id, readyStateId: id,
     reviewStateId: id, activeStateId: id.optional(), blockedStateId: id.optional(), tokenEnv: z.string().regex(/^[A-Z][A-Z0-9_]+$/),
-    enabled: z.boolean().default(false), since: z.string().datetime(),
+    enabled: z.boolean().default(false), shareProgress: z.boolean().optional(), since: z.string().datetime(),
     round: id.default('1') }).strict().optional()
 }).strict();
 export const settingsSchema = z.object({ executors: z.array(executorSchema), projects: z.array(projectSchema) })

@@ -3,12 +3,14 @@ import { AgentIcon } from './agent-icon.jsx';
 const labels = { queued: '排队中', starting: '正在启动', running: '执行中', finishing: '执行完成，正在清理进程', waiting: '等待输入', busy: '会话忙碌', unknown: '状态待核对', review: '完成待验收', blocked: '等待外部条件', decision: '需要决策或授权', stalled: '续办已暂停：进展或次数限制', needs_result: '结果待分类', failed: '执行失败', exhausted: '无可用执行器', stopped: '已停止', stopping: '正在停止', manual: '人工接管', accepted: '已验收', 'auto-continue': '自动继续未完成事项', 'repair-result': '自动补全结果分类' };
 const agentLabel = executor => executor?.type === 'codex' && executor.label === 'Codex' ? 'ChatGPT' : executor?.label;
 const terminal = ['failed', 'exhausted', 'stopped', 'review', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result'];
+const waitLabels = { watching: '监听中', triggered: '条件有变化，已排队核对', expired: '窗口已过期，需重新确定时间', limit: '已达到自动唤醒上限', resolved: '本轮等待已结束', superseded: '已由手动续办替代', suspended: '已停止监听' };
 export function Panel({ api }) {
   const [data, setData] = useState(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState(null), [revision, setRevision] = useState(0), [selected, select] = useState(null);
   const [showConfig, config] = useState(false), [drag, setDrag] = useState(null), [raw, setRaw] = useState('');
   const [newTask, setTask] = useState({ projectId: '', title: '', prompt: '' });
   const [confirmedIdle, setConfirmedIdle] = useState(false);
+  const [waitDraft, setWaitDraft] = useState(''), [waitTask, setWaitTask] = useState(null);
   useEffect(() => { let live = true; const refresh = () => api.snapshot().then(v => { if (live) setData(v); }).catch(e => { if (live) setError(e.message); });
     refresh(); const timer = setInterval(refresh, 2500); return () => { live = false; clearInterval(timer); }; }, [api]);
   async function run(request) { setBusy(true); setError(''); try { setData(await api.command(request)); return true; }
@@ -40,23 +42,37 @@ export function Panel({ api }) {
       {!data.tasks.length ? <div className="empty"><h3>还没有待处理任务</h3><p>先配置本地项目，再添加任务或启用 Linear 接单。</p><button onClick={openConfig}>配置本地项目</button></div>
         : <ul className="task-list">{data.tasks.map(t => <li key={t.id}><button className={task?.id === t.id ? 'selected' : ''} onClick={() => select(t.id)}><strong>{t.title}</strong><span className={`status ${t.status}`}>{labels[t.status] || t.status}</span></button></li>)}</ul>}
       {task && <article className="detail"><h2>{task.title}</h2><p className="muted">{task.owner === 'human' ? '由你控制会话，自动派发暂停等待归还。' : '由调度器控制本轮执行。'}</p><div className="actions">
-        <button disabled={busy || terminal.includes(task.status) || task.owner === 'human'} onClick={() => run({ action: 'stop', id: task.id })}>停止任务</button>
+        <button disabled={busy || (terminal.includes(task.status) && task.wait?.status !== 'watching') || task.owner === 'human'} onClick={() => run({ action: 'stop', id: task.id })}>停止任务</button>
         <button disabled={busy || task.owner === 'human'} onClick={() => run({ action: 'takeover', id: task.id })}>人工接管</button>
         {task.owner === 'human' && <><label><input type="checkbox" checked={confirmedIdle} onChange={e => setConfirmedIdle(e.target.checked)}/>我已结束人工会话，确认可继续派发</label><button disabled={busy || !confirmedIdle} onClick={async () => { if (await run({ action: 'return', id: task.id, confirmedIdle })) setConfirmedIdle(false); }}>归还控制</button></>}
         {['failed', 'exhausted', 'stopped'].includes(task.status) && <button disabled={busy} onClick={() => run({ action: 'retry', id: task.id })}>重试任务</button>}
         {task.status === 'review' && task.outcome?.status === 'complete' && <button className="primary" disabled={busy} onClick={() => run({ action: 'accept', id: task.id })}>本地确认验收</button>}
         {['review', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result'].includes(task.status) && <button disabled={busy || task.owner === 'human'} onClick={() => run({ action: 'continue', id: task.id })}>继续处理未完成事项</button>}
+        {['blocked', 'stopped', 'stalled'].includes(task.status) && task.owner !== 'human' && <button disabled={busy} onClick={() => { setWaitTask(task.id); setWaitDraft(JSON.stringify({ kind: task.wait?.kind || 'linear', condition: task.wait?.condition || '', ...(task.wait?.issueId || task.issue?.id ? { issueId: task.wait?.issueId || task.issue.id } : {}), ...(task.wait?.notBefore ? { notBefore: task.wait.notBefore } : {}), ...(task.wait?.expiresAt ? { expiresAt: task.wait.expiresAt } : {}) }, null, 2)); }}>设置恢复条件</button>}
         {task.issue?.url?.startsWith('https://linear.app/') && <a href={task.issue.url} target="_blank" rel="noreferrer">打开 Linear issue</a>}</div>
         <h3>执行记录</h3>{!task.attempts.length && <p className="muted">尚未派发。</p>}{task.attempts.map(a => <div className="attempt" key={a.id}><strong className="agent-name"><AgentIcon type={data.settings.executors.find(e => e.id === a.executor)?.type}/>{agentLabel(data.settings.executors.find(e => e.id === a.executor)) || a.executor}</strong><span className={`status ${a.status}`}>{a.status === 'review' ? '本轮执行结束' : labels[a.status] || a.status}</span>{a.reason && <p>{a.reason}</p>}{a.sessionId && <><code>{a.sessionId}</code>{data.settings.executors.find(e => e.id === a.executor)?.type === 'dsh' ? <button onClick={() => api.openSession(a.sessionId)}>打开 DSH 会话</button> : <p className="muted">在对应工具中使用此会话 ID 恢复；查看会话不自动接管。</p>}</>}</div>)}
-        <h3>结果与下一步</h3><p>{labels[task.status]} · 已自动续办 {task.autoRounds || 0}/3 轮</p>
+        <h3>结果与下一步</h3><p>{labels[task.status]} · 已自动续办 {task.autoRounds || 0}/3 轮 · 条件变化唤醒 {task.wakeups || 0} 次</p>
+        {task.admissionError && <p role="alert">{task.admissionError}</p>}
+        {waitTask === task.id && <form onSubmit={async e => { e.preventDefault(); try { if (await run({ action: 'arm-wait', id: task.id, wait: JSON.parse(waitDraft) })) setWaitTask(null); } catch { setError('恢复条件 JSON 格式有误。'); } }}>
+          <label>恢复条件 JSON<textarea required rows={8} value={waitDraft} onChange={e => setWaitDraft(e.target.value)}/></label>
+          <p>只监听保存后的新回复；kind 为 linear 或 time。time 必须提供带时区的 notBefore，有结束时间时填写 expiresAt。保存不会立即重跑任务，也不会授权额外操作。</p>
+          <button disabled={busy}>保存恢复条件</button><button type="button" onClick={() => setWaitTask(null)}>取消</button></form>}
+        {task.wait && <section aria-label="恢复条件"><h3>恢复条件</h3><p>{task.wait.condition}</p>
+          <p>{data.paused ? '派发暂停，不会自动恢复' : !data.settings.projects.find(p => p.id === task.projectId)?.followup?.enabled ? '此项目未启用自动恢复' : waitLabels[task.wait.status] || task.wait.status}</p>
+          <p>{task.wait.kind === 'linear' ? `等待指定协作者更新：${task.wait.issueId || '尚未指定 issue'}` : '等待明确时间后重新检查'}</p>
+          {task.wait.notBefore && <p>最早核对：<time>{task.wait.notBefore}</time></p>}
+          {task.wait.expiresAt && <p>窗口截止：<time>{task.wait.expiresAt}</time>（过期不执行）</p>}
+          {task.wait.lastCheckedAt && <p>上次检查：{new Date(task.wait.lastCheckedAt).toLocaleString()}</p>}
+          {task.wait.error && <p role="alert">监听失败：{task.wait.error}。恢复条件未被确认。</p>}
+          <p className="muted">评论和时间只触发重新核对，不代表授权；原会话和本地限制保持不变。</p></section>}
         {task.outcome?.blockers?.map((b, i) => <p key={i}><strong>{b.owner}</strong>：{b.reason}<br/>恢复条件：{b.resumeWhen}</p>)}
         {task.status === 'stalled' && <p>已停止重复尝试。请查看本轮结果和历史证据，确定新方案后再续办，无需验收。</p>}
-        <pre>{task.summary || '等待 agent 返回执行结果。'}</pre><p className="muted">Linear 回写：{task.issue ? ({ pending: '待生成', queued: '等待发送或重试', sent: '已发送' })[task.report] : '本地任务，无需回写'}。仅同步状态通知，详细证据和阻塞条件保留在本机。</p>
+        <pre>{task.summary || '等待 agent 返回执行结果。'}</pre><p className="muted">Linear 回写：{task.issue ? ({ pending: '待生成', queued: '等待发送或重试', sent: '已发送' })[task.report] : '本地任务，无需回写'}。启用 shareProgress 后同步可分享摘要；完整执行记录保留在本机。</p>
         {!!task.rounds?.length && <details><summary>自动续办的历史结果</summary>{task.rounds.map((r, i) => <pre key={i}>{r.summary}</pre>)}</details>}
         <details><summary>历史与操作记录</summary>{(task.previousAttempts || []).map(a => <p key={a.id}>{agentLabel(data.settings.executors.find(e => e.id === a.executor)) || a.executor} · {a.status === 'review' ? '本轮执行结束' : labels[a.status] || a.status} · {a.sessionId}</p>)}{task.events?.map((event, i) => <p key={i}><time>{new Date(event.at).toLocaleString()}</time> · {labels[event.action] || event.action}</p>)}</details></article>}
     </section></div>
     {showConfig && <section className="configuration"><h2>本机项目与连接配置</h2><p>填写本地目录、执行器命令和 Linear 标识。tokenEnv 只填写环境变量名，密钥不应填写在这里。</p>
-      <details><summary>新增项目格式</summary><pre>{JSON.stringify({ id: 'my-project', label: '我的项目', cwd: '/absolute/project/path' }, null, 2)}</pre><p>可选 linear 字段：workspaceId、projectId、assigneeId、readyStateId、reviewStateId、tokenEnv、enabled、since（ISO 时间）、round。since 限制首次接单范围。</p></details>
+      <details><summary>新增项目格式</summary><pre>{JSON.stringify({ id: 'my-project', label: '我的项目', cwd: '/absolute/project/path', followup: { enabled: false, commentAuthorIds: [], maxWakeups: 8 } }, null, 2)}</pre><p>可选 linear 字段：workspaceId、projectId、assigneeId、readyStateId、reviewStateId、tokenEnv、enabled、since（ISO 时间）、round、shareProgress。since 限制首次接单范围。followup.commentAuthorIds 只填写你在本机信任的协作者 Linear 用户 ID。自动恢复默认关闭。</p></details>
       <label>本机配置 JSON<textarea aria-label="本机配置 JSON" rows={16} spellCheck={false} value={raw} onChange={e => setRaw(e.target.value)}/></label><div className="actions"><button className="primary" disabled={busy} onClick={async () => { try { if (await run({ action: 'configure', settings: JSON.parse(raw), revision: data.revision })) { setDraft(null); config(false); } } catch { setError('JSON 格式有误，请检查逗号和引号。'); } }}>保存配置</button><button onClick={() => config(false)}>关闭配置</button></div></section>}
   </main>;
 }

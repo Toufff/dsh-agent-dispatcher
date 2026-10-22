@@ -2,6 +2,9 @@
 
 ## Verified
 
+- External-wait update (2026-10-22): regression coverage includes trusted author filtering, completed-child receipts, parent ownership, edited-comment deduplication, atomic disk restart, failed persistence, manual takeover races, expired windows, stale outbox suppression, delayed stop confirmation and local rearming. Native-host timer tasks passed real Codex and DSH same-session continuation once each. The official Linear client successfully read a real collaborator reply with project/parent validation. This does not claim a production migration or a complete live peer-triggered deployment was performed.
+- The local Windows host showed intermittent process-start/cleanup delays during full-suite reruns. Earlier 65-test runs passed; later expanded runs exposed timeouts. Worker fixtures retain exit/status/process-death assertions, allow 60 seconds for OS startup, and retry temporary directory cleanup after exit. Runtime stop deadlines are unchanged: an uncertain stop retains ownership until a terminal receipt is confirmed. Independent Windows/Linux CI is required to distinguish a code regression from local contention; do not describe a failed local run as passing.
+
 - Result-assessment update (2026-10-22): 46 automated tests pass, including same-session automatic continuation, restart deduplication, pause, a durable three-round ceiling, repeated-progress stopping, one formatting-only repair, completion evidence validation and unfinished-result reporting without forcing review. Browser checks pass for the native host, priority roundtrip and mobile overflow. These tests verify routing behavior; they do not independently prove an agent's business claims.
 - A real in-progress issue also returned a valid mixed result (useful local work plus external dependencies). The packaged host automatically resumed the original Codex session, preserved the first round and displayed one automatic continuation without human acceptance. Local offline-only restrictions were retained. This validates continuation admission, not completion of the underlying business issue.
 
@@ -24,6 +27,6 @@ Claude Code CLI passed real authenticated execution, packaged DSH-host dispatch,
 
 One receiving host is supported. There is no distributed exactly-once guarantee, unrestricted external-session discovery or enforcement over manually launched writers. A session view does not itself transfer ownership. CLI manual-return confirmation is an operator assertion where the official runtime exposes no cross-process lease.
 
-Linear reports are intentionally status-only in this version. Detailed summaries/PR links must be reviewed and shared separately. Local acceptance does not change Linear to Done.
+Linear reports default to status-only; opt-in `shareProgress` permits an explicit public summary and safe wait condition with exact times. Local acceptance does not change Linear to Done.
 
 Live records contain private workspace/session identifiers and are kept outside the public source tree. Public tests and examples use synthetic data only.

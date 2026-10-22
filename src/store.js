@@ -1,5 +1,6 @@
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { initialState } from './config.js';
 
 export async function writeJson(file, data) {
@@ -31,7 +32,16 @@ export class FileStore {
 export class DomainStore {
   constructor(domain) { this.domain = domain; }
   async load() { return structuredClone(this.domain.global.get()); }
-  async save(state) { await this.domain.global.set(structuredClone(state)); }
+  async save(state) {
+    if (isDeepStrictEqual(this.domain.global.get(), state)) return;
+    for (let tries = 0; ; tries++) {
+      try { await this.domain.global.set(structuredClone(state)); return; }
+      catch (error) {
+        if (!['EPERM', 'EBUSY', 'EACCES'].includes(error.code) || tries >= 4) throw error;
+        await new Promise(resolve => setTimeout(resolve, 50 * 2 ** tries));
+      }
+    }
+  }
 }
 
 /** Cross-process exclusion. Stale locks require explicit recovery after confirming the owner is gone. */

@@ -14,6 +14,11 @@ async function fixture(extra = {}) {
   await store.save(state);
   return new Runtime({ store, directory: os.tmpdir(), ...extra }).init();
 }
+async function issueFixture() {
+  const runtime = await fixture({ env: { TEST_TOKEN: 'synthetic' }, linearFactory: () => ({ eligible: async () => ({}) }) });
+  await runtime.dispatcher.update(s => { s.settings.projects[0].linear = { enabled: true, tokenEnv: 'TEST_TOKEN' }; });
+  return runtime;
+}
 test('configuration uses compare-and-swap; task paths come only from local mappings', async () => {
   const runtime = await fixture();
   await assert.rejects(runtime.configure((await runtime.snapshot()).settings, 10), /another window/);
@@ -23,7 +28,7 @@ test('configuration uses compare-and-swap; task paths come only from local mappi
 });
 
 test('continuation keeps history and issue identity and deduplicates repeated clicks', async () => {
-  const runtime = await fixture();
+  const runtime = await issueFixture();
   runtime.adapters.codex = { start: async () => ({ status: 'review', summary: 'Partial result', sessionId: 'original-session' }) };
   await runtime.submit({ projectId: 'p', prompt: 'Work', issue: { id: 'issue' }, source: 'workspace/issue' });
   await runtime.command({ action: 'resume' }); await runtime.dispatcher.tick();
@@ -51,7 +56,7 @@ test('outbox retry does not reexecute coding; repeated intake is deduplicated', 
   let starts = 0, reports = 0;
   const runtime = await fixture({ env: { TEST_TOKEN: 'synthetic' }, linearFactory: () => ({
     issues: async () => [{ id: 'issue', identifier: 'EX-1', title: 'Synthetic task', description: 'Example', url: 'https://linear.app/example' }],
-    report: async () => { if (++reports === 1) throw new Error('timeout'); }
+    eligible: async () => ({}), report: async () => { if (++reports === 1) throw new Error('timeout'); }
   }) });
   await runtime.dispatcher.update(state => {
     state.paused = false;
@@ -123,7 +128,7 @@ test('automatic continuation has a durable three-round ceiling and preserves loc
 });
 
 test('blocked report contains no local output and does not request a review-state transition', async () => {
-  const runtime = await fixture();
+  const runtime = await issueFixture();
   runtime.adapters.codex = { start: async () => ({ status: 'review', summary: result('blocked') }) };
   await runtime.submit({ projectId: 'p', prompt: 'Work', issue: { id: 'issue' } }); await runtime.command({ action: 'resume' });
   await runtime.dispatcher.tick(); await runtime.assess(); await runtime.report();
@@ -160,4 +165,16 @@ test('confirmed stop permits takeover and return requires verified idle', async 
   await assert.rejects(runtime.command({ action: 'return', id }), /unconfirmed/);
   idle = true; await runtime.command({ action: 'return', id });
   assert.equal((await runtime.snapshot()).tasks[0].status, 'stopped');
+});
+
+test('delayed stop receipt completes pending takeover across restart without releasing the slot early',async()=>{
+ const runtime=await fixture();let stopped=false;
+ const adapter={start:async()=>({status:'running',sessionId:'same'}),stop:async()=>({status:'unknown'}),reconcile:async()=>({status:stopped?'stopped':'running'})};
+ runtime.adapters.codex=adapter;
+ await runtime.submit({projectId:'p',prompt:'Synthetic'});await runtime.command({action:'resume'});await runtime.dispatcher.tick();
+ const id=(await runtime.snapshot()).tasks[0].id;await runtime.command({action:'takeover',id});
+ assert.equal((await runtime.snapshot()).tasks[0].pendingStop,'takeover');assert.equal((await runtime.snapshot()).tasks[0].owner,'scheduler');
+ const next=await new Runtime({store:runtime.store,directory:os.tmpdir()}).init();next.adapters.codex=adapter;
+ await next.dispatcher.reconcile();assert.equal((await next.snapshot()).tasks[0].owner,'scheduler');
+ stopped=true;await next.dispatcher.reconcile();const task=(await next.snapshot()).tasks[0];assert.equal(task.status,'manual');assert.equal(task.owner,'human');assert.equal(task.pendingStop,undefined);
 });

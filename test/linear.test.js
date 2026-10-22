@@ -31,3 +31,18 @@ test('unfinished notification without a configured state never updates issue sta
   await client.report({ id: 'comment', issueId: 'issue', body: 'Blocked' });
   assert.equal(queries.length, 1);
 });
+
+test('activity validates parent ownership and child relationship and paginates completed child replies',async()=>{
+ const mapping={workspaceId:'w',projectId:'p',assigneeId:'owner'};let parentState='started',assignee='owner',childParent='parent',pages=0;
+ const client=new LinearClient('synthetic',async(url,request)=>{
+  const {query,variables}=JSON.parse(request.body);let data;
+  if(query.includes('organization'))data={organization:{id:'w'}};
+  else if(!query.includes('comments'))data={issue:{id:'parent',project:{id:'p'},assignee:{id:assignee},state:{type:parentState}}};
+  else {pages++;data={issue:{id:'child',identifier:'EX-2',project:{id:'p'},parent:{id:childParent},state:{type:'completed'},comments:{nodes:[{id: variables.after?'b':'a',user:{id:'peer'},body:'receipt'}],pageInfo:{hasNextPage:!variables.after,endCursor:'cursor'}}}};}
+  return {ok:true,json:async()=>({data})};
+ });
+ assert.equal((await client.activity(mapping,'child','parent')).comments.length,2);assert.equal(pages,2);
+ assignee='other';await assert.rejects(client.activity(mapping,'child','parent'),/reassigned/);
+ assignee='owner';parentState='completed';await assert.rejects(client.activity(mapping,'child','parent'),/closed/);
+ parentState='started';childParent='unrelated';await assert.rejects(client.activity(mapping,'child','parent'),/direct child/);
+});

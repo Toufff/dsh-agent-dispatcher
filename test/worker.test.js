@@ -7,7 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { CliAdapter } from '../src/adapters/cli.js';
 
-for (const protocol of ['codex', 'codex-linger', 'codex-file-linger', 'claude', 'incomplete']) test(`worker executes and parses ${protocol} protocol`, { timeout: 15000 }, async () => {
+// Includes two OS process launches; keep runtime cleanup assertions independent of host load.
+for (const protocol of ['codex', 'codex-linger', 'codex-file-linger', 'claude', 'incomplete']) test(`worker executes and parses ${protocol} protocol`, { timeout: 60000 }, async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'dispatch-worker-'));
   try {
     const worker = fork(new URL('../src/adapters/worker.js', import.meta.url), [], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], env: { ...process.env, CODEX_HOME: directory } });
@@ -23,9 +24,9 @@ for (const protocol of ['codex', 'codex-linger', 'codex-file-linger', 'claude', 
       assert.match(result.reason, /cleaned up/);
       assert.throws(() => process.kill(result.pid, 0), { code: 'ESRCH' });
     }
-  } finally { await rm(directory, { recursive: true, force: true }); }
+  } finally { await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 });
-test('reloaded adapter stops through the original worker without killing stored PIDs', async () => {
+test('reloaded adapter stops through the original worker without killing stored PIDs', { timeout: 60000 }, async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'dispatch-worker-'));
   try {
     const worker = fork(new URL('../src/adapters/worker.js', import.meta.url), [], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
@@ -34,7 +35,10 @@ test('reloaded adapter stops through the original worker without killing stored 
       file: path.join(directory, 'attempt.json'), cwd: directory, prompt: 'Synthetic', sessionId: 'initial' });
     await acknowledged;
     const restarted = new CliAdapter({ type: 'codex' }, directory);
-    assert.equal((await restarted.stop({ attempt: { id: 'attempt' } })).status, 'stopped');
+    // A loaded host can outlast the bounded stop call; only the eventual terminal receipt proves exit.
+    const first = await restarted.stop({ attempt: { id: 'attempt' } });
+    assert.ok(['stopped', 'unknown'].includes(first.status));
     await exited;
-  } finally { await rm(directory, { recursive: true, force: true }); }
+    assert.equal((await restarted.reconcile({ attempt: { id: 'attempt' } })).status, 'stopped');
+  } finally { await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 });
