@@ -22,6 +22,8 @@ Use DSH's storage domain for persistent state, its authenticated remote services
 
 The host adapter must provide atomic replacement of one aggregate state record and exclusive local ownership. Multiple processes receiving the same project are unsupported until explicit leases are implemented. Browser closure does not stop dispatch; DSH host shutdown does.
 
+Standalone evidence/receipt file replacement retries transient Windows sharing errors with bounded backoff (four retries, 750 ms total). It keeps the committed destination until the same temporary file can be atomically renamed; exhausted retries and unrelated errors remain visible. This does not rerun an executor. The opt-in collaborator simulation uses the real runtime and CLI with a synthetic GraphQL transport in a fresh private store; it never injects simulated identities into a real host or Linear issue.
+
 ## Execution adapters
 
 All adapters implement start and reconciliation; stop must confirm termination before another managed run starts. Session identity, execution identity and task identity are distinct.

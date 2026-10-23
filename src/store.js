@@ -3,13 +3,25 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { initialState } from './config.js';
 
+// Windows readers/antivirus may briefly hold the destination open. Retry the
+// same atomic replacement, never unlink the committed file or rerun the writer.
+export async function replaceFile(source, destination, renameFile = rename, delay = ms => new Promise(resolve => setTimeout(resolve, ms))) {
+  for (let tries = 0; ; tries++) {
+    try { await renameFile(source, destination); return; }
+    catch (error) {
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(error.code) || tries >= 4) throw error;
+      await delay(50 * 2 ** tries);
+    }
+  }
+}
+
 export async function writeJson(file, data) {
   await mkdir(path.dirname(file), { recursive: true });
   const temp = `${file}.${process.pid}.tmp`;
   const handle = await open(temp, 'w', 0o600);
   try { await handle.writeFile(JSON.stringify(data)); await handle.sync(); }
   finally { await handle.close(); }
-  await rename(temp, file);
+  await replaceFile(temp, file);
 }
 
 /** Standalone test/diagnostic store; production plugin uses DSH domain storage. */
