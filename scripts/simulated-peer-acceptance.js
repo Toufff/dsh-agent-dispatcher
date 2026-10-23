@@ -74,7 +74,9 @@ export async function runSimulatedPeer({ directory, adapter, pollMs = 500, onSta
       linear: { enabled: true, workspaceId: 'workspace', projectId: 'project', assigneeId: 'owner', readyStateId: 'ready', activeStateId: 'active', reviewStateId: 'review', tokenEnv: 'DISPATCH_LINEAR_SIMULATED', since: '2000-01-01T00:00:00Z', round: '1' } }];
     await store.save(state); await make(); await runtime.intake(); await runtime.intake();
     const first = await settle('blocked');
-    assert.equal(first.wait.status, 'watching');
+    assert.equal(first.wait.status, 'validating');
+    await runtime.monitor();
+    assert.equal((await store.load()).tasks[0].wait.status, 'watching');
     const session = first.attempts.at(-1).sessionId;
     stage('initial execution blocked with original session');
     const comment = (id, author) => ({ id, user: { id: author }, body: marker, updatedAt: new Date(Date.now() + 1000).toISOString() });

@@ -3,6 +3,8 @@ import { AgentIcon } from './agent-icon.jsx';
 import { waitView, formatTime } from './wait-view.js';
 import { WaitDetails } from './wait-details.jsx';
 import { ProjectSettings } from './project-settings.jsx';
+import { ConnectionStatus } from './connection-status.jsx';
+import { projectGroups } from './project-view.js';
 const labels = { queued: '排队中', starting: '正在启动', running: '执行中', finishing: '执行完成，正在清理进程', waiting: '等待输入', busy: '会话忙碌', unknown: '状态待核对', review: '完成待验收', blocked: '等待外部条件', decision: '需要决策或授权', stalled: '续办已暂停：进展或次数限制', needs_result: '结果待分类', failed: '执行失败', exhausted: '无可用执行器', stopped: '已停止', stopping: '正在停止', manual: '人工接管', accepted: '已验收', 'auto-continue': '自动继续未完成事项', 'repair-result': '自动补全结果分类' };
 const agentLabel = executor => executor?.type === 'codex' && executor.label === 'Codex' ? 'ChatGPT' : executor?.label;
 const terminal = ['failed', 'exhausted', 'stopped', 'review', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result'];
@@ -11,13 +13,16 @@ export function Panel({ api }) {
   const [draft, setDraft] = useState(null), [revision, setRevision] = useState(0), [selected, select] = useState(null);
   const [showConfig, config] = useState(false), [drag, setDrag] = useState(null);
   const [configGuard, setConfigGuard] = useState({ dirty: false, busy: false });
+  const [scope, setScope] = useState('business'), [catalogs, setCatalogs] = useState({});
   const [search, setSearch] = useState(''), [projectFilter, setProjectFilter] = useState(''), [statusFilter, setStatusFilter] = useState('');
+  const groups = projectGroups(data?.settings.projects || [], catalogs, scope);
+  const visibleProjectIds = groups.filter(g => !projectFilter || g.key === projectFilter).flatMap(g => g.ids);
   const [newTask, setTask] = useState({ projectId: '', title: '', prompt: '' });
   const [confirmedIdle, setConfirmedIdle] = useState(false);
   const [waitDraft, setWaitDraft] = useState(''), [waitTask, setWaitTask] = useState(null);
   const [preserveCursor, setPreserveCursor] = useState(false);
   const [issueContexts, setIssueContexts] = useState({});
-  const filteredTasks = (data?.tasks || []).filter(t => (!projectFilter || t.projectId === projectFilter) && (!statusFilter || (statusFilter === 'attention' ? ['blocked','decision','unknown','failed','stalled','needs_result','exhausted'].includes(t.status) : statusFilter === 'review' ? t.status === 'review' : ['queued','starting','running','finishing','waiting','busy','stopping','auto-continue','repair-result'].includes(t.status))) && `${t.issue?.identifier || ''} ${t.title}`.toLowerCase().includes(search.toLowerCase()));
+  const filteredTasks = (data?.tasks || []).filter(t => visibleProjectIds.includes(t.projectId) && (!statusFilter || (statusFilter === 'attention' ? ['blocked','decision','unknown','failed','stalled','needs_result','exhausted'].includes(t.status) : statusFilter === 'review' ? t.status === 'review' : ['queued','starting','running','finishing','waiting','busy','stopping','auto-continue','repair-result'].includes(t.status))) && `${t.issue?.identifier || ''} ${t.title}`.toLowerCase().includes(search.toLowerCase()));
   const contextTask = filteredTasks.find(t => t.id === selected) || filteredTasks.at(-1);
   useEffect(() => {
     if (showConfig || !contextTask?.issue?.id || !api.issueContext) return;
@@ -48,7 +53,8 @@ export function Panel({ api }) {
       <span className={`status ${data.paused ? 'waiting' : 'running'}`}>{data.paused ? '自动派发已暂停' : '自动派发已开启'}</span>
       <button disabled={busy} onClick={() => run({ action: data.paused ? 'resume' : 'pause' })}>{data.paused ? '开启派发' : '暂停派发'}</button>
       <button onClick={openConfig} disabled={showConfig}>配置项目与连接</button></div></header>
-    {(error || data.errors?.length > 0) && <div className="notice" role="alert">{error || data.errors.join('；')}<button onClick={() => run({ action: 'reconcile' })} disabled={busy}>重新核对</button></div>}
+    <ConnectionStatus projects={data.settings.projects} api={api} onCatalogs={setCatalogs}/>
+    {(error || data.errors?.length > 0) && <div className="notice" role="alert">{error || data.errors.join('；')}{data.tasks.some(t => t.wait?.status === 'invalid') && <button onClick={() => { closeConfig(); setScope('all'); setSearch(''); setProjectFilter(''); setStatusFilter(''); select(data.tasks.find(t => t.wait?.status === 'invalid').id); }}>查看等待配置错误</button>}<button onClick={() => run({ action: 'reconcile' })} disabled={busy}>刷新任务状态</button></div>}
     <nav className="dispatch-tabs" aria-label="派发工作区"><button aria-current={!showConfig ? 'page' : undefined} disabled={showConfig && configGuard.busy} onClick={closeConfig}>任务队列</button><button aria-current={showConfig ? 'page' : undefined} onClick={openConfig}>项目与连接</button></nav>
     {showConfig ? <ProjectSettings data={data} api={api} onGuardChange={setConfigGuard} onClose={closeConfig} onSave={async (settings, revision) => { const saved = await api.command({ action: 'configure', settings, revision }); setData(saved); return saved; }}/> : <div className="dispatch-grid"><aside><h2>执行优先级</h2><p className="muted">拖动调整顺位，或使用上下移按钮。只在明确未启动时尝试下一位。</p>
       <ol className="executors">{settings.executors.map((executor, index) => <li key={executor.id} draggable={!busy} onDragStart={() => setDrag(index)} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); reorder(drag, index); setDrag(null); }}>
@@ -58,18 +64,18 @@ export function Panel({ api }) {
       {draft && <div className="actions"><button className="primary" disabled={busy} onClick={async () => { if (await run({ action: 'configure', settings: draft, revision })) setDraft(null); }}>保存顺序</button><button onClick={() => setDraft(null)}>撤销调整</button></div>}
       <p className="muted">新顺序用于后续入队任务。已入队任务保留原顺序。</p><details className="local-task"><summary>新增本地任务</summary>
       <form onSubmit={async e => { e.preventDefault(); if (await run({ action: 'submit', ...newTask })) setTask({ ...newTask, title: '', prompt: '' }); }}>
-        <label>项目<select required value={newTask.projectId} onChange={e => setTask({ ...newTask, projectId: e.target.value })}><option value="">选择本地项目</option>{data.settings.projects.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</select></label>
+        <label>本机映射<select required value={newTask.projectId} onChange={e => setTask({ ...newTask, projectId: e.target.value })}><option value="">选择本机映射</option>{data.settings.projects.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</select></label>
         <label>任务标题<input required maxLength={300} value={newTask.title} onChange={e => setTask({ ...newTask, title: e.target.value })}/></label>
         <label>需求与验收条件<textarea required rows={4} value={newTask.prompt} onChange={e => setTask({ ...newTask, prompt: e.target.value })}/></label><button className="primary" disabled={busy || !data.settings.projects.length}>加入队列</button></form></details>
-    </aside><section className="queue"><div className="section-heading"><h2>任务队列 <span className="count">{data.tasks.length}</span></h2><button disabled={busy} onClick={() => run({ action: 'poll' })}>检查 Linear</button></div>
-      <div className="queue-filters"><label>搜索任务<input type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="工单编号或标题"/></label><label>项目<select aria-label="项目" value={projectFilter} onChange={e => setProjectFilter(e.target.value)}><option value="">全部项目</option>{data.settings.projects.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</select></label><label>状态<select aria-label="状态" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}><option value="">全部状态</option><option value="active">执行与排队</option><option value="attention">等待与异常</option><option value="review">待验收</option></select></label></div>
+    </aside><section className="queue"><div className="section-heading"><h2>任务队列 <span className="count">{filteredTasks.length} / {data.tasks.length}</span></h2><button disabled={busy} onClick={() => run({ action: 'poll' })}>检查新工单</button></div>
+      <div className="queue-filters"><label>显示范围<select aria-label="显示范围" value={scope} onChange={e => { setScope(e.target.value); setProjectFilter(''); }}><option value="business">正式项目</option><option value="history">测试／历史</option><option value="all">全部（含测试）</option></select></label><label>搜索任务<input type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="工单编号或标题"/></label><label>项目<select aria-label="项目" value={projectFilter} onChange={e => setProjectFilter(e.target.value)}><option value="">全部项目</option>{groups.map(g => <option key={g.key} value={g.key}>{g.label}</option>)}</select></label><label>状态<select aria-label="状态" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}><option value="">全部状态</option><option value="active">执行与排队</option><option value="attention">等待与异常</option><option value="review">待验收</option></select></label></div>
       {!data.tasks.length ? <div className="empty"><h3>还没有待处理任务</h3><p>先配置本地项目，再添加任务或启用 Linear 接单。</p><button onClick={openConfig}>配置本地项目</button></div>
         : !filteredTasks.length ? <div className="empty"><p>没有符合筛选条件的任务。</p><button onClick={() => { setSearch(''); setProjectFilter(''); setStatusFilter(''); }}>清除筛选</button></div> : <ul className="task-list">{filteredTasks.map(t => { const view = waitView(t, displayData); return <li key={t.id}><button className={task?.id === t.id ? 'selected' : ''} aria-pressed={task?.id === t.id} onClick={() => { select(t.id); setConfirmedIdle(false); setWaitTask(null); }}>
           <span className="task-copy"><strong>{t.title}</strong>{view && <><span className="task-wait-reason">{view.reason}</span><span className="task-wait-meta">{view.monitor}{view.owners && ` · ${view.owners}`}{view.wait?.kind === 'time' && view.wait.notBefore && ` · ${formatTime(view.wait.notBefore)} 起核对`}{view.wait?.expiresAt && ` · 截止 ${formatTime(view.wait.expiresAt)}`}</span></>}</span>
           <span className={`status ${view ? 'waiting' : t.status}`}>{view?.title || labels[t.status] || t.status}</span></button></li>; })}</ul>}
       {task && <article className="detail"><h2>{task.title}</h2><p className="task-directory"><span>本地工作目录</span><code>{task.cwd}</code></p><p className="muted">{task.owner === 'human' ? '由你控制会话，自动派发暂停等待归还。' : '由调度器控制本轮执行。'}</p>
         {waiting && <WaitDetails view={waiting}/>}<div className="actions">
-        <button disabled={busy || (terminal.includes(task.status) && task.wait?.status !== 'watching') || task.owner === 'human'} onClick={() => run({ action: 'stop', id: task.id })}>停止任务</button>
+        <button disabled={busy || (terminal.includes(task.status) && !['watching', 'validating'].includes(task.wait?.status)) || task.owner === 'human'} onClick={() => run({ action: 'stop', id: task.id })}>停止任务</button>
         <button disabled={busy || task.owner === 'human'} onClick={() => run({ action: 'takeover', id: task.id })}>人工接管</button>
         {task.owner === 'human' && <><label><input type="checkbox" checked={confirmedIdle} onChange={e => setConfirmedIdle(e.target.checked)}/>我已结束人工会话，确认可继续派发</label><button disabled={busy || !confirmedIdle} onClick={async () => { if (await run({ action: 'return', id: task.id, confirmedIdle })) setConfirmedIdle(false); }}>归还控制</button></>}
         {['failed', 'exhausted', 'stopped'].includes(task.status) && <button disabled={busy} onClick={() => run({ action: 'retry', id: task.id })}>重试任务</button>}
@@ -84,7 +90,7 @@ export function Panel({ api }) {
         {waitTask === task.id && <form onSubmit={async e => { e.preventDefault(); try { if (await run({ action: 'arm-wait', id: task.id, wait: JSON.parse(waitDraft), preserveCursor })) { setWaitTask(null); setPreserveCursor(false); } } catch { setError('恢复条件 JSON 格式有误。'); } }}>
           <label><input type="checkbox" checked={preserveCursor} onChange={e => setPreserveCursor(e.target.checked)}/>保留原监听起点，核对期间收到的回复（仅同一事项和等待类型）</label>
           <label>恢复条件 JSON<textarea required rows={8} value={waitDraft} onChange={e => setWaitDraft(e.target.value)}/></label>
-          <p>只监听保存后的新回复；kind 为 linear 或 time。time 必须提供带时区的 notBefore，有结束时间时填写 expiresAt。保存不会立即重跑任务，也不会授权额外操作。</p>
+          <p>只监听保存后的新回复；Linear 目标必须是当前工单或其直接子单，保存前会校验。kind 为 linear 或 time。time 必须提供带时区的 notBefore，有结束时间时填写 expiresAt。保存不会立即重跑任务，也不会授权额外操作。</p>
           <button disabled={busy}>保存恢复条件</button><button type="button" onClick={() => setWaitTask(null)}>取消</button></form>}
         {task.resultError && <p role="alert">结果校验：{task.resultError}。格式修复只整理已有证据，不应重复执行工作。</p>}
         {task.status === 'stalled' && <p>已停止重复尝试。请查看本轮结果和历史证据，确定新方案后再续办，无需验收。</p>}

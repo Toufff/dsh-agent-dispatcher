@@ -10,6 +10,7 @@ export const executorSchema = z.object({
 }).strict();
 export const projectSchema = z.object({
   id, label: id, cwd: z.string().refine(path.isAbsolute, 'Use an absolute local directory'),
+  category: z.enum(['business', 'test', 'archive']).optional(),
   executionInstructions: z.string().max(6000).optional(),
   followup: z.object({ enabled: z.boolean(), commentAuthorIds: z.array(id).max(30),
     observeAfterExpiry: z.boolean().optional(),

@@ -1,3 +1,7 @@
+export class WaitTargetError extends Error {
+  constructor() { super('等待目标不是当前工单或同一项目下的直接子单；请修正恢复条件，重试不会解决此问题。'); this.code = 'INVALID_WAIT_TARGET'; }
+}
+
 /** Fixed official endpoint: issue content cannot redirect credentials. */
 export class LinearClient {
   constructor(token, fetcher = fetch) { this.token = token; this.fetcher = fetcher; }
@@ -87,7 +91,7 @@ export class LinearClient {
       }`, { id: issueId, after: cursor });
       issue = data.issue;
       if (!issue || issue.project?.id !== mapping.projectId || (issue.id !== parentId && issue.parent?.id !== parentId))
-        throw new Error('Follow-up must target the mapped issue or its direct child in the same project');
+        throw new WaitTargetError();
       comments.push(...issue.comments.nodes);
       if (comments.length > 5000) throw new Error('Follow-up comment history is too broad');
       cursor = issue.comments.pageInfo.hasNextPage ? issue.comments.pageInfo.endCursor : null;

@@ -7,6 +7,7 @@ import { MemoryStore } from '../src/dispatcher.js';
 import { parseOutcome } from '../src/outcome.js';
 import { wakeEvent } from '../src/followup.js';
 import { shareable } from '../src/reporting.js';
+import { WaitTargetError } from '../src/linear.js';
 
 const contract = (status, extra = {}) => `<dispatch-result>${JSON.stringify({ status,
   evidence: ['isolated check passed'], remaining: status === 'complete' ? [] : ['peer receipt'],
@@ -79,6 +80,46 @@ test('API failure stays blocked and retries without losing the reply', async () 
   const f = await fixture(); f.setComments([comment()]); f.fail(true); await f.runtime.monitor();
   assert.match((await f.runtime.snapshot()).tasks[0].wait.error, /Temporary/);
   f.fail(false); await f.runtime.monitor(); assert.equal((await f.runtime.snapshot()).tasks[0].status, 'queued');
+});
+
+test('invalid target stops retrying durably, reports once and never launches', async () => {
+  const f = await fixture(); await f.runtime.report(); const baseline = f.reports.length;
+  let reads = 0;
+  const factory = () => ({ ...f.factory(), activity: async () => { reads++; throw new WaitTargetError(); } });
+  f.runtime.linearFactory = factory;
+  const before = (await f.runtime.snapshot()).tasks[0];
+  await f.runtime.monitor(); await f.runtime.report();
+  const invalid = (await f.runtime.snapshot()).tasks[0];
+  assert.equal(invalid.wait.status, 'invalid'); assert.equal(invalid.wait.errorCode, 'INVALID_WAIT_TARGET');
+  assert.deepEqual(invalid.attempts, before.attempts); assert.equal(invalid.wait.armedAt, before.wait.armedAt);
+  assert.equal(f.reports.length, baseline + 1); assert.match(f.reports.at(-1).body, /停止重试/);
+  const next = await new Runtime({ store: f.store, directory: os.tmpdir(), env: { TEST_TOKEN: 'synthetic' }, linearFactory: factory }).init();
+  next.adapters.codex = f.adapter;
+  await next.monitor(); await next.report(); await next.dispatcher.tick();
+  assert.equal(reads, 1); assert.equal(f.starts, 1); assert.equal(f.reports.length, baseline + 1);
+  assert.match((await next.snapshot()).errors.join(''), /配置无效/);
+});
+
+test('manual wait validation rejects invalid target without replacing evidence and accepts corrected wait without launching', async () => {
+  const f = await fixture(), before = (await f.runtime.snapshot()).tasks[0];
+  f.runtime.linearFactory = () => ({ activity: async () => { throw new WaitTargetError(); } });
+  await assert.rejects(f.runtime.command({ action: 'arm-wait', id: before.id, wait: { kind: 'linear', issueId: 'unrelated', condition: 'receipt' } }), error => error.code === 'INVALID_WAIT_TARGET');
+  assert.deepEqual((await f.runtime.snapshot()).tasks[0], before);
+  f.runtime.linearFactory = f.factory;
+  await f.runtime.command({ action: 'arm-wait', id: before.id, wait: { kind: 'linear', issueId: 'parent', condition: 'reply on this issue' } });
+  const after = (await f.runtime.snapshot()).tasks[0];
+  assert.equal(after.wait.issueId, 'parent'); assert.equal(after.wait.status, 'watching');
+  assert.deepEqual(after.waitHistory.at(-1), before.wait); assert.deepEqual(after.attempts, before.attempts); assert.equal(f.starts, 1);
+});
+
+test('changing a mapping during target validation cannot overwrite the existing wait', async () => {
+  const f = await fixture(), before = (await f.runtime.snapshot()).tasks[0];
+  let enter, release; const entered = new Promise(resolve => { enter = resolve; });
+  f.runtime.linearFactory = () => ({ activity: async () => { enter(); return new Promise(resolve => { release = resolve; }); } });
+  const arming = f.runtime.command({ action: 'arm-wait', id: before.id, wait: { kind: 'linear', issueId: 'parent', condition: 'receipt' } });
+  await entered; await f.runtime.dispatcher.update(s => { s.settings.projects[0].linear.projectId = 'changed'; });
+  release({ comments: [] }); await assert.rejects(arming, /changed while checking/);
+  assert.deepEqual((await f.runtime.snapshot()).tasks[0].wait, before.wait); assert.equal(f.starts, 1);
 });
 
 test('sustained monitor failure is durable, reported once, and recovery never reexecutes work', async () => {
@@ -285,7 +326,7 @@ test('reassessment recovers a stored result without executing and preserves repl
   const before = (await f.runtime.snapshot()).tasks[0];
   await f.runtime.command({ action: 'reassess-result', id });
   const recovered = (await f.runtime.snapshot()).tasks[0];
-  assert.equal(f.starts, 1); assert.equal(recovered.status, 'blocked'); assert.equal(recovered.wait.status, 'watching');
+  assert.equal(f.starts, 1); assert.equal(recovered.status, 'blocked'); assert.equal(recovered.wait.status, 'validating');
   assert.equal(recovered.wait.armedAt, before.attempts[0].startedAt);
   assert.equal(recovered.wait.expiresAt, '2030-01-01T21:30:00+08:00');
   assert.deepEqual(recovered.attempts, before.attempts); assert.equal(recovered.summary, before.summary);

@@ -7,6 +7,11 @@ const task = { status: 'blocked', projectId: 'p', issue: { id: 'parent' }, wait,
   outcome: { wait, next: 'Verify before proceeding', blockers: [{ owner: 'Collaborator', reason: 'Receipt is missing', resumeWhen: 'Receipt arrives' }] } };
 const data = { paused: false, settings: { projects: [{ id: 'p', linear: { enabled: true }, followup: { enabled: true, observeAfterExpiry: true } }] }, tasks: [{ issue: { id: 'child', identifier: 'TEST-2', url: 'https://linear.app/example/issue/TEST-2' } }] };
 
+test('invalid target is a configuration fault, not a retrying network failure or expired window', () => {
+  const v = waitView({ ...task, wait: { ...wait, status: 'invalid', error: 'invalid target', errorCount: 7 } }, data, now + 7200000);
+  assert.equal(v.title, '等待目标需要修正'); assert.equal(v.monitor, '配置错误，已停止重试');
+});
+
 test('waiting view identifies collaborator, actual blocker and linked issue', () => {
   const v = waitView(task, data, now);
   assert.equal(v.reason, 'Receipt is missing'); assert.equal(v.owners, 'Linear 回复者待核对');

@@ -25,8 +25,13 @@ function previousResult(task, attempt) {
   return task.summary || task.rounds?.findLast(round => round.attempts?.some(a => a.id === attempt?.id))?.summary || '';
 }
 
-function monitorFailure(task, message) {
+function monitorFailure(task, message, code) {
   task.wait.error = String(message).slice(0, 300);
+  if (code === 'INVALID_WAIT_TARGET') {
+    task.wait.status = 'invalid'; task.wait.errorCode = code; task.wait.failureNotified = true;
+    task.report = 'pending'; task.events.push({ action: 'invalid-wait-target', at: task.wait.lastCheckedAt });
+    return;
+  }
   task.wait.errorSince ||= task.wait.lastCheckedAt;
   task.wait.errorCount = (task.wait.errorCount || 0) + 1;
   if (task.wait.errorCount >= 3 && !task.wait.failureNotified) {
@@ -94,7 +99,9 @@ export class Runtime {
     const reportErrors = state.outbox.filter(i => i.status === 'pending' && i.tries >= 3)
       .map(i => `${state.tasks.find(t => t.id === i.taskId)?.issue?.identifier || 'Linear'} 回写已失败 ${i.tries} 次，自动重试中；不会重跑任务。`);
     const monitorErrors = state.tasks.filter(t => t.wait?.failureNotified && t.status === 'blocked')
-      .map(t => `${t.issue?.identifier || t.title}: 条件监听连续失败 ${t.wait.errorCount} 次，自动复核中；未启动执行。`);
+      .map(t => t.wait.status === 'invalid'
+        ? `${t.issue?.identifier || t.title}: 等待目标配置无效，已停止重试。${t.wait.error}`
+        : `${t.issue?.identifier || t.title}: 条件监听连续失败 ${t.wait.errorCount} 次，自动复核中；未启动执行。`);
     return { ...state, health: this.health, errors: [...this.errors, ...reportErrors, ...monitorErrors] };
   }
   async configure(settings, revision) {
@@ -172,6 +179,13 @@ export class Runtime {
     }
     else if (request.action === 'arm-wait') {
       const wait = waitSchema.parse(request.wait);
+      const before = await this.store.load(), original = before.tasks.find(t => t.id === request.id);
+      const originalProject = before.settings.projects.find(p => p.id === original?.projectId);
+      if (wait.kind === 'linear') {
+        if (!original?.issue?.id || !originalProject?.linear?.enabled) throw new Error('Linear mapping is required');
+        // Read-only validation before replacing the existing wait/cursor.
+        await this.client(originalProject.linear).activity(originalProject.linear, wait.issueId || original.issue.id, original.issue.id);
+      }
       await this.dispatcher.update(state => {
         const task = state.tasks.find(t => t.id === request.id);
         if (!task || task.owner === 'human' || !['blocked', 'stopped', 'stalled'].includes(task.status))
@@ -183,6 +197,8 @@ export class Runtime {
         if (state.tasks.some(t => t.key === JSON.stringify([source, `continue:${task.id}`])))
           throw new Error('This task already has a continuation; configure the latest task');
         const project = state.settings.projects.find(p => p.id === task.projectId);
+        if (!isDeepStrictEqual(project, originalProject) || !isDeepStrictEqual(task.wait, original?.wait))
+          throw new Error('Task or mapping changed while checking the wait target; refresh first');
         if (!project?.followup?.enabled) throw new Error('Enable local follow-up policy first');
         if (wait.kind === 'linear' && (!task.issue?.id || !project.linear?.enabled || !project.followup.commentAuthorIds.length))
           throw new Error('Linear mapping and trusted collaborator IDs are required');
@@ -318,7 +334,7 @@ export class Runtime {
           task.status = 'stalled';
         } else task.status = { complete: 'review', blocked: 'blocked', decision: 'decision' }[outcome.status];
         if (task.status === 'blocked' && outcome?.wait) {
-          task.wait = { ...outcome.wait, id: randomUUID(), status: 'watching',
+          task.wait = { ...outcome.wait, id: randomUUID(), status: outcome.wait.kind === 'linear' ? 'validating' : 'watching',
             armedAt: attempt?.startedAt || new Date().toISOString(), seen: task.followupSeen || [],
             issueId: outcome.wait.issueId || task.issue?.id };
           task.waitProject = structuredClone(state.settings.projects.find(p => p.id === task.projectId));
@@ -344,13 +360,13 @@ export class Runtime {
     // Local deadlines cannot depend on a successful network read.
     await this.dispatcher.update(state => {
       for (const task of state.tasks) if (task.status === 'blocked' && task.owner !== 'human' &&
-          task.wait?.status === 'watching' && task.wait.expiresAt && Date.now() >= Date.parse(task.wait.expiresAt)) {
+          ['watching', 'validating'].includes(task.wait?.status) && task.wait.expiresAt && Date.now() >= Date.parse(task.wait.expiresAt)) {
         task.wait.status = 'expired'; task.wait.expiredAt = new Date().toISOString(); task.report = 'pending';
         task.events.push({ action: 'window-expired', at: task.wait.expiredAt });
       }
     });
     const snapshot = await this.store.load();
-    for (const old of snapshot.tasks.filter(t => t.status === 'blocked' && t.owner !== 'human' && ['watching', 'expired'].includes(t.wait?.status))) {
+    for (const old of snapshot.tasks.filter(t => t.status === 'blocked' && t.owner !== 'human' && ['watching', 'validating', 'expired'].includes(t.wait?.status))) {
       const [source] = JSON.parse(old.key);
       if (snapshot.tasks.some(t => t.key === JSON.stringify([source, `continue:${old.id}`]))) continue;
       const project = snapshot.settings.projects.find(p => p.id === old.projectId);
@@ -377,6 +393,7 @@ export class Runtime {
             state.tasks.some(t => t.key === JSON.stringify([source, `continue:${old.id}`])) ||
             !isDeepStrictEqual(project, state.settings.projects.find(p => p.id === task.projectId))) return;
           task.wait.lastCheckedAt = new Date().toISOString();
+          if (task.wait.status === 'validating') task.wait.status = 'watching';
           if (!event) { monitorRecovered(task); return; }
           if (observing) {
             monitorRecovered(task);
@@ -415,7 +432,7 @@ export class Runtime {
           if (task?.wait?.id === old.wait.id && task.wait.status === old.wait.status && task.status === 'blocked' &&
               task.owner !== 'human' && !state.paused) {
             task.wait.lastCheckedAt = new Date().toISOString();
-            monitorFailure(task, error.message);
+            monitorFailure(task, error.message, error.code);
           }
         });
       }

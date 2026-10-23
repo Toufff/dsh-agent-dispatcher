@@ -92,5 +92,5 @@ test('activity validates parent ownership and child relationship and paginates c
  assert.equal((await client.activity(mapping,'child','parent')).comments.length,2);assert.equal(pages,2);
  assignee='other';await assert.rejects(client.activity(mapping,'child','parent'),/reassigned/);
  assignee='owner';parentState='completed';await assert.rejects(client.activity(mapping,'child','parent'),/closed/);
- parentState='started';childParent='unrelated';await assert.rejects(client.activity(mapping,'child','parent'),/direct child/);
+ parentState='started';childParent='unrelated';await assert.rejects(client.activity(mapping,'child','parent'),error=>error.code==='INVALID_WAIT_TARGET');
 });

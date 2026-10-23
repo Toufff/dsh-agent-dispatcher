@@ -15,9 +15,10 @@ function Choice({ label, value, options, onChange, required = false, disabled = 
 export function ProjectSettings({ data, api, onSave, onClose, onGuardChange }) {
   const [settings, setSettings] = useState(() => structuredClone(data.settings));
   const [baseRevision, setBaseRevision] = useState(data.revision);
-  const [selected, setSelected] = useState(data.settings.projects[0]?.id || '');
+  const [selected, setSelected] = useState((data.settings.projects.find(p => !p.category || p.category === 'business') || data.settings.projects[0])?.id || '');
   const [dirty, setDirty] = useState(false), [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(''), [error, setError] = useState('');
+  const [showHistory, setShowHistory] = useState(false);
   const [catalogs, setCatalogs] = useState({}), [query, setQuery] = useState('');
   const [checkedPath, setCheckedPath] = useState(''), [raw, setRaw] = useState(null);
   const request = useRef(0);
@@ -45,7 +46,7 @@ export function ProjectSettings({ data, api, onSave, onClose, onGuardChange }) {
       const value = await api.catalog(tokenEnv);
       if (serial !== request.current) return;
       if (workspace && workspace !== value.organization.id) throw new Error('此凭据属于另一个 Linear 工作区，未更改当前映射。请使用原连接，或新建项目映射。');
-      setCatalogs(old => ({ ...old, [tokenEnv]: value }));
+      setCatalogs(old => ({ ...old, [tokenEnv]: { ...value, checkedAt: new Date().toISOString() } }));
       if (!workspace) linear({ workspaceId: value.organization.id, assigneeId: value.viewer.id });
       setNotice(`已读取 ${value.organization.name} 的 ${value.projects.length} 个项目；不会因此开启接单。`);
     } catch (e) { if (serial === request.current) { setCatalogs(old => { const next = { ...old }; delete next[tokenEnv]; return next; }); setError(e.message); } }
@@ -76,22 +77,23 @@ export function ProjectSettings({ data, api, onSave, onClose, onGuardChange }) {
   }
   const states = (validCatalog?.workflowStates || []).map(s => ({ ...s, name: `${s.team.name} / ${s.name}` }));
   return <section className="project-settings" aria-label="项目与连接配置">
-    <div className="section-heading"><div><h2>项目与连接</h2><p className="muted">选择 Linear 项目，指定本机工作目录。凭据、目录与执行策略只保存在本机。</p></div><button disabled={busy} onClick={onClose}>返回任务队列</button></div>
+    <div className="section-heading"><div><h2>项目与连接</h2><p className="muted">一个 Linear 项目可有多个本地映射。映射负责本机目录和执行策略，不会创建 Linear 项目。</p></div><button disabled={busy} onClick={onClose}>返回任务队列</button></div>
     {stale && <div className="notice" role="alert">其他窗口已修改配置。当前草稿保留，重新读取后再保存。<button disabled={busy} onClick={() => { if (!dirty || window.confirm('放弃草稿并读取最新配置？')) reload(); }}>重新读取</button></div>}
     {error && <p className="form-error" role="alert">{error}</p>}{notice && <p className="form-feedback" role="status">{notice}</p>}
     <div className="project-layout"><aside className="project-picker"><label>本机项目<input type="search" placeholder="按名称筛选" value={query} onChange={e => setQuery(e.target.value)}/></label>
-      <ul>{settings.projects.filter(p => `${p.label} ${p.id}`.toLowerCase().includes(query.toLowerCase())).map(p => <li key={p.id}><button disabled={busy} aria-pressed={selected === p.id} onClick={() => { setSelected(p.id); setError(''); setNotice(''); setCheckedPath(''); }}><strong>{p.label || '未命名项目'}</strong><span className="muted">{p.linear ? (p.linear.enabled ? 'Linear 接单已启用' : 'Linear 接单已停用') : '仅本地任务'}</span></button></li>)}</ul>
+      <label className="check-row"><input type="checkbox" checked={showHistory} onChange={e => setShowHistory(e.target.checked)}/>显示测试／历史映射</label><ul>{settings.projects.filter(p => (showHistory || !p.category || p.category === 'business' || p.id === selected)).filter(p => `${p.label} ${p.id}`.toLowerCase().includes(query.toLowerCase())).map(p => <li key={p.id}><button disabled={busy} aria-pressed={selected === p.id} onClick={() => { setSelected(p.id); setError(''); setNotice(''); setCheckedPath(''); }}><strong>{p.label || '未命名项目'}</strong><span className="muted">{p.linear ? (p.linear.enabled ? 'Linear 接单已启用' : 'Linear 接单已停用') : '仅本地任务'}</span></button></li>)}</ul>
       <button disabled={busy} onClick={() => { const p = emptyProject(); update({ ...settings, projects: [...settings.projects, p] }); setSelected(p.id); setQuery(''); setCheckedPath(''); }}>新增项目映射</button>
       <p className="muted">同一账号的多个项目可以复用相同的密钥环境变量。</p>
     </aside>
     {project ? <form className="project-editor" onSubmit={save}><fieldset disabled={busy}>
       <div className="section-heading"><h2>{project.label || '新增项目'}</h2><span className="status">{dirty ? '有未保存的修改' : '已保存'}</span></div>
-      <label>本机项目名称<input required maxLength={160} value={project.label} onChange={e => change({ label: e.target.value })}/></label>
+      <Choice label="映射用途" value={project.category || 'business'} options={[{id:'business',name:'正式业务'},{id:'test',name:'隔离测试'},{id:'archive',name:'历史归档'}]} onChange={category => change({ category })}/>
+      <label>本机映射名称<input required maxLength={160} value={project.label} onChange={e => change({ label: e.target.value })}/></label>
       <label>本地工作目录<input required placeholder="例如 F:/Projects/my-project" value={project.cwd} onChange={e => { change({ cwd: e.target.value }); setCheckedPath(''); }}/></label>
       <div className="actions"><button type="button" onClick={checkDirectory}>检查目录</button><span className="muted">{checkedPath === project.cwd && checkedPath ? '目录存在' : '填写绝对路径；不会自动创建目录。'}</span></div>
       <section className="config-section"><h3>Linear 连接</h3><label className="check-row"><input type="checkbox" checked={!!mapping} onChange={e => { if (e.target.checked) change({ linear: newMapping() }); else { const next = { ...project }; delete next.linear; if (next.followup) next.followup = { ...next.followup, enabled: false }; update({ ...settings, projects: settings.projects.map(p => p.id === selected ? next : p) }); } }}/>为此项目配置 Linear</label>
-      {mapping && <><div className="inline-field"><label>密钥环境变量名<input autoComplete="off" value={mapping.tokenEnv} onChange={e => linear({ tokenEnv: e.target.value })} placeholder="LINEAR_API_KEY" pattern="[A-Z][A-Z0-9_]+"/></label><button type="button" onClick={connect}>{busy ? '正在读取…' : '读取账号与项目'}</button></div><p className="muted">连接方式：API Key。这里只填写宿主已配置的变量名，不填写或展示密钥。</p>
-        {validCatalog ? <div className="connection-identity"><strong>{validCatalog.viewer.name}</strong><span>{validCatalog.organization.name}</span><span className="status">已验证连接</span></div> : <p className="muted">读取后按真实名称选择项目、成员和状态。现有配置在读取成功前保持不变。</p>}
+      {mapping && <><div className="inline-field"><label>密钥环境变量名<input autoComplete="off" value={mapping.tokenEnv} onChange={e => linear({ tokenEnv: e.target.value })} placeholder="LINEAR_API_KEY" pattern="[A-Z][A-Z0-9_]+"/></label><button type="button" onClick={connect}>{busy ? '正在检查…' : '检查连接并读取项目'}</button></div><p className="muted">连接方式：API Key。这里只填写宿主已配置的变量名，不填写或展示密钥。</p>
+        {validCatalog ? <div className="connection-identity"><strong>{validCatalog.viewer.name}</strong><span>{validCatalog.organization.name}</span><span className="status">连接正常 · {new Date(validCatalog.checkedAt).toLocaleTimeString()}</span></div> : <p className="muted">读取后按真实名称选择项目、成员和状态。现有配置在读取成功前保持不变。</p>}
         <Choice label="Linear 项目" value={mapping.projectId} options={validCatalog?.projects || []} onChange={projectId => { const next = { ...mapping, projectId, readyStateId: '', reviewStateId: '' }; delete next.activeStateId; delete next.blockedStateId; change({ linear: next }); }} required/>
         <div className="config-columns"><Choice label="接收指派给谁的工单" value={mapping.assigneeId} options={validCatalog?.users || []} onChange={assigneeId => linear({ assigneeId })} required/>
         <Choice label="接单状态" value={mapping.readyStateId} options={states} onChange={readyStateId => linear({ readyStateId })} required/>

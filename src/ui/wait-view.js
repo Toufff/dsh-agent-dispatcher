@@ -34,12 +34,14 @@ export function waitView(task, data, now = Date.now()) {
   else if (task.status === 'stalled') { title = '续办已暂停'; monitor = '不会自动执行'; action = '需核对进展或次数限制，再设置恢复条件。'; }
   else if (task.status === 'stopped') { title = '任务已停止'; monitor = '监听已停止'; action = '需明确重新设置恢复条件才会继续监听。'; }
   else if (!wait) { monitor = '未设置自动恢复条件'; action = '需设置恢复条件，或核对阻塞后手动继续。'; }
+  else if (wait.status === 'invalid') { title = '等待目标需要修正'; monitor = '配置错误，已停止重试'; action = '在“设置恢复条件”中选择当前工单或其直接子单，保存前会校验关系。'; }
   else if (expired) { title = '等待窗口已过期'; monitor = project?.followup?.observeAfterExpiry && !data.paused && project?.followup?.enabled ? '仅观察新回复，不会启动执行' : '不会自动执行'; action = '需重新确定有效时间并设置恢复条件。'; }
   else if (wait.status === 'limit') { title = '自动唤醒次数已用完'; monitor = '不会自动执行'; action = '需核对进展和唤醒限制后重新安排。'; }
   else if (task.owner === 'human') { monitor = '人工接管中，自动恢复暂停'; action = '结束人工处理并归还控制后才能恢复监听。'; }
   else if (data.paused) { monitor = '派发已暂停'; action = '开启派发后才会检查条件。'; }
   else if (!project?.followup?.enabled || (task.issue && !project?.linear?.enabled)) { monitor = '项目自动恢复未启用'; action = '在项目配置中启用自动恢复及 Linear 连接。'; }
   else if (wait.error) { monitor = '条件检查失败，正在重试'; action = '条件尚未确认，不会因此启动执行。'; }
+  else if (wait.status === 'validating') { monitor = '正在校验等待目标'; action = '确认工单关系与本地规则后才开始监听。'; }
   else if (wait.status === 'watching') {
     const stale = wait.lastCheckedAt && now - Date.parse(wait.lastCheckedAt) > 90000;
     monitor = stale ? '检查记录超过 90 秒未更新' : '自动检查已开启';
