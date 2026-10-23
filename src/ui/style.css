@@ -5,3 +5,15 @@
 @media(prefers-reduced-motion:no-preference){.dispatch .task-list button,.dispatch button{transition:background-color .12s ease-out}}
 
 .dispatch .agent-name{display:inline-flex;align-items:center;gap:9px;min-width:0}.dispatch .agent-icon{display:inline-flex;width:24px;height:24px;flex:none;color:var(--d-text)}.dispatch .agent-icon svg{width:100%;height:100%}.dispatch .agent-icon-dsh{color:var(--d-blue)}.dispatch .agent-icon-claude{color:#ad502d}.dispatch .attempt .agent-icon{width:20px;height:20px}@media(prefers-color-scheme:dark){.dispatch .agent-icon-claude{color:#e8a082}}
+
+.dispatch .task-copy{display:flex;flex-direction:column;gap:6px;min-width:0}
+.dispatch .task-wait-reason{font-size:13px;font-weight:400;color:var(--d-text);overflow-wrap:anywhere}
+.dispatch .task-wait-meta{font-size:12px;font-weight:400;color:var(--d-muted);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.dispatch .wait-detail{background:var(--d-panel);padding:16px;margin:16px 0 24px;overflow-wrap:anywhere}
+.dispatch .wait-detail h3{margin:0;font-size:17px}.dispatch .wait-detail .section-heading{align-items:flex-start;flex-wrap:wrap;gap:8px}
+.dispatch .wait-detail .wait-reason{font-weight:600;margin:12px 0 16px}
+.dispatch .wait-detail dl{display:grid;grid-template-columns:minmax(110px,150px) minmax(0,1fr);gap:10px 16px;margin:0}
+.dispatch .wait-detail dt{color:var(--d-muted)}.dispatch .wait-detail dd{margin:0;min-width:0}
+.dispatch .wait-detail time{font-variant-numeric:tabular-nums}.dispatch .wait-detail .muted{margin:16px 0 0}
+.dispatch .task-list .status{white-space:normal;flex-shrink:0;max-width:10em;text-align:right}
+@media(max-width:760px){.dispatch .wait-detail dl{grid-template-columns:1fr;gap:4px}.dispatch .wait-detail dd{margin-bottom:12px}.dispatch .task-list .status{max-width:6em}}

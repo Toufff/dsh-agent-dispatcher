@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { AgentIcon } from './agent-icon.jsx';
+import { waitView, formatTime } from './wait-view.js';
+import { WaitDetails } from './wait-details.jsx';
 const labels = { queued: '排队中', starting: '正在启动', running: '执行中', finishing: '执行完成，正在清理进程', waiting: '等待输入', busy: '会话忙碌', unknown: '状态待核对', review: '完成待验收', blocked: '等待外部条件', decision: '需要决策或授权', stalled: '续办已暂停：进展或次数限制', needs_result: '结果待分类', failed: '执行失败', exhausted: '无可用执行器', stopped: '已停止', stopping: '正在停止', manual: '人工接管', accepted: '已验收', 'auto-continue': '自动继续未完成事项', 'repair-result': '自动补全结果分类' };
 const agentLabel = executor => executor?.type === 'codex' && executor.label === 'Codex' ? 'ChatGPT' : executor?.label;
 const terminal = ['failed', 'exhausted', 'stopped', 'review', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result'];
-const waitLabels = { watching: '监听中', triggered: '条件有变化，已排队核对', expired: '窗口已过期，需重新确定时间', limit: '已达到自动唤醒上限', resolved: '本轮等待已结束', superseded: '已由手动续办替代', suspended: '已停止监听' };
 export function Panel({ api }) {
   const [data, setData] = useState(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState(null), [revision, setRevision] = useState(0), [selected, select] = useState(null);
@@ -18,6 +19,7 @@ export function Panel({ api }) {
     catch (e) { setError(e.message); return false; } finally { setBusy(false); } }
   if (!data) return <main className="dispatch"><h1>任务派发</h1><p role="status">{error || '正在读取本机调度状态…'}</p></main>;
   const settings = draft || data.settings, task = data.tasks.find(t => t.id === selected) || data.tasks.at(-1);
+  const waiting = task && waitView(task, data);
   function edit(value) { if (!draft) setRevision(data.revision); setDraft(value); }
   function reorder(from, to) { if (from === null || to < 0 || to >= settings.executors.length) return;
     const executors = [...settings.executors]; executors.splice(to, 0, ...executors.splice(from, 1)); edit({ ...settings, executors }); }
@@ -41,8 +43,11 @@ export function Panel({ api }) {
         <label>需求与验收条件<textarea required rows={4} value={newTask.prompt} onChange={e => setTask({ ...newTask, prompt: e.target.value })}/></label><button className="primary" disabled={busy || !data.settings.projects.length}>加入队列</button></form>
     </aside><section className="queue"><div className="section-heading"><h2>任务队列 <span className="count">{data.tasks.length}</span></h2><button disabled={busy} onClick={() => run({ action: 'poll' })}>检查 Linear</button></div>
       {!data.tasks.length ? <div className="empty"><h3>还没有待处理任务</h3><p>先配置本地项目，再添加任务或启用 Linear 接单。</p><button onClick={openConfig}>配置本地项目</button></div>
-        : <ul className="task-list">{data.tasks.map(t => <li key={t.id}><button className={task?.id === t.id ? 'selected' : ''} onClick={() => select(t.id)}><strong>{t.title}</strong><span className={`status ${t.status}`}>{labels[t.status] || t.status}</span></button></li>)}</ul>}
-      {task && <article className="detail"><h2>{task.title}</h2><p className="muted">{task.owner === 'human' ? '由你控制会话，自动派发暂停等待归还。' : '由调度器控制本轮执行。'}</p><div className="actions">
+        : <ul className="task-list">{data.tasks.map(t => { const view = waitView(t, data); return <li key={t.id}><button className={task?.id === t.id ? 'selected' : ''} onClick={() => select(t.id)}>
+          <span className="task-copy"><strong>{t.title}</strong>{view && <><span className="task-wait-reason">{view.reason}</span><span className="task-wait-meta">{view.monitor}{view.owners && ` · ${view.owners}`}{view.wait?.kind === 'time' && view.wait.notBefore && ` · ${formatTime(view.wait.notBefore)} 起核对`}{view.wait?.expiresAt && ` · 截止 ${formatTime(view.wait.expiresAt)}`}</span></>}</span>
+          <span className={`status ${view ? 'waiting' : t.status}`}>{view?.title || labels[t.status] || t.status}</span></button></li>; })}</ul>}
+      {task && <article className="detail"><h2>{task.title}</h2><p className="muted">{task.owner === 'human' ? '由你控制会话，自动派发暂停等待归还。' : '由调度器控制本轮执行。'}</p>
+        {waiting && <WaitDetails view={waiting}/>}<div className="actions">
         <button disabled={busy || (terminal.includes(task.status) && task.wait?.status !== 'watching') || task.owner === 'human'} onClick={() => run({ action: 'stop', id: task.id })}>停止任务</button>
         <button disabled={busy || task.owner === 'human'} onClick={() => run({ action: 'takeover', id: task.id })}>人工接管</button>
         {task.owner === 'human' && <><label><input type="checkbox" checked={confirmedIdle} onChange={e => setConfirmedIdle(e.target.checked)}/>我已结束人工会话，确认可继续派发</label><button disabled={busy || !confirmedIdle} onClick={async () => { if (await run({ action: 'return', id: task.id, confirmedIdle })) setConfirmedIdle(false); }}>归还控制</button></>}
@@ -60,19 +65,10 @@ export function Panel({ api }) {
           <label>恢复条件 JSON<textarea required rows={8} value={waitDraft} onChange={e => setWaitDraft(e.target.value)}/></label>
           <p>只监听保存后的新回复；kind 为 linear 或 time。time 必须提供带时区的 notBefore，有结束时间时填写 expiresAt。保存不会立即重跑任务，也不会授权额外操作。</p>
           <button disabled={busy}>保存恢复条件</button><button type="button" onClick={() => setWaitTask(null)}>取消</button></form>}
-        {task.wait && <section aria-label="恢复条件"><h3>恢复条件</h3><p>{task.wait.condition}</p>
-          <p>{data.paused ? '派发暂停，不会自动恢复' : !data.settings.projects.find(p => p.id === task.projectId)?.followup?.enabled ? '此项目未启用自动恢复' : task.wait.status === 'expired' && data.settings.projects.find(p => p.id === task.projectId)?.followup?.observeAfterExpiry ? '执行窗口已过期，仍监听协作者回复；不会启动执行' : waitLabels[task.wait.status] || task.wait.status}</p>
-          <p>{task.wait.kind === 'linear' ? `等待指定协作者更新：${task.wait.issueId || '尚未指定 issue'}` : '等待明确时间后重新检查'}</p>
-          {task.wait.notBefore && <p>最早核对：<time>{task.wait.notBefore}</time></p>}
-          {task.wait.expiresAt && <p>窗口截止：<time>{task.wait.expiresAt}</time>（过期不执行）</p>}
-          {task.wait.lastCheckedAt && <p>上次检查：{new Date(task.wait.lastCheckedAt).toLocaleString()}</p>}
-          {task.wait.error && <p role="alert">监听失败：{task.wait.error}。恢复条件未被确认。</p>}
-          {task.wait.pendingUpdate && <p role="status">窗口过期后收到新回复（{new Date(task.wait.pendingUpdate.receivedAt).toLocaleString()}），已保留；确认新窗口后才能执行。</p>}
-          <p className="muted">评论和时间只触发重新核对，不代表授权；原会话和本地限制保持不变。</p></section>}
-        {task.outcome?.blockers?.map((b, i) => <p key={i}><strong>{b.owner}</strong>：{b.reason}<br/>恢复条件：{b.resumeWhen}</p>)}
         {task.resultError && <p role="alert">结果校验：{task.resultError}。格式修复只整理已有证据，不应重复执行工作。</p>}
         {task.status === 'stalled' && <p>已停止重复尝试。请查看本轮结果和历史证据，确定新方案后再续办，无需验收。</p>}
-        <pre>{task.summary || '等待 agent 返回执行结果。'}</pre><p className="muted">Linear 回写：{task.issue ? ({ pending: '待生成', queued: '等待发送或重试', sent: '已发送' })[task.report] : '本地任务，无需回写'}。启用 shareProgress 后同步可分享摘要；完整执行记录保留在本机。</p>
+        {waiting && task.outcome?.publicSummary && <p>{task.outcome.publicSummary}</p>}
+        {waiting ? <details><summary>完整执行结果与原始回执</summary><pre>{task.summary || '等待 agent 返回执行结果。'}</pre></details> : <pre>{task.summary || '等待 agent 返回执行结果。'}</pre>}<p className="muted">Linear 回写：{task.issue ? ({ pending: '待生成', queued: '等待发送或重试', sent: '已发送' })[task.report] : '本地任务，无需回写'}。启用 shareProgress 后同步可分享摘要；完整执行记录保留在本机。</p>
         {!!task.rounds?.length && <details><summary>自动续办的历史结果</summary>{task.rounds.map((r, i) => <pre key={i}>{r.summary}</pre>)}</details>}
         <details><summary>历史与操作记录</summary>{(task.previousAttempts || []).map(a => <p key={a.id}>{agentLabel(data.settings.executors.find(e => e.id === a.executor)) || a.executor} · {a.status === 'review' ? '本轮执行结束' : labels[a.status] || a.status} · {a.sessionId}</p>)}{task.events?.map((event, i) => <p key={i}><time>{new Date(event.at).toLocaleString()}</time> · {labels[event.action] || event.action}</p>)}</details></article>}
     </section></div>

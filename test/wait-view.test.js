@@ -1,0 +1,45 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { waitView, formatTime } from '../src/ui/wait-view.js';
+const now = Date.parse('2030-01-01T04:00:00Z');
+const wait = { kind: 'linear', issueId: 'child', condition: 'Provide a verified receipt', status: 'watching', lastCheckedAt: new Date(now).toISOString(), expiresAt: '2030-01-01T05:00:00Z' };
+const task = { status: 'blocked', projectId: 'p', issue: { id: 'parent' }, wait,
+  outcome: { wait, next: 'Verify before proceeding', blockers: [{ owner: 'Collaborator', reason: 'Receipt is missing', resumeWhen: 'Receipt arrives' }] } };
+const data = { paused: false, settings: { projects: [{ id: 'p', linear: { enabled: true }, followup: { enabled: true, observeAfterExpiry: true } }] }, tasks: [{ issue: { id: 'child', identifier: 'TEST-2', url: 'https://linear.app/example/issue/TEST-2' } }] };
+
+test('waiting view identifies collaborator, actual blocker and linked issue', () => {
+  const v = waitView(task, data, now);
+  assert.equal(v.reason, 'Receipt is missing'); assert.equal(v.owners, 'Collaborator');
+  assert.equal(v.targetLabel, 'TEST-2'); assert.equal(v.targetUrl, data.tasks[0].issue.url);
+  assert.equal(v.monitor, '自动检查已开启');
+});
+test('rearming does not promote previous result blockers to current facts', () => {
+  const v = waitView({ ...task, wait: { ...wait, condition: 'A newly confirmed condition' } }, data, now);
+  assert.equal(v.reason, 'A newly confirmed condition'); assert.equal(v.owners, ''); assert.equal(v.next, null);
+});
+test('paused, disabled and failed checks never claim active monitoring', () => {
+  assert.equal(waitView(task, { ...data, paused: true }, now).monitor, '派发已暂停');
+  const disabled = structuredClone(data); disabled.settings.projects[0].followup.enabled = false;
+  assert.equal(waitView(task, disabled, now).monitor, '项目自动恢复未启用');
+  assert.equal(waitView({ ...task, wait: { ...wait, error: 'offline' } }, data, now).monitor, '条件检查失败，正在重试');
+  assert.equal(waitView({ ...task, owner: 'human' }, data, now).monitor, '人工接管中，自动恢复暂停');
+});
+test('expiry uses actual time before the next scheduler poll and distinguishes observation', () => {
+  const v = waitView(task, data, now + 3600001);
+  assert.equal(v.title, '等待窗口已过期'); assert.equal(v.monitor, '仅观察新回复，不会启动执行');
+  assert.equal(waitView(task, { ...data, paused: true }, now + 3600001).monitor, '不会自动执行');
+});
+test('stale checks, missing wait and exhausted wakeups explain recovery', () => {
+  assert.equal(waitView(task, data, now + 91000).monitor, '检查记录超过 90 秒未更新');
+  assert.equal(waitView({ ...task, wait: null }, data, now).monitor, '未设置自动恢复条件');
+  assert.equal(waitView({ ...task, wait: { ...wait, status: 'limit' } }, data, now).monitor, '不会自动执行');
+});
+test('time waits and active tasks are not mislabeled as collaborator waits', () => {
+  assert.equal(waitView({ ...task, wait: { ...wait, kind: 'time', notBefore: '2030-01-01T04:30:00Z' } }, data, now).title, '等待约定时间');
+  assert.equal(waitView({ ...task, status: 'running' }, data, now), null);
+  assert.equal(waitView({ ...task, status: 'decision' }, data, now).monitor, '等待决策，不会自动执行');
+  assert.equal(waitView({ ...task, status: 'stopped' }, data, now).monitor, '监听已停止');
+  assert.equal(waitView({ ...task, status: 'stalled' }, data, now).monitor, '不会自动执行');
+  assert.equal(waitView({ ...task, status: 'stopped', wait: null }, data, now), null);
+  assert.equal(formatTime('bad'), '时间格式无效');
+});
