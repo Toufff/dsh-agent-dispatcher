@@ -19,6 +19,21 @@ async function issueFixture() {
   await runtime.dispatcher.update(s => { s.settings.projects[0].linear = { enabled: true, tokenEnv: 'TEST_TOKEN' }; });
   return runtime;
 }
+
+test('issue context lookup is read-only and works for disabled historical tasks', async () => {
+  const runtime = await fixture({ env: { TEST_TOKEN: 'synthetic' }, linearFactory: () => ({
+    issueContext: async (mapping, parent, target, authors) => ({ parent, target, authors })
+  }) });
+  await runtime.dispatcher.update(state => {
+    state.settings.projects[0].linear = { tokenEnv: 'TEST_TOKEN', enabled: false };
+    state.settings.projects[0].followup = { enabled: false, commentAuthorIds: ['peer'] };
+    state.tasks.push({ id: 'task', projectId: 'p', issue: { id: 'parent' }, wait: { issueId: 'child' } });
+  });
+  const before = await runtime.store.load();
+  assert.deepEqual(await runtime.command({ action: 'issue-context', id: 'task' }), { parent: 'parent', target: 'child', authors: ['peer'] });
+  assert.deepEqual(await runtime.store.load(), before);
+  await assert.rejects(runtime.command({ action: 'issue-context', id: 'missing' }), /no Linear mapping/);
+});
 test('configuration uses compare-and-swap; task paths come only from local mappings', async () => {
   const runtime = await fixture();
   await assert.rejects(runtime.configure((await runtime.snapshot()).settings, 10), /another window/);

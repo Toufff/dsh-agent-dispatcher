@@ -2,6 +2,25 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { LinearClient } from '../src/linear.js';
 
+test('display context reads disabled/completed task identities without changing assignment or trusting unrelated users', async () => {
+  let targetParent = 'parent', workspace = 'w'; const queries = [];
+  const client = new LinearClient('synthetic', async (url, request) => {
+    const { query } = JSON.parse(request.body); queries.push(query);
+    const data = query.includes('organization') ? { organization: { id: workspace } } : {
+      source: { id: 'parent', project: { id: 'p' }, assignee: { id: 'owner', name: 'Owner' } },
+      target: { id: 'child', project: { id: 'p' }, parent: { id: targetParent }, assignee: { id: 'peer', name: 'Peer Name' } },
+      users: { nodes: [{ id: 'peer', name: 'Peer Name' }, { id: 'other', name: 'Untrusted' }] }
+    };
+    return { ok: true, json: async () => ({ data }) };
+  });
+  const mapping = { workspaceId: 'w', projectId: 'p', enabled: false };
+  const context = await client.issueContext(mapping, 'parent', 'child', ['peer']);
+  assert.equal(context.target.assignee.name, 'Peer Name'); assert.equal(context.replyUsers.length, 1);
+  assert.ok(queries.every(q => !q.includes('mutation')));
+  targetParent = 'unrelated'; await assert.rejects(client.issueContext(mapping, 'parent', 'child', ['peer']), /direct child/);
+  workspace = 'other'; await assert.rejects(client.issueContext(mapping, 'parent', 'child', ['peer']), /another workspace/);
+});
+
 test('intake validates workspace before reading issues', async () => {
   let calls = 0;
   const client = new LinearClient('synthetic', async () => { calls++; return { ok: true, json: async () => ({ data: { organization: { id: 'different' } } }) }; });

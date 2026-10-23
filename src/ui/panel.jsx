@@ -13,13 +13,27 @@ export function Panel({ api }) {
   const [confirmedIdle, setConfirmedIdle] = useState(false);
   const [waitDraft, setWaitDraft] = useState(''), [waitTask, setWaitTask] = useState(null);
   const [preserveCursor, setPreserveCursor] = useState(false);
+  const [issueContexts, setIssueContexts] = useState({});
+  const contextTask = data?.tasks.find(t => t.id === selected) || data?.tasks.at(-1);
+  useEffect(() => {
+    if (!contextTask?.issue?.id || !api.issueContext) return;
+    let live = true;
+    const id = contextTask.id;
+    const refresh = () => api.issueContext(id).then(value => {
+      if (live) setIssueContexts(old => ({ ...old, [id]: { ...value, status: 'ready' } }));
+    }).catch(() => { if (live) setIssueContexts(old => ({ ...old, [id]: { status: 'error' } })); });
+    setIssueContexts(old => ({ ...old, [id]: { status: 'loading' } }));
+    refresh(); const timer = setInterval(refresh, 60000);
+    return () => { live = false; clearInterval(timer); };
+  }, [api, contextTask?.id, contextTask?.wait?.issueId, data?.revision]);
   useEffect(() => { let live = true; const refresh = () => api.snapshot().then(v => { if (live) setData(v); }).catch(e => { if (live) setError(e.message); });
     refresh(); const timer = setInterval(refresh, 2500); return () => { live = false; clearInterval(timer); }; }, [api]);
   async function run(request) { setBusy(true); setError(''); try { setData(await api.command(request)); return true; }
     catch (e) { setError(e.message); return false; } finally { setBusy(false); } }
   if (!data) return <main className="dispatch"><h1>任务派发</h1><p role="status">{error || '正在读取本机调度状态…'}</p></main>;
   const settings = draft || data.settings, task = data.tasks.find(t => t.id === selected) || data.tasks.at(-1);
-  const waiting = task && waitView(task, data);
+  const displayData = { ...data, issueContexts };
+  const waiting = task && waitView(task, displayData);
   function edit(value) { if (!draft) setRevision(data.revision); setDraft(value); }
   function reorder(from, to) { if (from === null || to < 0 || to >= settings.executors.length) return;
     const executors = [...settings.executors]; executors.splice(to, 0, ...executors.splice(from, 1)); edit({ ...settings, executors }); }
@@ -43,7 +57,7 @@ export function Panel({ api }) {
         <label>需求与验收条件<textarea required rows={4} value={newTask.prompt} onChange={e => setTask({ ...newTask, prompt: e.target.value })}/></label><button className="primary" disabled={busy || !data.settings.projects.length}>加入队列</button></form>
     </aside><section className="queue"><div className="section-heading"><h2>任务队列 <span className="count">{data.tasks.length}</span></h2><button disabled={busy} onClick={() => run({ action: 'poll' })}>检查 Linear</button></div>
       {!data.tasks.length ? <div className="empty"><h3>还没有待处理任务</h3><p>先配置本地项目，再添加任务或启用 Linear 接单。</p><button onClick={openConfig}>配置本地项目</button></div>
-        : <ul className="task-list">{data.tasks.map(t => { const view = waitView(t, data); return <li key={t.id}><button className={task?.id === t.id ? 'selected' : ''} onClick={() => select(t.id)}>
+        : <ul className="task-list">{data.tasks.map(t => { const view = waitView(t, displayData); return <li key={t.id}><button className={task?.id === t.id ? 'selected' : ''} onClick={() => select(t.id)}>
           <span className="task-copy"><strong>{t.title}</strong>{view && <><span className="task-wait-reason">{view.reason}</span><span className="task-wait-meta">{view.monitor}{view.owners && ` · ${view.owners}`}{view.wait?.kind === 'time' && view.wait.notBefore && ` · ${formatTime(view.wait.notBefore)} 起核对`}{view.wait?.expiresAt && ` · 截止 ${formatTime(view.wait.expiresAt)}`}</span></>}</span>
           <span className={`status ${view ? 'waiting' : t.status}`}>{view?.title || labels[t.status] || t.status}</span></button></li>; })}</ul>}
       {task && <article className="detail"><h2>{task.title}</h2><p className="muted">{task.owner === 'human' ? '由你控制会话，自动派发暂停等待归还。' : '由调度器控制本轮执行。'}</p>

@@ -11,6 +11,7 @@ export async function apply(ctx) {
   const api = {
     snapshot: async () => unwrap(await ctx.remote.agentDispatcher.snapshot()),
     command: async request => unwrap(await ctx.remote.agentDispatcher.command(request)),
+    issueContext: async id => unwrap(await ctx.remote.agentDispatcher.command({ action: 'issue-context', id })),
     openSession: id => ctx.uiWorkspace.openSession(id)
   };
   ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'agent-dispatcher', inject: () => ({ api }) }, Panel));

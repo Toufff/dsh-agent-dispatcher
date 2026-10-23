@@ -150,3 +150,6 @@ Agent identities pair a bundled Lobe Icons brand mark with the visible executor 
 - **Don't** 为调度面板另建品牌视觉或装饰性阴影。
 - **Don't** 用颜色取代状态文字。
 - **Don't** 把执行完成与人工验收混为一个状态。
+
+### Linear 身份与指派
+等待详情通过本机认证的只读接口获取 Linear 主单/关联子单、负责人和可信回复者姓名，每60秒刷新所选任务；不把 agent 的 owner 自由文本当成人名。不依赖子单也被本地接单，停用的历史任务同样可以读取说明，但不会因此恢复监听。使用 Linear name，缺失时回退 displayName；读取失败明确标为未取得最新身份，不用旧名字冒充实时信息。主单负责人和回复者分别列出，关联负责人不在可信名单内时提示核对，不自动改派或改变唤醒权限。

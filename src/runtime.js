@@ -131,6 +131,14 @@ export class Runtime {
       source: source ?? `local:${randomUUID()}`, round: round ?? '1' });
   }
   async command(request) {
+    if (request.action === 'issue-context') {
+      const state = await this.store.load();
+      const task = state.tasks.find(t => t.id === request.id);
+      const project = state.settings.projects.find(p => p.id === task?.projectId);
+      if (!task?.issue?.id || !project?.linear) throw new Error('This task has no Linear mapping');
+      return this.client(project.linear).issueContext(project.linear, task.issue.id,
+        task.wait?.issueId || task.issue.id, project.followup?.commentAuthorIds || []);
+    }
     if (request.action === 'configure') await this.configure(request.settings, request.revision);
     else if (request.action === 'submit') await this.submit(request);
     else if (request.action === 'reassess-result') {

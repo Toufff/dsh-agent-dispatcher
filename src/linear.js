@@ -37,6 +37,21 @@ export class LinearClient {
       throw new Error('Parent issue is closed, reassigned or outside the mapped project; local continuation remains stopped');
     return parent;
   }
+  async issueContext(mapping, parentId, targetId, authorIds = []) {
+    const identity = await this.query('query { organization { id } }');
+    if (identity.organization.id !== mapping.workspaceId) throw new Error('Linear token belongs to another workspace');
+    const fields = 'id identifier title url project { id } parent { id } assignee { id name displayName }';
+    const data = await this.query(`query($parent:String!, $target:String!, $authors:UserFilter!) {
+      source:issue(id:$parent) { ${fields} }
+      target:issue(id:$target) { ${fields} }
+      users(filter:$authors, first:50) { nodes { id name displayName } }
+    }`, { parent: parentId, target: targetId, authors: { id: { in: [...new Set(authorIds)].slice(0, 30) } } });
+    if (!data.source || !data.target || data.source.project?.id !== mapping.projectId ||
+        data.target.project?.id !== mapping.projectId || (data.target.id !== parentId && data.target.parent?.id !== parentId))
+      throw new Error('Related issue is not the mapped issue or its direct child');
+    // Display-only data. It never changes assignees, admission rules, trusted IDs or wait cursors.
+    return { source: data.source, target: data.target, replyUsers: data.users.nodes.filter(u => authorIds.includes(u.id)), checkedAt: new Date().toISOString() };
+  }
   async activity(mapping, issueId, parentId) {
     const parent = await this.eligible(mapping, parentId);
     let cursor = null, comments = [], issue;

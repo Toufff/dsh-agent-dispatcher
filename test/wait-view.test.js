@@ -9,13 +9,24 @@ const data = { paused: false, settings: { projects: [{ id: 'p', linear: { enable
 
 test('waiting view identifies collaborator, actual blocker and linked issue', () => {
   const v = waitView(task, data, now);
-  assert.equal(v.reason, 'Receipt is missing'); assert.equal(v.owners, 'Collaborator');
+  assert.equal(v.reason, 'Receipt is missing'); assert.equal(v.owners, 'Linear 回复者待核对');
   assert.equal(v.targetLabel, 'TEST-2'); assert.equal(v.targetUrl, data.tasks[0].issue.url);
   assert.equal(v.monitor, '自动检查已开启');
 });
 test('rearming does not promote previous result blockers to current facts', () => {
   const v = waitView({ ...task, wait: { ...wait, condition: 'A newly confirmed condition' } }, data, now);
-  assert.equal(v.reason, 'A newly confirmed condition'); assert.equal(v.owners, ''); assert.equal(v.next, null);
+  assert.equal(v.reason, 'A newly confirmed condition'); assert.equal(v.owners, 'Linear 回复者待核对'); assert.equal(v.next, null);
+});
+test('Linear identity overrides role prose and keeps assignment separate from reply permissions', () => {
+  const withContext = { ...data, issueContexts: { current: { status: 'ready',
+    source: { assignee: { name: 'Owner Name' } },
+    target: { id: 'child', identifier: 'TEST-2', title: 'Receipt', assignee: { id: 'peer', name: 'Full Name', displayName: 'Reviewer' } },
+    replyUsers: [{ id: 'peer', name: 'Full Name', displayName: 'Reviewer' }] } } };
+  const v = waitView({ ...task, id: 'current' }, withContext, now);
+  assert.equal(v.title, '等待 Full Name 回复'); assert.equal(v.owners, 'Full Name');
+  assert.equal(v.sourceAssignee, 'Owner Name'); assert.equal(v.assignmentMismatch, false);
+  withContext.issueContexts.current.target.assignee.id = 'untrusted';
+  assert.equal(waitView({ ...task, id: 'current' }, withContext, now).assignmentMismatch, true);
 });
 test('paused, disabled and failed checks never claim active monitoring', () => {
   assert.equal(waitView(task, { ...data, paused: true }, now).monitor, '派发已暂停');

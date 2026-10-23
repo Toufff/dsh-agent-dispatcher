@@ -17,11 +17,18 @@ export function waitView(task, data, now = Date.now()) {
     (prior.issueId || task.issue?.id) === (wait.issueId || task.issue?.id));
   const blockers = sameWait ? task.outcome?.blockers || [] : [];
   const targetId = wait?.issueId || task.issue?.id;
-  const target = data.tasks.find(t => t.issue?.id === targetId)?.issue;
+  const context = data.issueContexts?.[task.id];
+  const target = context?.target?.id === targetId ? context.target : data.tasks.find(t => t.issue?.id === targetId)?.issue;
   const targetLabel = target?.identifier || (targetId === task.issue?.id ? task.issue?.identifier : null) || '关联工单（名称未同步）';
   const targetUrl = target?.url?.startsWith('https://linear.app/') ? target.url : null;
+  const name = user => user?.name || user?.displayName;
+  const replyUsers = context?.replyUsers || [];
+  const expected = replyUsers.filter(u => u.id !== project?.linear?.assigneeId);
+  const replyNames = expected.map(name).filter(Boolean).join('、');
+  const targetAssignee = name(context?.target?.assignee);
+  const sourceAssignee = name(context?.source?.assignee);
   const expired = wait && (wait.status === 'expired' || (wait.expiresAt && Date.parse(wait.expiresAt) <= now));
-  let title = wait?.kind === 'time' ? '等待约定时间' : wait?.kind === 'linear' ? '等待协作者回复' : '等待条件补充';
+  let title = wait?.kind === 'time' ? '等待约定时间' : wait?.kind === 'linear' ? (replyNames ? `等待 ${replyNames} 回复` : '等待 Linear 回复') : '等待条件补充';
   let monitor = '', action = '';
   if (task.status === 'decision') { title = '需要你做决定'; monitor = '等待决策，不会自动执行'; action = '核对所需决策或授权后，再明确安排继续。'; }
   else if (task.status === 'stalled') { title = '续办已暂停'; monitor = '不会自动执行'; action = '需核对进展或次数限制，再设置恢复条件。'; }
@@ -40,8 +47,11 @@ export function waitView(task, data, now = Date.now()) {
       ? '到约定时间后，由原会话重新核验条件；通过后才继续。'
       : '约每 30 秒检查可信协作者的新回复；收到后由原会话核验并继续。';
   } else { monitor = ({ triggered: '已触发，等待原会话核验', suspended: '监听已停止', resolved: '本轮等待已结束', superseded: '已由后续处理替代' })[wait.status] || '等待状态待核对'; action = '核对当前任务状态后再安排后续处理。'; }
-  return { title, monitor, action, blockers, targetId, targetLabel, targetUrl,
+  return { title, monitor, action, blockers, targetId, targetLabel, targetUrl, targetAssignee, sourceAssignee,
+    targetTitle: context?.target?.title,
+    identityStatus: task.issue ? context?.status || 'unloaded' : null,
+    assignmentMismatch: Boolean(context?.target?.assignee && expected.length && !expected.some(u => u.id === context.target.assignee.id)),
     reason: blockers.map(b => b.reason).filter(Boolean).join('；') || wait?.condition || '尚未记录具体阻塞原因，需补充后才能安排恢复。',
-    owners: [...new Set(blockers.map(b => b.owner).filter(Boolean))].join('、'),
+    owners: wait?.kind === 'linear' ? replyNames || 'Linear 回复者待核对' : [...new Set(blockers.map(b => b.owner).filter(Boolean))].join('、'),
     condition: wait?.condition, next: sameWait ? task.outcome?.next : null, wait };
 }
