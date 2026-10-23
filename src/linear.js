@@ -10,10 +10,57 @@ export class LinearClient {
       method: 'POST', headers: { Authorization: this.token, 'Content-Type': 'application/json' },
       body: JSON.stringify({ query, variables }), signal: AbortSignal.timeout(15000)
     });
+    const serverTime = Date.parse(response.headers?.get('date'));
+    if (Number.isFinite(serverTime)) this.serverTime = serverTime;
+    const limited = () => {
+      const retry = response.headers?.get('retry-after');
+      const reset = Number(response.headers?.get('x-ratelimit-requests-reset'));
+      const delay = retry && Number.isFinite(Number(retry)) ? Number(retry) * 1000 : Date.parse(retry) - Date.now();
+      const error = new Error('Linear 请求限流，已推迟同步'); error.code = 'RATE_LIMITED';
+      error.retryAfterMs = Math.max(60000, Number.isFinite(delay) ? delay : 0, reset > Date.now() ? reset - Date.now() : 0);
+      return error;
+    };
+    if (response.status === 429) throw limited();
     if (!response.ok) throw new Error(`Linear HTTP ${response.status}`);
     const result = await response.json();
+    if (result.errors?.some(e => e.extensions?.code === 'RATELIMITED' || e.extensions?.code === 'RATE_LIMITED')) throw limited();
     if (result.errors?.length) throw new Error('Linear rejected the request; check scope and identifiers');
     return result.data;
+  }
+  async collection(kind, filter, fields, includeArchived = false) {
+    const nodes = []; let after = null;
+    do {
+      const data = await this.query(`query($filter:${kind === 'comments' ? 'CommentFilter' : 'IssueFilter'}!, $after:String) {
+        ${kind}(filter:$filter, first:100, after:$after, orderBy:updatedAt, includeArchived:${includeArchived}) {
+          nodes { ${fields} } pageInfo { hasNextPage endCursor }
+        }
+      }`, { filter, after });
+      const page = data[kind]; nodes.push(...page.nodes);
+      if (nodes.length > 5000) throw new Error('Linear 同步范围过大，请缩小项目或等待范围');
+      const next = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+      if (page.pageInfo.hasNextPage && (!next || next === after)) throw new Error('Linear pagination did not advance');
+      after = next;
+    } while (after);
+    return nodes;
+  }
+  async changes({ workspaceId, mappings, targets, issueSince, commentSince, startedAt }) {
+    const identity = await this.query('query { organization { id } }');
+    if (identity.organization.id !== workspaceId) throw new Error('Linear token belongs to another workspace');
+    // Use the earlier clock and overlap on the next read; never advance to completion time.
+    const until = new Date(Math.min(startedAt, this.serverTime || startedAt)).toISOString();
+    const fields = 'id identifier title description url updatedAt project { id } assignee { id } state { id type } parent { id }';
+    let issues = [], watched = [], comments = [], issueError, activityError;
+    try { issues = mappings.length ? await this.collection('issues', { or: mappings.map(m => ({
+      project: { id: { eq: m.projectId } }, assignee: { id: { eq: m.assigneeId } }, state: { id: { eq: m.readyStateId } },
+      updatedAt: { gte: issueSince && issueSince > m.since ? issueSince : m.since, lte: until }
+    })) }, fields) : []; } catch (error) { if (error.code === 'RATE_LIMITED') throw error; issueError = error; }
+    const ids = [...new Set(targets.flatMap(t => [t.parentId, t.issueId]))];
+    try { watched = ids.length ? await this.collection('issues', { id: { in: ids } }, 'id identifier project { id } assignee { id } state { id type } parent { id } archivedAt', true) : [];
+    comments = targets.length ? await this.collection('comments', {
+      issue: { id: { in: [...new Set(targets.map(t => t.issueId))] } }, updatedAt: { gte: commentSince, lte: until }
+    }, 'id body createdAt updatedAt user { id } issue { id }') : [];
+    } catch (error) { if (error.code === 'RATE_LIMITED') throw error; activityError = error; }
+    return { issues, watched, comments, until, issueError, activityError };
   }
   async catalog() {
     const identity = await this.query('query { viewer { id name } organization { id name } }');

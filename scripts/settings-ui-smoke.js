@@ -14,16 +14,16 @@ const catalog = { viewer: { id: 'user', name: 'Example Owner' }, organization: {
 const initial = { revision: 0, paused: true, tasks: [
   { id: 'task-one', projectId: 'local', title: 'First example task', status: 'review', attempts: [], events: [], issue: { id: 'issue-one', identifier: 'EX-101' }, cwd: path.resolve('.') },
   { id: 'task-two', projectId: 'local', title: 'Second example task', status: 'stopped', attempts: [], events: [], cwd: path.resolve('.') }
-], outbox: [], errors: [], health: {}, settings: {
+], outbox: [], errors: [], health: {}, syncStatus: [{ key: JSON.stringify(['workspace', 'EXAMPLE_TOKEN']), lastSuccessAt: '2026-01-01T01:00:00Z', nextAt: Date.now() + 120000, intervalMs: 120000 }], settings: {
   executors: [], projects: [{ id: 'local', label: 'Example Local', cwd: path.resolve('.'),
     linear: { tokenEnv: 'EXAMPLE_TOKEN', workspaceId: 'workspace', projectId: 'remote-project', assigneeId: 'user', readyStateId: 'ready', reviewStateId: 'review', enabled: false, since: '2026-01-01T00:00:00.000Z', round: '1' },
     executionInstructions: 'Preserve this local restriction', followup: { enabled: false, commentAuthorIds: ['peer'], maxWakeups: 6, observeAfterExpiry: true } }] } };
 const result = await build({ stdin: { contents: `import React from 'react';import {createRoot} from 'react-dom/client';import {Panel} from './src/ui/panel.jsx';import css from './src/ui/style.css';
 const style=document.createElement('style');style.textContent=css;document.head.append(style);
-window.state=${JSON.stringify(initial)};window.saved=[];window.failConnection=false;window.failSave=false;
+window.state=${JSON.stringify(initial)};window.saved=[];window.polls=0;window.failConnection=false;window.failSave=false;
 const api={snapshot:async()=>structuredClone(window.state),issueContext:async()=>({}),catalog:async()=>{if(window.failConnection)throw Error('Connection unavailable');return ${JSON.stringify(catalog)}},
 checkDirectory:async cwd=>{if(cwd==='bad-path')throw Error('目录不存在');return {exists:true,cwd}},
-command:async r=>{if(r.action!=='configure')throw Error('Unexpected action');if(window.failSave)throw Error('Settings changed in another window');if(r.revision!==window.state.revision)throw Error('Conflict');window.saved.push(r);window.state.settings=r.settings;window.state.revision++;return structuredClone(window.state)}};
+command:async r=>{if(r.action==='poll'){window.polls++;return structuredClone(window.state)}if(r.action!=='configure')throw Error('Unexpected action');if(window.failSave)throw Error('Settings changed in another window');if(r.revision!==window.state.revision)throw Error('Conflict');window.saved.push(r);window.state.settings=r.settings;window.state.revision++;return structuredClone(window.state)}};
 createRoot(document.getElementById('root')).render(<Panel api={api}/>);`, loader: 'jsx', resolveDir: process.cwd() }, bundle: true, write: false, format: 'iife', loader: { '.css': 'text', '.svg': 'text' } });
 await writeFile(path.join(directory, 'app.js'), result.outputFiles[0].text);
 await writeFile(path.join(directory, 'index.html'), '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="margin:0"><div id="root"></div><script src="app.js"></script></body></html>');
@@ -33,10 +33,18 @@ try {
   page.on('pageerror', e => errors.push(e.message));
   await page.goto(pathToFileURL(path.join(directory, 'index.html')).href);
   const connection = page.getByRole('region', { name: 'Linear 连接状态' });
+  await connection.getByText(/当前间隔 120 秒/).waitFor();
+  await page.getByRole('button', { name: '立即同步 Linear', exact: true }).click();
+  assert.equal(await page.evaluate(() => window.polls), 1);
+  await page.evaluate(() => { window.state.syncStatus[0].error = 'Linear 请求限流，等待额度恢复'; });
+  await connection.getByText(/Linear 请求限流，等待额度恢复/).waitFor();
+  assert.equal(await connection.getByText(/当前间隔/).count(), 0);
+  await page.evaluate(() => { delete window.state.syncStatus[0].error; });
   await page.getByRole('button', { name: '检查 Linear 连接', exact: true }).click();
   await connection.getByText(/连接正常：Example Owner/).waitFor();
   assert.equal(await page.getByLabel('项目', { exact: true }).locator('option').last().textContent(), 'Example Workspace / Example Remote Project');
   assert.equal(await page.evaluate(() => window.saved.length), 0);
+  assert.equal(await page.evaluate(() => window.polls), 1, 'Connection check must not sync or dispatch');
   await page.evaluate(() => { window.failConnection = true; });
   await page.getByRole('button', { name: '检查 Linear 连接', exact: true }).click();
   await connection.getByText(/连接检查失败：Connection unavailable/).waitFor();
@@ -50,6 +58,13 @@ try {
   await page.getByText('没有符合筛选条件的任务。').waitFor();
   await page.getByRole('button', { name: '清除筛选', exact: true }).click();
   assert.equal(await page.locator('.task-list li').count(), 2);
+  await mkdir('.local/settings-ui', { recursive: true });
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    assert.equal(await page.locator('.dispatch').evaluate(el => el.scrollWidth > el.clientWidth + 1), false, 'Sync status overflows');
+    await page.screenshot({ path: `.local/settings-ui/sync-${width}.png`, fullPage: true });
+  }
+  await page.setViewportSize({ width: 1280, height: 1000 });
   await page.getByRole('button', { name: '配置项目与连接', exact: true }).click();
   await page.getByRole('button', { name: '检查连接并读取项目', exact: true }).click();
   await page.locator('.connection-identity').getByText('Example Owner', { exact: true }).waitFor();

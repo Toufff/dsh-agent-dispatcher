@@ -11,6 +11,7 @@ import { AdapterRegistry } from './adapters/registry.js';
 import { isDeepStrictEqual } from 'node:util';
 import { wakeEvent, waitSchema } from './followup.js';
 import { reportBody } from './reporting.js';
+import { LinearSync } from './linear-sync.js';
 
 // A queued continuation may expire before creating its next attempt. Reuse
 // only the latest confirmed historical attempt matching the durable session.
@@ -56,6 +57,7 @@ export class Runtime {
   constructor({ store, ctx = {}, directory, linearFactory = token => new LinearClient(token), env = process.env, registry }) {
     this.store = store; this.ctx = ctx; this.directory = directory; this.env = env;
     this.linearFactory = linearFactory; this.adapters = {}; this.health = {}; this.errors = [];
+    this.sync = new LinearSync(this); this.reads = new Map();
     this.registry = registry || new AdapterRegistry();
     if (!registry) {
       for (const type of ['codex', 'claude']) this.registry.register(type, (config, deps) => new CliAdapter(config, path.join(deps.directory, 'runs'), deps.secretKeys));
@@ -102,7 +104,18 @@ export class Runtime {
       .map(t => t.wait.status === 'invalid'
         ? `${t.issue?.identifier || t.title}: 等待目标配置无效，已停止重试。${t.wait.error}`
         : `${t.issue?.identifier || t.title}: 条件监听连续失败 ${t.wait.errorCount} 次，自动复核中；未启动执行。`);
-    return { ...state, health: this.health, errors: [...this.errors, ...reportErrors, ...monitorErrors] };
+    const syncStatus = Object.entries(state.linearSync || {}).filter(([key]) => state.settings.projects.some(p => p.linear?.enabled && key === JSON.stringify([p.linear.workspaceId,p.linear.tokenEnv])))
+      .map(([key, value]) => ({ key, ...Object.fromEntries(['lastAttemptAt','lastSuccessAt','nextAt','retryAt','intervalMs','failures','error'].map(k => [k,value[k]])) }));
+    return { ...state, linearSync: undefined, syncStatus, health: this.health, errors: [...this.errors, ...reportErrors, ...monitorErrors] };
+  }
+  sharedRead(key, operation, ttl = 0) {
+    const old = this.reads.get(key);
+    if (old && (old.pending || old.until > Date.now())) return old.promise;
+    const entry = { pending: true };
+    entry.promise = Promise.resolve().then(operation).then(value => { entry.pending = false; entry.until = Date.now() + ttl; return value; }, error => { this.reads.delete(key); throw error; });
+    this.reads.set(key, entry);
+    for (const [id, item] of this.reads) if (!item.pending && item.until <= Date.now()) this.reads.delete(id);
+    return entry.promise;
   }
   async configure(settings, revision) {
     settings = settingsSchema.parse(settings);
@@ -141,7 +154,7 @@ export class Runtime {
     if (request.action === 'linear-catalog') {
       if (!/^[A-Z][A-Z0-9_]{1,159}$/.test(request.tokenEnv || '')) throw new Error('填写密钥环境变量名，不要填写密钥本身。');
       if (!this.env[request.tokenEnv]) throw new Error('宿主未读取到此环境变量，请在启动 DSH 的环境中配置后再连接。');
-      try { return await this.client({ tokenEnv: request.tokenEnv }).catalog(); }
+      try { return await this.sharedRead(`catalog:${request.tokenEnv}`, () => this.client({ tokenEnv: request.tokenEnv }).catalog()); }
       catch { throw new Error('无法读取 Linear 账号与项目，请检查密钥权限和网络，然后重试。'); }
     }
     if (request.action === 'check-directory') {
@@ -154,8 +167,8 @@ export class Runtime {
       const task = state.tasks.find(t => t.id === request.id);
       const project = state.settings.projects.find(p => p.id === task?.projectId);
       if (!task?.issue?.id || !project?.linear) throw new Error('This task has no Linear mapping');
-      return this.client(project.linear).issueContext(project.linear, task.issue.id,
-        task.wait?.issueId || task.issue.id, project.followup?.commentAuthorIds || []);
+      return this.sharedRead(JSON.stringify(['context', state.revision, task.id, task.wait?.issueId]), () => this.client(project.linear).issueContext(project.linear, task.issue.id,
+        task.wait?.issueId || task.issue.id, project.followup?.commentAuthorIds || []), 60000);
     }
     if (request.action === 'configure') await this.configure(request.settings, request.revision);
     else if (request.action === 'submit') await this.submit(request);
@@ -235,8 +248,7 @@ export class Runtime {
       await this.dispatcher.update(state => { state.paused = request.action === 'pause'; });
     else if (request.action === 'reconcile') await this.dispatcher.reconcile();
     else if (request.action === 'poll') {
-      let failure; try { await this.intake(); } catch (error) { failure = error; }
-      await this.monitor(); if (failure) throw failure;
+      await this.sync.run({ force: true }); await this.monitor({ localOnly: true });
     }
     else await this.dispatcher.action(request.id, request.action, request);
     return this.snapshot();
@@ -246,13 +258,14 @@ export class Runtime {
     if (!token) throw new Error(`Missing environment variable ${mapping.tokenEnv}`);
     return this.linearFactory(token);
   }
-  async intake() {
+  async intake(batch) {
     const state = await this.store.load();
     const errors = [];
-    for (const project of state.settings.projects.filter(p => p.linear?.enabled)) {
+    for (const project of (batch?.projects || state.settings.projects.filter(p => p.linear?.enabled))) {
       try {
+      if (!isDeepStrictEqual(project, (await this.store.load()).settings.projects.find(p => p.id === project.id))) continue;
       const client = this.client(project.linear);
-      for (const issue of await client.issues(project.linear)) {
+      for (const issue of batch ? batch.issues.filter(i => i.project?.id === project.linear.projectId && i.assignee?.id === project.linear.assigneeId && i.state?.id === project.linear.readyStateId && i.updatedAt >= project.linear.since) : await client.issues(project.linear)) {
         await this.submit({ projectId: project.id, title: `${issue.identifier} · ${issue.title}`,
           prompt: `${issue.title}\n\n${issue.description ?? ''}\n\nReturn a concise implementation and verification summary.`,
           source: `${project.linear.workspaceId}/${issue.id}`, round: project.linear.round,
@@ -298,11 +311,11 @@ export class Runtime {
           const task = s.tasks.find(t => t.id === item.taskId);
           if (task.reportVersion === item.reportVersion && task.status === item.taskStatus) task.report = 'sent';
         });
-      } catch {
+      } catch (error) {
         await this.dispatcher.update(s => {
           const entry = s.outbox.find(i => i.id === item.id); entry.tries++;
           entry.lastError = 'Linear request failed; retrying without reexecution';
-          entry.nextAt = Date.now() + Math.min(300000, 5000 * 2 ** Math.min(entry.tries, 6));
+          entry.nextAt = Date.now() + Math.max(error.retryAfterMs || 0, Math.min(300000, 5000 * 2 ** Math.min(entry.tries, 6)));
         });
       }
     }
@@ -356,7 +369,7 @@ export class Runtime {
       }
     });
   }
-  async monitor() {
+  async monitor(options = {}) {
     // Local deadlines cannot depend on a successful network read.
     await this.dispatcher.update(state => {
       for (const task of state.tasks) if (task.status === 'blocked' && task.owner !== 'human' &&
@@ -372,6 +385,11 @@ export class Runtime {
       const project = snapshot.settings.projects.find(p => p.id === old.projectId);
       if (!project?.followup?.enabled || snapshot.paused) continue;
       const observing = old.wait.status === 'expired';
+      const remote = old.wait.kind === 'linear' || observing;
+      if (options.localOnly && remote) continue;
+      if (options.activities && (!remote || options.activities.get(old.id)?.waitId !== old.wait.id)) continue;
+      if (options.localOnly && old.wait.error && Date.now() - Date.parse(old.wait.lastCheckedAt) < 30000) continue;
+      if (!remote && old.wait.notBefore && Date.now() < Date.parse(old.wait.notBefore)) continue;
       if (observing && (!project.followup.observeAfterExpiry || !project.linear?.enabled || !old.issue?.id || !project.followup.commentAuthorIds.length)) continue;
       if (snapshot.tasks.some(t => t.owner === 'human' && t.cwd === old.cwd)) continue;
       try {
@@ -382,7 +400,9 @@ export class Runtime {
           if (!project.linear?.enabled) throw new Error('Enable Linear before resuming an issue timer');
           await this.client(project.linear).eligible(project.linear, old.issue.id);
         }
-        const activity = old.wait.kind === 'linear' || observing ? await this.client(project.linear).activity(project.linear, old.wait.issueId, old.issue.id) : null;
+        const supplied = options.activities?.get(old.id);
+        if (supplied?.error) throw supplied.error;
+        const activity = remote ? supplied ? supplied.value : await this.client(project.linear).activity(project.linear, old.wait.issueId, old.issue.id) : null;
         const event = wakeEvent(observing ? { ...old.wait, kind: 'linear', notBefore: undefined, expiresAt: undefined,
           seen: [...(old.wait.seen || []), ...(old.wait.observedRevisions || [])] } : old.wait,
           activity, { ...project.followup, assigneeId: project.linear?.assigneeId }, Date.now(), snapshot.outbox.map(i => i.id));
@@ -445,11 +465,8 @@ export class Runtime {
       this.errors = [];
       const phase = async (name, operation) => { try { await operation(); } catch { this.errors.push(`${name} failed; retrying independently`); } };
       await phase('Execution reconciliation', async () => { await this.dispatcher.reconcile(); await this.assess(); });
-      if (Date.now() - (this.lastPoll ?? 0) > 30000) {
-        this.lastPoll = Date.now();
-        await phase('Linear intake', () => this.intake());
-        await phase('Condition monitoring', () => this.monitor());
-      }
+      await phase('Local timers', () => this.monitor({ localOnly: true }));
+      await phase('Linear sync', () => this.sync.run());
       await phase('Execution', async () => { await this.dispatcher.tick(); await this.assess(); });
       await phase('Linear reporting', () => this.report());
       if (Date.now() - (this.lastHealth ?? 0) > 30000) {

@@ -11,6 +11,7 @@ export function waitView(task, data, now = Date.now()) {
   if (!['blocked', 'decision', 'stalled', 'stopped'].includes(task.status) || (task.status === 'stopped' && !task.wait)) return null;
   const wait = task.wait;
   const project = data.settings.projects.find(p => p.id === task.projectId);
+  const sync = data.syncStatus?.find(s => s.key === JSON.stringify([project?.linear?.workspaceId, project?.linear?.tokenEnv]));
   // A newly armed wait can still carry the previous round's result. Do not present its blockers as current.
   const prior = task.outcome?.wait;
   const sameWait = !wait || (prior && ['kind', 'condition', 'notBefore', 'expiresAt'].every(k => prior[k] === wait[k]) &&
@@ -43,11 +44,11 @@ export function waitView(task, data, now = Date.now()) {
   else if (wait.error) { monitor = '条件检查失败，正在重试'; action = '条件尚未确认，不会因此启动执行。'; }
   else if (wait.status === 'validating') { monitor = '正在校验等待目标'; action = '确认工单关系与本地规则后才开始监听。'; }
   else if (wait.status === 'watching') {
-    const stale = wait.lastCheckedAt && now - Date.parse(wait.lastCheckedAt) > 90000;
-    monitor = stale ? '检查记录超过 90 秒未更新' : '自动检查已开启';
+    const stale = sync?.nextAt ? now > sync.nextAt + 90000 : wait.lastCheckedAt && now - Date.parse(wait.lastCheckedAt) > 90000;
+    monitor = sync?.error ? '连接异常，退避重试中' : stale ? '检查记录超过 90 秒未更新' : '自动检查已开启';
     action = stale ? '请核对宿主和连接状态，旧记录不能证明监听在线。' : wait.kind === 'time'
       ? '到约定时间后，由原会话重新核验条件；通过后才继续。'
-      : '约每 30 秒检查可信协作者的新回复；收到后由原会话核验并继续。';
+      : `由宿主增量同步可信回复；${sync?.nextAt ? `下次检查 ${formatTime(sync.nextAt)}，` : ''}收到后由原会话核验并继续。`;
   } else { monitor = ({ triggered: '已触发，等待原会话核验', suspended: '监听已停止', resolved: '本轮等待已结束', superseded: '已由后续处理替代' })[wait.status] || '等待状态待核对'; action = '核对当前任务状态后再安排后续处理。'; }
   return { title, monitor, action, blockers, targetId, targetLabel, targetUrl, targetAssignee, sourceAssignee,
     targetTitle: context?.target?.title,

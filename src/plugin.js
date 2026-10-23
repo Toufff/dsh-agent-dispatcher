@@ -12,7 +12,7 @@ import { remote } from './remote.js';
 
 export const domainSpec = defineDomain({ name: 'agent_dispatcher', version: 1, tables: {},
   global: { schema: z.object({ version: z.literal(1), tasks: z.array(z.json()), settings: z.json(),
-    paused: z.boolean(), revision: z.number(), outbox: z.array(z.json()) }), initial: initialState() } });
+    paused: z.boolean(), revision: z.number(), outbox: z.array(z.json()), linearSync: z.record(z.string(), z.json()).optional() }), initial: initialState() } });
 
 export default class AgentDispatcher extends TypertRemoteService {
   static inject = ['storageDomain', 'sessionController', 'agents', 'typert'];

@@ -230,10 +230,14 @@ test('local mapping change and closed parent fail closed; completed child can wa
 
 test('intake failures in one project do not starve other projects or condition monitoring', async () => {
   const f = await fixture(); f.setComments([comment()]);
+  const original = f.runtime.linearFactory;
+  f.runtime.linearFactory = () => ({ ...original(), changes: async () => ({ issues: [], until: new Date().toISOString(),
+    watched: [{ id: 'parent', project: { id: 'project' }, assignee: { id: 'owner' }, state: { type: 'started' } }, { id: 'child', parent: { id: 'parent' }, project: { id: 'project' } }],
+    comments: [{ ...comment(), issue: { id: 'child' } }] }) });
   await f.runtime.dispatcher.update(s => { s.settings.projects.unshift({ id: 'bad', label: 'Bad', cwd: os.tmpdir(), linear: { enabled: true, tokenEnv: 'MISSING' } }); });
   f.runtime.adapters = { codex: f.adapter }; f.runtime.dispatcher.adapters = f.runtime.adapters;
   await f.runtime.cycle(); assert.equal(f.starts, 2);
-  assert.ok(f.runtime.errors.some(e => /intake/.test(e)));
+  assert.ok((await f.runtime.snapshot()).syncStatus.some(s => s.error));
 });
 
 test('reporting includes opted-in blockers, retries independently, supersedes stale status and reports acceptance', async () => {
