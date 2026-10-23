@@ -44,6 +44,8 @@ Intake is explicitly enabled per project and assignee with a selected ready stat
 
 The DSH panel will expose draggable executor priority (plus keyboard controls), enable/disable, health, FIFO queue, attempt history, stop, takeover, return and retry. It does not replace Linear's project dashboard.
 
+Project settings use a local draft with the existing revision-based configure command. Catalog and directory-check commands are authenticated, read-only helpers: they never mutate dispatch state or start executors. The catalog uses the fixed Linear endpoint and an environment-variable name, returns only account/project/member/state metadata, and bounds pagination. Directory checks stat an absolute path without writing. Saving configuration remains a separate explicit action with the kernel's existing active-task guards; task directory/session snapshots remain unchanged.
+
 ## Delivery sequence
 
 1. Scheduling state machine and failure/restart tests (initial commit).

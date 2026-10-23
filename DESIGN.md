@@ -108,7 +108,7 @@ components:
 
 ## Layout
 
-根容器最大宽度（1500px），居中，默认内边距（28px）。标题与操作横向排列，底部细线及上下间距分隔内容。主区左侧为执行优先级与本地任务，右侧为队列及选中任务详情；列宽为 `minmax(280px,340px) minmax(0,1fr)`，列间距采用 columns。
+根容器最大宽度（1500px），居中，默认内边距（28px）。标题与操作横向排列，底部细线及上下间距分隔内容。主区左侧为执行优先级与本地任务，右侧为队列及选中任务详情；列宽为 `minmax(240px,280px) minmax(0,1fr)`，列间距（28px）。顶部页签切换任务队列和项目与连接；项目配置采用左侧项目列表、右侧表单，窄屏改为上下布局。
 
 视口宽度不超过（760px）时改为单列，根内边距（18px），列间距（28px）；标题操作区与告警条纵向排列，队列行内容顶部对齐。操作组可换行。长任务标题、代码和结果允许换行，结果区最高（340px）并内部滚动。
 
@@ -125,7 +125,7 @@ components:
 Agent identities pair a bundled Lobe Icons brand mark with the visible executor name. Priority rows use 24px marks and execution records use 20px marks; all reserve fixed space and are hidden from accessibility APIs because the adjacent name supplies the label. DSH uses the DeepSeek mark in the existing blue accent, ChatGPT uses the OpenAI knot mark and inherits text color, and Claude uses `#ad502d` in light mode / `#e8a082` in dark mode. Unknown adapter types use a neutral terminal SVG. Attribution and license live beside the source assets.
 
 ### Buttons
-常规按钮最小高度（36px），悬停使用 panel 底色。主按钮使用蓝色背景和同色边界；其悬停仍保持蓝色，深色模式使用专门的深色文字。禁用态透明度（0.5），光标为不可用。所有可聚焦元素的键盘焦点使用（2px）蓝色外轮廓，偏移（3px）。仅在用户未请求减少动态时，按钮背景以（0.12s ease-out）过渡。
+常规按钮最小高度（44px），悬停使用 panel 底色。主按钮使用蓝色背景和同色边界；其悬停仍保持蓝色，深色模式使用专门的深色文字。禁用态透明度（0.5），光标为不可用。所有可聚焦元素的键盘焦点使用（2px）蓝色外轮廓，偏移（3px）。仅在用户未请求减少动态时，按钮背景以（0.12s ease-out）过渡。
 
 ### Inputs / Fields
 控件继承正文排版与颜色，内边距与常规按钮一致。表单字段全宽，标签位于上方；文本域可纵向缩放。配置文本域采用等宽字体。输入光标为蓝色；浏览器原生 required 行为承担必填校验，应用错误显示在告警条中。
@@ -153,3 +153,6 @@ Agent identities pair a bundled Lobe Icons brand mark with the visible executor 
 
 ### Linear 身份与指派
 等待详情通过本机认证的只读接口获取 Linear 主单/关联子单、负责人和可信回复者姓名，每60秒刷新所选任务；不把 agent 的 owner 自由文本当成人名。不依赖子单也被本地接单，停用的历史任务同样可以读取说明，但不会因此恢复监听。使用 Linear name，缺失时回退 displayName；读取失败明确标为未取得最新身份，不用旧名字冒充实时信息。主单负责人和回复者分别列出，关联负责人不在可信名单内时提示核对，不自动改派或改变唤醒权限。
+
+### 项目表单与任务筛选
+任务队列支持标题／工单编号、项目和状态筛选；筛选无结果提供清除入口。本地新建任务默认折叠。项目配置按本机目录、Linear 连接、可折叠的外部回复与执行约束分组；读取成功显示真实账号与工作区，成员使用复选列表。新映射默认不接单、不自动续办。JSON 作为高级入口保留，载入只改变草稿。配置错误和成功反馈各有独立文字；导航与离页保护未保存草稿，跨窗口冲突保留输入并要求重新读取。保留现有主题和原生控件，不引入风格库主题。

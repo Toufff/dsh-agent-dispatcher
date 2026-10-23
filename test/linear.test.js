@@ -2,6 +2,35 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { LinearClient } from '../src/linear.js';
 
+test('catalog paginates authorized metadata without reading issues or writing', async () => {
+  const requests = [];
+  const client = new LinearClient('synthetic', async (url, request) => {
+    const { query, variables } = JSON.parse(request.body); requests.push({ query, variables });
+    let data;
+    if (query.includes('viewer')) data = { viewer: { id: 'me', name: 'Me' }, organization: { id: 'w', name: 'Workspace' } };
+    else {
+      const key = ['projects', 'users', 'workflowStates'].find(k => query.includes(`${k}(`));
+      data = { [key]: { nodes: [{ id: `${key}-${variables.after || 'first'}` }], pageInfo: {
+        hasNextPage: key === 'projects' && !variables.after, endCursor: 'second'
+      } } };
+    }
+    return { ok: true, json: async () => ({ data }) };
+  });
+  const catalog = await client.catalog();
+  assert.equal(catalog.projects.length, 2); assert.equal(catalog.viewer.name, 'Me');
+  assert.equal(catalog.users.length, 1); assert.equal(catalog.workflowStates.length, 1);
+  assert.ok(requests.every(r => !/mutation|issues\(/.test(r.query)));
+  assert.ok(!JSON.stringify(catalog).includes('synthetic'));
+});
+
+test('catalog rejects nonadvancing pagination instead of looping forever', async () => {
+  const client = new LinearClient('synthetic', async () => ({ ok: true, json: async () => ({ data: {
+    viewer: { id: 'me' }, organization: { id: 'w' },
+    projects: { nodes: [], pageInfo: { hasNextPage: true, endCursor: null } }
+  } }) }));
+  await assert.rejects(client.catalog(), /pagination/);
+});
+
 test('display context reads disabled/completed task identities without changing assignment or trusting unrelated users', async () => {
   let targetParent = 'parent', workspace = 'w'; const queries = [];
   const client = new LinearClient('synthetic', async (url, request) => {

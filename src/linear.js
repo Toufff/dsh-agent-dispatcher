@@ -11,6 +11,30 @@ export class LinearClient {
     if (result.errors?.length) throw new Error('Linear rejected the request; check scope and identifiers');
     return result.data;
   }
+  async catalog() {
+    const identity = await this.query('query { viewer { id name } organization { id name } }');
+    const result = { viewer: identity.viewer, organization: identity.organization };
+    // Bounded, paginated metadata only. Never read issue content or mutate Linear.
+    for (const [key, fields] of Object.entries({
+      projects: 'id name',
+      users: 'id name',
+      workflowStates: 'id name type team { id name }'
+    })) {
+      const nodes = []; let after = null;
+      do {
+        const data = await this.query(`query($after:String) { ${key}(first:100, after:$after) {
+          nodes { ${fields} } pageInfo { hasNextPage endCursor }
+        } }`, { after });
+        const page = data[key]; nodes.push(...page.nodes);
+        if (nodes.length > 5000) throw new Error('Linear catalog too large');
+        const next = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+        if (page.pageInfo.hasNextPage && (!next || next === after)) throw new Error('Linear catalog pagination failed');
+        after = next;
+      } while (after);
+      result[key] = nodes;
+    }
+    return result;
+  }
   async issues(mapping) {
     const identity = await this.query('query { organization { id } }');
     if (identity.organization.id !== mapping.workspaceId) throw new Error('Linear token belongs to another workspace');

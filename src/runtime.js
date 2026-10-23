@@ -131,6 +131,17 @@ export class Runtime {
       source: source ?? `local:${randomUUID()}`, round: round ?? '1' });
   }
   async command(request) {
+    if (request.action === 'linear-catalog') {
+      if (!/^[A-Z][A-Z0-9_]{1,159}$/.test(request.tokenEnv || '')) throw new Error('填写密钥环境变量名，不要填写密钥本身。');
+      if (!this.env[request.tokenEnv]) throw new Error('宿主未读取到此环境变量，请在启动 DSH 的环境中配置后再连接。');
+      try { return await this.client({ tokenEnv: request.tokenEnv }).catalog(); }
+      catch { throw new Error('无法读取 Linear 账号与项目，请检查密钥权限和网络，然后重试。'); }
+    }
+    if (request.action === 'check-directory') {
+      if (typeof request.cwd !== 'string' || !path.isAbsolute(request.cwd)) throw new Error('请填写本机文件夹的绝对路径。');
+      if (!(await stat(request.cwd).catch(() => null))?.isDirectory()) throw new Error('目录不存在或宿主无法访问，请检查路径。');
+      return { cwd: request.cwd, exists: true };
+    }
     if (request.action === 'issue-context') {
       const state = await this.store.load();
       const task = state.tasks.find(t => t.id === request.id);

@@ -4,7 +4,7 @@ Local task dispatch across DSH, Codex and Claude Code. Linear holds requirements
 
 **Version 0.1:** a working plugin for DSH 0.2.1-rc.2. Native DSH, official Codex CLI and official Claude Code CLI execution have passed live acceptance. Claude also passed takeover/return and same-session resume through the packaged host. Its default executor remains disabled until locally configured. See [acceptance evidence](docs/acceptance.md).
 
-The Chinese panel provides draggable executor priority, keyboard reorder controls, local project mappings, a persistent FIFO queue, attempt history, pause, stop, takeover, return, retry and human acceptance. Linear polling and a separate durable outbox connect human-assigned issues to local execution.
+The Chinese panel separates the searchable task queue from project/connection settings. Local project forms validate working directories and retrieve Linear projects, people and states by name. It also provides draggable executor priority, keyboard reorder controls, a persistent FIFO queue, attempt history, pause, stop, takeover, return, retry and human acceptance. Linear polling and a separate durable outbox connect human-assigned issues to local execution. Connection currently uses host environment API keys; OAuth is not implemented.
 
 ## Install in a DSH web profile
 
@@ -33,6 +33,8 @@ npm test
 npm run check
 npm run build
 ```
+
+For isolated browser form tests, run `npm run test:settings-ui` (Microsoft Edge by default, or set `PLAYWRIGHT_CHANNEL` to an installed Chromium channel). These tests use synthetic metadata and never dispatch tasks or contact Linear.
 
 The kernel accepts injected persistence and executor adapters. An executor must report whether execution was accepted, definitively rejected, or uncertain. Automatic fallback is permitted only after a definitive pre-execution rejection.
 

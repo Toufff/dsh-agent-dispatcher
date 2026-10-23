@@ -2,7 +2,13 @@
 
 ## Local project
 
-The panel's configuration JSON has `executors` and `projects` arrays. For example:
+Open **项目与连接** for the project form. Add or select a local mapping, enter its name and absolute working directory, then use **检查目录**. The directory must already exist; this check does not create or write files. New mappings do not enable Linear intake or automatic follow-up. Save explicitly after reviewing the form. Existing tasks keep their captured directory and session; saving a mapping does not rearm historical waits.
+
+The form preserves executor commands and other settings it does not expose. **高级配置 JSON** remains available for full configuration; loading JSON changes the draft only. Leaving a dirty form prompts before discarding it, and stale saves from another window are rejected without losing the draft. Saves apply all project drafts, not only the selected one.
+
+The task queue supports title/issue-number, project and status filters. Local task creation is collapsed by default. Executor ordering stays in the task view; save or discard priority changes before entering project settings.
+
+The configuration JSON has `executors` and `projects` arrays. For example:
 
 ```json
 {
@@ -23,7 +29,11 @@ The project directory must already exist. Issues cannot set it. The ordered exec
 
 ## Linear
 
-Add a `linear` object to a project:
+In the project form, select **为此项目配置 Linear**, enter the name of a credential environment variable already configured for the DSH host, and click **读取账号与项目**. The authenticated read-only request retrieves the current account/workspace, accessible projects, members and workflow states. Choose them by name; state labels include the team. Loading this catalog never enables dispatch, creates an issue or changes an assignee. A different workspace is rejected for an existing mapping. Metadata is not persisted as authoritative identity, and a failed refresh removes the verified-connection indicator.
+
+Connection currently uses an API key, not OAuth. Do not enter the secret itself in the form. The page cannot add environment variables to an already running host; provide the key through your private launcher or secret manager. Several project mappings may use the same credential variable. **外部回复与自动恢复** has a separate checkbox list of trusted Linear members; selecting a member alone does not enable follow-up. Recheck project, team states, assignee and activation timestamp before enabling intake.
+
+For advanced configuration, add a `linear` object to a project:
 
 ```json
 {

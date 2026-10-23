@@ -20,6 +20,25 @@ async function issueFixture() {
   return runtime;
 }
 
+test('connection and directory inspection never change state or expose credentials', async () => {
+  let calls = 0;
+  const runtime = await fixture({ env: { TEST_TOKEN: 'private-synthetic-value' }, linearFactory: token => {
+    assert.equal(token, 'private-synthetic-value');
+    return { catalog: async () => { calls++; return { viewer: { id: 'me', name: 'Me' } }; } };
+  } });
+  const before = await runtime.store.load();
+  assert.equal((await runtime.command({ action: 'linear-catalog', tokenEnv: 'TEST_TOKEN' })).viewer.id, 'me');
+  await assert.rejects(runtime.command({ action: 'linear-catalog', tokenEnv: 'MISSING' }), /环境变量/);
+  await assert.rejects(runtime.command({ action: 'linear-catalog', tokenEnv: 'not-a-secret-name' }), /变量名/);
+  assert.equal(calls, 1);
+  assert.equal((await runtime.command({ action: 'check-directory', cwd: process.cwd() })).exists, true);
+  await assert.rejects(runtime.command({ action: 'check-directory', cwd: 'relative' }), /绝对路径/);
+  await assert.rejects(runtime.command({ action: 'check-directory', cwd: path.join(os.tmpdir(), 'nonexistent-dispatcher-folder-86274') }), /目录不存在/);
+  assert.deepEqual(await runtime.store.load(), before);
+  runtime.linearFactory = () => ({ catalog: async () => { throw new Error('private-synthetic-value'); } });
+  await assert.rejects(runtime.command({ action: 'linear-catalog', tokenEnv: 'TEST_TOKEN' }), e => !e.message.includes('private-synthetic-value'));
+});
+
 test('issue context lookup is read-only and works for disabled historical tasks', async () => {
   const runtime = await fixture({ env: { TEST_TOKEN: 'synthetic' }, linearFactory: () => ({
     issueContext: async (mapping, parent, target, authors) => ({ parent, target, authors })

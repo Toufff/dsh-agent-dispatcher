@@ -47,3 +47,10 @@ One receiving host is supported. There is no distributed exactly-once guarantee,
 Linear reports default to status-only; opt-in `shareProgress` permits an explicit public summary and safe wait condition with exact times. Local acceptance does not change Linear to Done.
 
 Live records contain private workspace/session identifiers and are kept outside the public source tree. Public tests and examples use synthetic data only.
+# Project settings and layout acceptance — 2026-10-23
+
+The existing visual palette is retained. Task search/filtering and a separate project/connection form replace routine JSON editing. The form reads real Linear catalog names through the authenticated host, checks local directories without writing, preserves hidden settings, and saves with revision conflict checks. API-key connection remains the implemented authentication method; OAuth is not part of this delivery.
+
+Validation: 105 automated tests, source/schema check and build passed. `npm run test:settings-ui` passed with synthetic metadata: new mappings remain disabled, existing hidden restrictions survive a save, task filters and dirty-navigation protection work, failed connections lose the verified indicator, conflicts retain drafts, and tasks remain unchanged. Light/dark desktop and narrow-screen rendering had no panel overflow or page errors.
+
+The updated native DSH host separately verified the actual account/project/member catalog and an existing directory through the new controls, without saving project changes. Existing task records and project/executor configuration were preserved across the idle-host update. One genuinely new Linear issue entered the queue during maintenance; it was distinguished from existing history and the original dispatch policy was restored through the panel. No old task was rearmed as part of UI verification. This confirms the connection/form surface, not completion of that new business issue.
