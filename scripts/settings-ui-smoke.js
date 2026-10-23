@@ -102,5 +102,14 @@ try {
   await page.getByRole('heading', { name: '执行优先级', exact: true }).waitFor();
   assert.deepEqual(errors, []);
   assert.deepEqual(await page.evaluate(() => window.state.tasks), initial.tasks);
-  console.log(JSON.stringify({ saveRoundtrip: true, newMapping: true, taskFilters: true, unchangedTasks: true, draftNavigationGuard: true, preservedHiddenSettings: true, invalidDirectory: true, connectionFailure: true, staleSavePreservesDraft: true, responsive: true, errors }));
+  // Full JSON configuration must also work when no projects remain.
+  await page.getByRole('button', { name: '配置项目与连接', exact: true }).click();
+  await page.getByText('高级配置 JSON（执行器命令与完整配置）', { exact: true }).click();
+  const empty = await page.evaluate(() => ({ ...window.state.settings, projects: [] }));
+  await page.getByLabel('本机配置 JSON', { exact: true }).fill(JSON.stringify(empty));
+  await page.getByRole('button', { name: '载入草稿', exact: true }).click();
+  await page.getByRole('button', { name: '保存配置', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: '配置已保存' }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.state.settings.projects), []);
+  console.log(JSON.stringify({ saveRoundtrip: true, emptyProjectSave: true, newMapping: true, taskFilters: true, unchangedTasks: true, draftNavigationGuard: true, preservedHiddenSettings: true, invalidDirectory: true, connectionFailure: true, staleSavePreservesDraft: true, responsive: true, errors }));
 } finally { await browser.close(); await rm(directory, { recursive: true, force: true }); }
