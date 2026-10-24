@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { LinearClient } from '../src/linear.js';
+import { LinearClient, validWaitTarget } from '../src/linear.js';
 
 test('catalog paginates authorized metadata without reading issues or writing', async () => {
   const requests = [];
@@ -46,8 +46,25 @@ test('display context reads disabled/completed task identities without changing 
   const context = await client.issueContext(mapping, 'parent', 'child', ['peer']);
   assert.equal(context.target.assignee.name, 'Peer Name'); assert.equal(context.replyUsers.length, 1);
   assert.ok(queries.every(q => !q.includes('mutation')));
-  targetParent = 'unrelated'; await assert.rejects(client.issueContext(mapping, 'parent', 'child', ['peer']), /direct child/);
+  targetParent = 'unrelated'; await assert.rejects(client.issueContext(mapping, 'parent', 'child', ['peer']), e => e.code === 'INVALID_WAIT_TARGET');
   workspace = 'other'; await assert.rejects(client.issueContext(mapping, 'parent', 'child', ['peer']), /another workspace/);
+});
+
+test('explicit direct relations support both directions but never cross-project or unlinked targets', () => {
+  const target = { id: 'reply', project: { id: 'p' } };
+  const source = { id: 'work', project: { id: 'p' }, relations: { nodes: [{ type: 'related', relatedIssue: { id: 'reply' } }] } };
+  assert.equal(validWaitTarget(source, target, 'p'), true);
+  assert.equal(validWaitTarget(source, { ...target, project: { id: 'other' } }, 'p'), false);
+  assert.equal(validWaitTarget(source, { ...target, archivedAt: 'date' }, 'p'), false);
+  source.relations.pageInfo = { hasNextPage: true };
+  assert.equal(validWaitTarget(source, target, 'p'), false);
+  delete source.relations;
+  source.inverseRelations = { nodes: [{ type: 'blocks', issue: { id: 'reply' } }] };
+  assert.equal(validWaitTarget(source, target, 'p'), true);
+  source.inverseRelations.nodes[0].type = 'duplicate';
+  assert.equal(validWaitTarget(source, target, 'p'), false);
+  source.inverseRelations.nodes = [];
+  assert.equal(validWaitTarget(source, target, 'p'), false);
 });
 
 test('intake validates workspace before reading issues', async () => {

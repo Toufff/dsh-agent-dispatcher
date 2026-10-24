@@ -1,5 +1,16 @@
 export class WaitTargetError extends Error {
-  constructor() { super('等待目标不是当前工单或同一项目下的直接子单；请修正恢复条件，重试不会解决此问题。'); this.code = 'INVALID_WAIT_TARGET'; }
+  constructor() { super('等待目标必须是当前工单、同项目直接子单或 Linear 明确关联的工单；请修正恢复条件，重试不会解决此问题。'); this.code = 'INVALID_WAIT_TARGET'; }
+}
+
+// Only server-confirmed, direct relations grant a subscription, never an agent's prose.
+export const relationFields = 'relations(first:100) { nodes { type relatedIssue { id } } pageInfo { hasNextPage } } inverseRelations(first:100) { nodes { type issue { id } } pageInfo { hasNextPage } }';
+export function validWaitTarget(source, target, projectId) {
+  if (!source || !target || source.project?.id !== projectId || target.project?.id !== projectId || target.archivedAt) return false;
+  if (source.id === target.id || target.parent?.id === source.id) return true;
+  // A truncated relation list cannot establish that we saw the complete routing contract.
+  if (source.relations?.pageInfo?.hasNextPage || source.inverseRelations?.pageInfo?.hasNextPage) return false;
+  return [...(source.relations?.nodes || []), ...(source.inverseRelations?.nodes || [])]
+    .some(r => ['related', 'blocks'].includes(r.type) && (r.relatedIssue?.id || r.issue?.id) === target.id);
 }
 
 /** Fixed official endpoint: issue content cannot redirect credentials. */
@@ -55,7 +66,7 @@ export class LinearClient {
       updatedAt: { gte: issueSince && issueSince > m.since ? issueSince : m.since, lte: until }
     })) }, fields) : []; } catch (error) { if (error.code === 'RATE_LIMITED') throw error; issueError = error; }
     const ids = [...new Set(targets.flatMap(t => [t.parentId, t.issueId]))];
-    try { watched = ids.length ? await this.collection('issues', { id: { in: ids } }, 'id identifier project { id } assignee { id } state { id type } parent { id } archivedAt', true) : [];
+    try { watched = ids.length ? await this.collection('issues', { id: { in: ids } }, `id identifier project { id } assignee { id } state { id type } parent { id } archivedAt ${relationFields}`, true) : [];
     comments = targets.length ? await this.collection('comments', {
       issue: { id: { in: [...new Set(targets.map(t => t.issueId))] } }, updatedAt: { gte: commentSince, lte: until }
     }, 'id body createdAt updatedAt user { id } issue { id }') : [];
@@ -107,7 +118,7 @@ export class LinearClient {
   async eligible(mapping, parentId) {
     const identity = await this.query('query { organization { id } }');
     if (identity.organization.id !== mapping.workspaceId) throw new Error('Linear token belongs to another workspace');
-    const parent = (await this.query('query($id:String!) { issue(id:$id) { id project { id } assignee { id } state { type } } }', { id: parentId })).issue;
+    const parent = (await this.query(`query($id:String!) { issue(id:$id) { id project { id } assignee { id } state { type } ${relationFields} } }`, { id: parentId })).issue;
     if (!parent || parent.project?.id !== mapping.projectId || parent.assignee?.id !== mapping.assigneeId || ['completed', 'canceled'].includes(parent.state?.type))
       throw new Error('Parent issue is closed, reassigned or outside the mapped project; local continuation remains stopped');
     return parent;
@@ -117,13 +128,11 @@ export class LinearClient {
     if (identity.organization.id !== mapping.workspaceId) throw new Error('Linear token belongs to another workspace');
     const fields = 'id identifier title url project { id } parent { id } assignee { id name displayName }';
     const data = await this.query(`query($parent:String!, $target:String!, $authors:UserFilter!) {
-      source:issue(id:$parent) { ${fields} }
+      source:issue(id:$parent) { ${fields} ${relationFields} }
       target:issue(id:$target) { ${fields} }
       users(filter:$authors, first:50) { nodes { id name displayName } }
     }`, { parent: parentId, target: targetId, authors: { id: { in: [...new Set(authorIds)].slice(0, 30) } } });
-    if (!data.source || !data.target || data.source.project?.id !== mapping.projectId ||
-        data.target.project?.id !== mapping.projectId || (data.target.id !== parentId && data.target.parent?.id !== parentId))
-      throw new Error('Related issue is not the mapped issue or its direct child');
+    if (!validWaitTarget(data.source, data.target, mapping.projectId)) throw new WaitTargetError();
     // Display-only data. It never changes assignees, admission rules, trusted IDs or wait cursors.
     return { source: data.source, target: data.target, replyUsers: data.users.nodes.filter(u => authorIds.includes(u.id)), checkedAt: new Date().toISOString() };
   }
@@ -137,7 +146,7 @@ export class LinearClient {
             pageInfo { hasNextPage endCursor } } }
       }`, { id: issueId, after: cursor });
       issue = data.issue;
-      if (!issue || issue.project?.id !== mapping.projectId || (issue.id !== parentId && issue.parent?.id !== parentId))
+      if (!validWaitTarget(parent, issue, mapping.projectId))
         throw new WaitTargetError();
       comments.push(...issue.comments.nodes);
       if (comments.length > 5000) throw new Error('Follow-up comment history is too broad');

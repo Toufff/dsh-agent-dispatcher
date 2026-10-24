@@ -90,7 +90,7 @@ export function Panel({ api }) {
         {waitTask === task.id && <form onSubmit={async e => { e.preventDefault(); try { if (await run({ action: 'arm-wait', id: task.id, wait: JSON.parse(waitDraft), preserveCursor })) { setWaitTask(null); setPreserveCursor(false); } } catch { setError('恢复条件 JSON 格式有误。'); } }}>
           <label><input type="checkbox" checked={preserveCursor} onChange={e => setPreserveCursor(e.target.checked)}/>保留原监听起点，核对期间收到的回复（仅同一事项和等待类型）</label>
           <label>恢复条件 JSON<textarea required rows={8} value={waitDraft} onChange={e => setWaitDraft(e.target.value)}/></label>
-          <p>只监听保存后的新回复；Linear 目标必须是当前工单或其直接子单，保存前会校验。kind 为 linear、time 或 task。task 使用 taskId（本机任务 ID）或 issueId（已有本机任务对应的工单标识），保存时检查循环依赖；仅完成回执触发，无需转发评论。linear 必须用 expectedAuthorIds 明确等待的 Linear 用户 ID，不能超出本地名单或等待本人。time 必须提供带时区的 notBefore，有结束时间时填写 expiresAt。保存不会立即重跑任务，也不会授权额外操作。</p>
+          <p>默认只监听保存后的新回复；Linear 目标可以是当前工单、同项目直接子单或 Linear 明确关联的工单，保存前及每次轮询都会校验。选择回复实际所在的工单，不必请对方搬运评论。kind 为 linear、time 或 task。task 使用 taskId（本机任务 ID）或 issueId（已有本机任务对应的工单标识），保存时检查循环依赖；仅完成回执触发，无需转发评论。linear 必须用 expectedAuthorIds 明确等待的 Linear 用户 ID，不能超出本地名单或等待本人。time 必须提供带时区的 notBefore，有结束时间时填写 expiresAt。保存不会立即重跑任务，也不会授权额外操作。</p>
           <button disabled={busy}>保存恢复条件</button><button type="button" onClick={() => setWaitTask(null)}>取消</button></form>}
         {task.resultError && <p role="alert">结果校验：{task.resultError}。格式修复只整理已有证据，不应重复执行工作。</p>}
         {task.status === 'stalled' && <p>已停止重复尝试。请查看本轮结果和历史证据，确定新方案后再续办，无需验收。</p>}

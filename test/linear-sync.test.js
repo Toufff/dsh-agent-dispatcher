@@ -20,7 +20,12 @@ async function fixture({ count = 1 } = {}) {
     if (f.fail === 'rate') return response(null, 429);
     if (f.fail === 'offline') return response(null, 503);
     if (query.includes('organization')) return response({ organization: { id: 'w' } });
-    if (v.id) return response({ issue: f.issues.find(i => i.id === v.id) });
+    if (v.id) {
+      const issue = f.issues.find(i => i.id === v.id);
+      return response({ issue: issue && { ...issue, ...(query.includes('comments(') ? {
+        comments: { nodes: f.comments.filter(c => c.issue.id === v.id), pageInfo: { hasNextPage: false } }
+      } : {}) } });
+    }
     const kind = query.includes('CommentFilter') ? 'comments' : 'issues';
     if (f.fail === kind || f.fail === 'intake' && v.filter.or) return response(null, 503);
     let items;
@@ -72,6 +77,37 @@ test('separate comment delta sees edits with unchanged issue timestamp and wakes
   await f.r.dispatcher.tick(); await f.r.assess();
   assert.equal(f.starts, 2); assert.equal((await f.store.load()).tasks[0].status, 'review');
   await f.r.sync.run({ force: true }); await f.r.dispatcher.tick(); assert.equal(f.starts, 2);
+});
+
+test('linked peer receipt wakes the existing session exactly once across restart and lost reporting', async () => {
+  const f = await fixture(), target = f.addIssue('peer-ticket');
+  target.assignee = { id: 'peer' };
+  f.issues[0].relations = { nodes: [{ type: 'related', relatedIssue: { id: target.id } }], pageInfo: { hasNextPage: false } };
+  await f.r.command({ action: 'arm-wait', id: (await f.store.load()).tasks[0].id,
+    wait: { kind: 'linear', expectedAuthorIds: ['peer'], issueId: target.id, condition: 'verify receipt on linked ticket' } });
+  f.now += 61000; f.reply('own', target.id, 'owner'); f.reply('stranger', target.id, 'stranger');
+  await f.r.sync.run({ force: true }); assert.equal((await f.store.load()).tasks[0].status, 'blocked');
+  f.now += 61000; f.reply('trusted', target.id);
+  f.r = await f.make(); await f.r.sync.run({ force: true });
+  assert.equal((await f.store.load()).tasks[0].wakeups, 1);
+  await f.r.dispatcher.tick(); await f.r.assess();
+  // Reports remain pending; another host incarnation must never replay execution.
+  f.r = await f.make(); await f.r.sync.run({ force: true }); await f.r.dispatcher.tick();
+  assert.equal(f.starts, 2); assert.equal((await f.store.load()).tasks[0].report, 'pending');
+});
+
+test('removing a Linear relation prevents buffered receipts from waking a task', async () => {
+  const f = await fixture(), target = f.addIssue('peer-ticket');
+  f.issues[0].inverseRelations = { nodes: [{ type: 'related', issue: { id: target.id } }] };
+  await f.r.command({ action: 'arm-wait', id: (await f.store.load()).tasks[0].id,
+    wait: { kind: 'linear', expectedAuthorIds: ['peer'], issueId: target.id, condition: 'verify linked receipt' } });
+  await f.r.dispatcher.update(s => { s.settings.executors[0].enabled = false; });
+  f.now += 61000; f.reply('trusted', target.id); await f.r.sync.run({ force: true });
+  f.issues[0].inverseRelations.nodes = [];
+  await f.r.dispatcher.update(s => { s.settings.executors[0].enabled = true; });
+  f.r = await f.make(); f.now += 61000; await f.r.sync.run({ force: true });
+  const task = (await f.store.load()).tasks[0];
+  assert.equal(task.wait.errorCode, 'INVALID_WAIT_TARGET'); assert.equal(task.wait.status, 'invalid'); assert.equal(f.starts, 1);
 });
 
 test('buffered reply survives an unavailable executor, cursor advance and restart', async () => {

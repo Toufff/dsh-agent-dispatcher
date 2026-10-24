@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { WaitTargetError } from './linear.js';
+import { WaitTargetError, validWaitTarget } from './linear.js';
 
 const overlap = 60000, reconcileEvery = 15 * 60000;
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -29,7 +29,7 @@ function activityFor(task, project, watched, comments) {
   const parent = watched.find(i => i.id === task.issue.id), target = watched.find(i => i.id === (task.wait.issueId || task.issue.id));
   if (!parent || parent.archivedAt || parent.project?.id !== project.linear.projectId || parent.assignee?.id !== project.linear.assigneeId || ['completed', 'canceled'].includes(parent.state?.type))
     throw new Error('Parent issue is closed, reassigned or outside the mapped project; local continuation remains stopped');
-  if (!target || target.archivedAt || target.project?.id !== project.linear.projectId || (target.id !== parent.id && target.parent?.id !== parent.id)) throw new WaitTargetError();
+  if (!validWaitTarget(parent, target, project.linear.projectId)) throw new WaitTargetError();
   return { ...target, parentState: parent.state, comments: comments.filter(c => c.issue?.id === target.id) };
 }
 

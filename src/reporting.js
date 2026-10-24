@@ -15,7 +15,7 @@ export function reportBody(task, mapping, secrets) {
     const wait = task.wait;
     body += `\n\n恢复监控：${({ validating: '正在校验目标', watching: '监听中', invalid: '目标配置无效', expired: '已过期', suspended: '已停止', triggered: '已触发核验', resolved: '已结束', superseded: '已被续办替代', limit: '达到唤醒上限' })[wait.status] || wait.status}。`;
     // Never publish arbitrary exception text (paths/tokens may occur in it).
-    if (wait.status === 'invalid') body += `\n${waitFaults[wait.errorCode] || '等待目标配置无效：只能监听当前工单或同一项目下的直接子单。'}已停止重试，需本地负责人修正后重新保存；未启动执行。`;
+    if (wait.status === 'invalid') body += `\n${waitFaults[wait.errorCode] || '等待目标配置无效：只能监听当前工单、同项目直接子单或 Linear 明确关联的工单。'}已停止重试，需本地负责人修正后重新保存；未启动执行。`;
     else if (wait.failureNotified) body += '\n本地条件监听连续失败至少 3 次，正在自动复核；目前无法确认新回复或恢复条件，未启动执行。接收方需检查本地连接、配置和原执行器。';
     else if (wait.recoveredAt) body += `\n本地条件监听已于 ${wait.recoveredAt} 恢复，后续仍按原条件核对；恢复连接不等于任务完成或新增授权。`;
     if (shareable(wait.condition, secrets) && mapping?.shareProgress) body += `\n需核对：${wait.condition}`;
