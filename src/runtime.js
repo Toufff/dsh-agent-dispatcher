@@ -349,7 +349,8 @@ export class Runtime {
         }
         // Legacy results are never silently replayed or treated as verified completion.
         if (!task.resultContract) { task.status = 'needs_result'; task.assessed = true; continue; }
-        const { outcome, error } = inspectOutcome(task.summary);
+        const { outcome, error, framingRecovery } = inspectOutcome(task.summary);
+        if (framingRecovery) task.events.push({ action: 'recover-result-framing', reason: framingRecovery, at: new Date().toISOString() });
         if (error) task.resultError = error; else delete task.resultError;
         task.outcome = outcome; task.assessed = true;
         task.report = 'pending'; task.resumeNotice = false;

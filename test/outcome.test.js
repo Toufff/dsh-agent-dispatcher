@@ -4,6 +4,23 @@ import { parseOutcome, inspectOutcome } from '../src/outcome.js';
 import { captureResultText } from '../src/result-text.js';
 const valid = { status: 'complete', evidence: ['tests passed'], remaining: [], next: '', progress: 'verified', blockers: [] };
 const wrap = value => `<dispatch-result>${JSON.stringify(value)}</dispatch-result>`;
+
+test('missing close tag recovers only one complete non-executing contract without guessing JSON', () => {
+  const blocked = { ...valid, status: 'blocked', remaining: ['receipt'], next: 'verify receipt',
+    blockers: [{ owner: 'peer', reason: 'receipt absent', resumeWhen: 'receipt arrives' }],
+    wait: { kind: 'linear', condition: 'verify receipt', expectedAuthorIds: ['peer'] } };
+  const open = value => `<dispatch-result>${JSON.stringify(value)}`;
+  assert.deepEqual(inspectOutcome('Work finished.\n' + open(blocked)),
+    { outcome: blocked, error: null, framingRecovery: 'missing-close-tag' });
+  const { wait, ...decision } = { ...blocked, status: 'decision' };
+  assert.equal(parseOutcome(open(decision)).status, 'decision');
+  for (const raw of [open(valid), open({ ...blocked, status: 'continue', wait: undefined }),
+    open(blocked).slice(0, -1), open(blocked) + ' trailing', open(blocked) + '{}',
+    open(blocked) + '</dispatch-result', open(blocked) + wrap(blocked),
+    wrap(blocked) + open(blocked), '<dispatch-result>example\n' + wrap(blocked),
+    open({ ...blocked, wait: { kind: 'linear', condition: 'receipt' } }),
+    open({ ...blocked, unexpected: true })]) assert.equal(parseOutcome(raw), null, raw);
+});
 test('completion requires evidence and no unfinished work, malformed or ambiguous results fail closed', () => {
   assert.equal(parseOutcome(wrap(valid)).status, 'complete');
   for (const change of [{ evidence: [] }, { remaining: ['not done'] }, { next: 'do more' }, { unknown: true }])

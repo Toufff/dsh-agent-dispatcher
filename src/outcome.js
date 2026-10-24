@@ -28,21 +28,30 @@ For a linear wait, you MUST specify expectedAuthorIds with the actual Linear use
 
 export function inspectOutcome(summary) {
   const invalid = error => ({ outcome: null, error });
-  const matches = [...(summary || '').matchAll(/<dispatch-result>([\s\S]*?)<\/dispatch-result>/g)];
-  if (matches.length !== 1) return invalid('Return exactly one dispatch-result block.');
-  if (summary.slice(matches[0].index + matches[0][0].length).trim()) return invalid('The dispatch-result block must be the last content.');
+  const source = summary || '';
+  const matches = [...source.matchAll(/<dispatch-result>([\s\S]*?)<\/dispatch-result>/g)];
+  // Recover framing only, never JSON content or an execution/completion instruction.
+  // JSON.parse below must consume the entire tail; truncation and trailing prose fail.
+  const markers = [...source.matchAll(/<\/?dispatch-result\b/g)];
+  const missingClose = matches.length === 0 && markers.length === 1 &&
+    source.slice(markers[0].index).startsWith('<dispatch-result>');
+  if (!missingClose && (matches.length !== 1 || markers.length !== 2)) return invalid('Return exactly one dispatch-result block.');
+  if (!missingClose && source.slice(matches[0].index + matches[0][0].length).trim()) return invalid('The dispatch-result block must be the last content.');
+  const payload = missingClose ? source.slice(markers[0].index + '<dispatch-result>'.length) : matches[0][1];
   let result;
-  try { result = JSON.parse(matches[0][1]); } catch { return invalid('The dispatch-result block must contain valid JSON.'); }
+  try { result = JSON.parse(payload); } catch { return invalid('The dispatch-result block must contain valid JSON.'); }
   const parsed = schema.safeParse(result);
   // Field paths and validator codes only: never echo private field values into diagnostic reports.
   if (!parsed.success) return invalid(parsed.error.issues.slice(0, 6).map(i => `${i.path.join('.') || 'result'}: ${i.code}`).join('; '));
   result = parsed.data;
+  if (missingClose && !['blocked', 'decision'].includes(result.status))
+    return invalid('Missing closing tag can only recover a blocked or decision result; return a complete framed contract.');
   if (result.wait && result.status !== 'blocked') return invalid('Only blocked results may include wait.');
   if (result.status === 'complete' && (!result.evidence.length || result.remaining.length || result.blockers.length || result.next.trim())) return invalid('Complete requires evidence and empty remaining, blockers and next.');
   if (result.status === 'continue' && (!result.next.trim() || !result.remaining.length)) return invalid('Continue requires remaining work and a concrete next step.');
   // A blocked next step describes what follows the dependency; it is not a command to execute.
   if (['blocked', 'decision'].includes(result.status) && (!result.blockers.length || !result.remaining.length)) return invalid('Blocked/decision requires remaining work and named blockers.');
-  return { outcome: result, error: null };
+  return { outcome: result, error: null, ...(missingClose ? { framingRecovery: 'missing-close-tag' } : {}) };
 }
 export const parseOutcome = summary => inspectOutcome(summary).outcome;
 

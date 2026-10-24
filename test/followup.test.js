@@ -50,6 +50,50 @@ test('trusted child reply resumes original session exactly once across concurren
   assert.equal((await next.snapshot()).tasks[0].rounds.length, 1);
 });
 
+test('stored missing-close result recovers its wait after restart, catches an intervening reply and wakes once', async () => {
+  const f = await fixture();
+  const original = (await f.runtime.snapshot()).tasks[0];
+  const raw = original.summary.replace(/<\/dispatch-result>$/, '');
+  await f.runtime.dispatcher.update(s => {
+    const t = s.tasks[0]; t.summary = raw; t.status = 'needs_result'; t.outcome = null;
+    t.formatRepair = true; t.resultError = 'Return exactly one dispatch-result block.';
+    delete t.wait; delete t.waitProject;
+  });
+  // This reply predates recovery, but follows the original completed attempt.
+  f.setComments([comment('arrived-during-format-error')]);
+  const next = await new Runtime({ store: f.store, directory: os.tmpdir(), env: { TEST_TOKEN: 'synthetic' }, linearFactory: f.factory }).init();
+  next.adapters.codex = f.adapter;
+  await next.assess(); await next.assess();
+  let t = (await next.snapshot()).tasks[0];
+  assert.equal(f.starts, 1); assert.equal(t.status, 'blocked'); assert.equal(t.summary, raw);
+  assert.equal(t.wait.armedAt, original.attempts[0].startedAt);
+  assert.equal(t.events.filter(e => e.action === 'recover-result-framing').length, 1);
+  assert.equal(t.resultError, undefined);
+  await Promise.all([next.monitor(), next.monitor()]);
+  assert.equal((await next.snapshot()).tasks[0].wakeups, 1);
+  await next.dispatcher.tick(); await next.assess(); await next.report(); await next.monitor();
+  t = (await next.snapshot()).tasks[0];
+  assert.equal(f.starts, 2); assert.equal(t.status, 'review'); assert.equal(t.report, 'sent');
+  assert.equal(t.rounds[0].summary, raw);
+});
+
+test('framing recovery cannot bypass ownership, an uncertain receipt or decision-only result', async () => {
+  for (const guard of ['human', 'unknown', 'decision']) {
+    const f = await fixture();
+    await f.runtime.dispatcher.update(s => {
+      const t = s.tasks[0]; t.status = 'needs_result'; t.outcome = null; delete t.wait;
+      t.summary = (guard === 'decision' ? contract('decision', {
+        blockers: [{ owner: 'owner', reason: 'needs decision', resumeWhen: 'decision made' }]
+      }) : t.summary).replace(/<\/dispatch-result>$/, '');
+      if (guard === 'human') t.owner = 'human';
+      if (guard === 'unknown') t.attempts[0].status = 'unknown';
+    });
+    f.setComments([comment()]); await f.runtime.assess(); await f.runtime.monitor();
+    assert.equal(f.starts, 1);
+    assert.equal((await f.runtime.snapshot()).tasks[0].status, guard === 'decision' ? 'decision' : 'needs_result');
+  }
+});
+
 test('self, unrelated author, old replies and local outbox comments do not wake work', async () => {
   const f = await fixture();
   await f.runtime.dispatcher.update(s => { s.outbox.push({ id: 'own-report', status: 'sent' }); });
