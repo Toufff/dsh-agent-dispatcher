@@ -34,7 +34,7 @@ export function waitView(task, data, now = Date.now()) {
   const targetUrl = target?.url?.startsWith('https://linear.app/') ? target.url : null;
   const name = user => user?.name || user?.displayName;
   const replyUsers = context?.replyUsers || [];
-  const expected = replyUsers.filter(u => u.id !== project?.linear?.assigneeId && (!wait?.expectedAuthorIds || wait.expectedAuthorIds.includes(u.id)));
+  const expected = replyUsers.filter(u => u.id !== project?.linear?.assigneeId && wait?.expectedAuthorIds?.includes(u.id));
   const replyNames = expected.map(name).filter(Boolean).join('、');
   const targetAssignee = name(context?.target?.assignee);
   const sourceAssignee = name(context?.source?.assignee);

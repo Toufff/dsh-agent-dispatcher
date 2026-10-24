@@ -545,3 +545,11 @@ test('legacy undeclared producer becomes a once-reported local fault without rep
  await f.runtime.monitor();await f.runtime.report();const t=(await f.runtime.snapshot()).tasks[0];
  assert.equal(t.wait.errorCode,'WAIT_REPLY_UNDECLARED');assert.equal(t.wait.armedAt,before.wait.armedAt);assert.deepEqual(t.attempts,before.attempts);assert.equal(f.reports.length,n);
 });
+
+test('disabled historical mappings are not validated or advertised as active monitor failures',async()=>{
+ const f=await fixture();await f.runtime.dispatcher.update(s=>{s.settings.projects[0].followup.enabled=false;delete s.tasks[0].wait.expectedAuthorIds;});
+ const before=(await f.runtime.snapshot()).tasks[0];await f.runtime.monitor({localOnly:true});
+ assert.deepEqual((await f.runtime.snapshot()).tasks[0],before);
+ await f.runtime.dispatcher.update(s=>{Object.assign(s.tasks[0].wait,{status:'invalid',failureNotified:true,error:'historical fault'});});
+ assert.equal((await f.runtime.snapshot()).errors.some(e=>e.includes('historical fault')),false);
+});

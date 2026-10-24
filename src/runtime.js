@@ -109,7 +109,7 @@ export class Runtime {
     const state = await this.store.load();
     const reportErrors = state.outbox.filter(i => i.status === 'pending' && i.tries >= 3)
       .map(i => `${state.tasks.find(t => t.id === i.taskId)?.issue?.identifier || 'Linear'} 回写已失败 ${i.tries} 次，自动重试中；不会重跑任务。`);
-    const monitorErrors = state.tasks.filter(t => t.wait?.failureNotified && t.status === 'blocked')
+    const monitorErrors = state.tasks.filter(t => t.wait?.failureNotified && t.status === 'blocked' && state.settings.projects.find(p => p.id === t.projectId)?.followup?.enabled)
       .map(t => t.wait.status === 'invalid'
         ? `${t.issue?.identifier || t.title}: 等待配置无效，已停止重试。${t.wait.error}`
         : `${t.issue?.identifier || t.title}: 条件监听连续失败 ${t.wait.errorCount} 次，自动复核中；未启动执行。`);
@@ -396,6 +396,7 @@ export class Runtime {
           ['watching', 'validating'].includes(task.wait?.status)) {
         try {
           const project = state.settings.projects.find(p => p.id === task.projectId);
+          if (!project?.followup?.enabled) continue;
           if (!isDeepStrictEqual(project, task.waitProject)) throw waitFault('WAIT_CONFIGURATION_CHANGED');
           task.wait = validateLocalWait(task.wait, task, state);
         } catch (error) { task.wait.lastCheckedAt = new Date().toISOString(); monitorFailure(task, error.message, error.code); }

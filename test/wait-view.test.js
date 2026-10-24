@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { waitView, formatTime, waitDraftFor } from '../src/ui/wait-view.js';
 const now = Date.parse('2030-01-01T04:00:00Z');
-const wait = { kind: 'linear', issueId: 'child', condition: 'Provide a verified receipt', status: 'watching', lastCheckedAt: new Date(now).toISOString(), expiresAt: '2030-01-01T05:00:00Z' };
+const wait = { kind: 'linear', expectedAuthorIds: ['peer'], issueId: 'child', condition: 'Provide a verified receipt', status: 'watching', lastCheckedAt: new Date(now).toISOString(), expiresAt: '2030-01-01T05:00:00Z' };
 const task = { status: 'blocked', projectId: 'p', issue: { id: 'parent' }, wait,
   outcome: { wait, next: 'Verify before proceeding', blockers: [{ owner: 'Collaborator', reason: 'Receipt is missing', resumeWhen: 'Receipt arrives' }] } };
 const data = { paused: false, settings: { projects: [{ id: 'p', linear: { enabled: true }, followup: { enabled: true, observeAfterExpiry: true } }] }, tasks: [{ issue: { id: 'child', identifier: 'TEST-2', url: 'https://linear.app/example/issue/TEST-2' } }] };
@@ -71,5 +71,11 @@ test('local dependency shows target and trigger source without misleading peer w
 
 test('editing a local dependency preserves exact target and legacy replies require explicit authors',()=>{
  assert.deepEqual(waitDraftFor({issue:{id:'source'},wait:{kind:'task',taskId:'target',condition:'result'}}),{kind:'task',taskId:'target',condition:'result'});
- assert.deepEqual(waitDraftFor(task).expectedAuthorIds,[]);
+ assert.deepEqual(waitDraftFor({...task,wait:{kind:'linear',condition:'legacy'}}).expectedAuthorIds,[]);
+});
+
+test('legacy waits never infer a reply person from the trusted allowlist',()=>{
+ const legacy={...task,id:'legacy',wait:{...wait,expectedAuthorIds:undefined}};
+ const v=waitView(legacy,{...data,issueContexts:{legacy:{status:'ready',replyUsers:[{id:'peer',name:'Trusted Person'}]}}},now);
+ assert.equal(v.owners,'Linear 回复者待核对');assert.doesNotMatch(v.title,/Trusted Person/);
 });
