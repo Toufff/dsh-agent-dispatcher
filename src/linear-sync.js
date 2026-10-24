@@ -13,7 +13,7 @@ export function syncGroups(state) {
     if (!state.paused && project.followup?.enabled) for (const task of state.tasks) {
       if (task.projectId !== project.id || task.status !== 'blocked' || task.owner === 'human' || !task.issue?.id ||
           !['watching', 'validating', 'expired'].includes(task.wait?.status)) continue;
-      if (task.wait.kind !== 'linear' && task.wait.status !== 'expired') continue;
+      if (task.wait.kind === 'task' || task.wait.kind !== 'linear' && task.wait.status !== 'expired') continue;
       if (task.wait.status === 'expired' && !project.followup.observeAfterExpiry) continue;
       if (state.tasks.some(t => t.owner === 'human' && t.cwd === task.cwd)) continue;
       const [source] = JSON.parse(task.key);

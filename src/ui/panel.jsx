@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { AgentIcon } from './agent-icon.jsx';
-import { waitView, formatTime } from './wait-view.js';
+import { waitView, formatTime, waitDraftFor } from './wait-view.js';
 import { WaitDetails } from './wait-details.jsx';
 import { ProjectSettings } from './project-settings.jsx';
 import { ConnectionStatus } from './connection-status.jsx';
@@ -82,7 +82,7 @@ export function Panel({ api }) {
         {task.status === 'review' && task.outcome?.status === 'complete' && <button className="primary" disabled={busy} onClick={() => run({ action: 'accept', id: task.id })}>本地确认验收</button>}
         {task.status === 'needs_result' && <button disabled={busy || task.owner === 'human'} onClick={() => run({ action: 'reassess-result', id: task.id })}>重新解析已有结果</button>}
         {['review', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result'].includes(task.status) && <button disabled={busy || task.owner === 'human'} onClick={() => run({ action: 'continue', id: task.id })}>继续处理未完成事项</button>}
-        {['blocked', 'stopped', 'stalled'].includes(task.status) && task.owner !== 'human' && <button disabled={busy} onClick={() => { setWaitTask(task.id); setWaitDraft(JSON.stringify({ kind: task.wait?.kind || 'linear', condition: task.wait?.condition || '', ...(task.wait?.issueId || task.issue?.id ? { issueId: task.wait?.issueId || task.issue.id } : {}), ...(task.wait?.notBefore ? { notBefore: task.wait.notBefore } : {}), ...(task.wait?.expiresAt ? { expiresAt: task.wait.expiresAt } : {}) }, null, 2)); }}>设置恢复条件</button>}
+        {['blocked', 'stopped', 'stalled'].includes(task.status) && task.owner !== 'human' && <button disabled={busy} onClick={() => { setWaitTask(task.id); setWaitDraft(JSON.stringify(waitDraftFor(task), null, 2)); }}>设置恢复条件</button>}
         {task.issue?.url?.startsWith('https://linear.app/') && <a href={task.issue.url} target="_blank" rel="noreferrer">打开 Linear issue</a>}</div>
         <h3>执行记录</h3>{!task.attempts.length && <p className="muted">尚未派发。</p>}{task.attempts.map(a => <div className="attempt" key={a.id}><strong className="agent-name"><AgentIcon type={data.settings.executors.find(e => e.id === a.executor)?.type}/>{agentLabel(data.settings.executors.find(e => e.id === a.executor)) || a.executor}</strong><span className={`status ${a.status}`}>{a.status === 'review' ? '本轮执行结束' : labels[a.status] || a.status}</span>{a.reason && <p>{a.reason}</p>}{a.sessionId && <><code>{a.sessionId}</code>{data.settings.executors.find(e => e.id === a.executor)?.type === 'dsh' ? <button onClick={() => api.openSession(a.sessionId)}>打开 DSH 会话</button> : <p className="muted">在对应工具中使用此会话 ID 恢复；查看会话不自动接管。</p>}</>}</div>)}
         <h3>结果与下一步</h3><p>{labels[task.status]} · 已自动续办 {task.autoRounds || 0}/3 轮 · 条件变化唤醒 {task.wakeups || 0} 次</p>
@@ -90,7 +90,7 @@ export function Panel({ api }) {
         {waitTask === task.id && <form onSubmit={async e => { e.preventDefault(); try { if (await run({ action: 'arm-wait', id: task.id, wait: JSON.parse(waitDraft), preserveCursor })) { setWaitTask(null); setPreserveCursor(false); } } catch { setError('恢复条件 JSON 格式有误。'); } }}>
           <label><input type="checkbox" checked={preserveCursor} onChange={e => setPreserveCursor(e.target.checked)}/>保留原监听起点，核对期间收到的回复（仅同一事项和等待类型）</label>
           <label>恢复条件 JSON<textarea required rows={8} value={waitDraft} onChange={e => setWaitDraft(e.target.value)}/></label>
-          <p>只监听保存后的新回复；Linear 目标必须是当前工单或其直接子单，保存前会校验。kind 为 linear 或 time。time 必须提供带时区的 notBefore，有结束时间时填写 expiresAt。保存不会立即重跑任务，也不会授权额外操作。</p>
+          <p>只监听保存后的新回复；Linear 目标必须是当前工单或其直接子单，保存前会校验。kind 为 linear、time 或 task。task 使用 taskId（本机任务 ID）或 issueId（已有本机任务对应的工单标识），保存时检查循环依赖；仅完成回执触发，无需转发评论。linear 必须用 expectedAuthorIds 明确等待的 Linear 用户 ID，不能超出本地名单或等待本人。time 必须提供带时区的 notBefore，有结束时间时填写 expiresAt。保存不会立即重跑任务，也不会授权额外操作。</p>
           <button disabled={busy}>保存恢复条件</button><button type="button" onClick={() => setWaitTask(null)}>取消</button></form>}
         {task.resultError && <p role="alert">结果校验：{task.resultError}。格式修复只整理已有证据，不应重复执行工作。</p>}
         {task.status === 'stalled' && <p>已停止重复尝试。请查看本轮结果和历史证据，确定新方案后再续办，无需验收。</p>}

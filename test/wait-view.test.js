@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { waitView, formatTime } from '../src/ui/wait-view.js';
+import { waitView, formatTime, waitDraftFor } from '../src/ui/wait-view.js';
 const now = Date.parse('2030-01-01T04:00:00Z');
 const wait = { kind: 'linear', issueId: 'child', condition: 'Provide a verified receipt', status: 'watching', lastCheckedAt: new Date(now).toISOString(), expiresAt: '2030-01-01T05:00:00Z' };
 const task = { status: 'blocked', projectId: 'p', issue: { id: 'parent' }, wait,
@@ -9,7 +9,7 @@ const data = { paused: false, settings: { projects: [{ id: 'p', linear: { enable
 
 test('invalid target is a configuration fault, not a retrying network failure or expired window', () => {
   const v = waitView({ ...task, wait: { ...wait, status: 'invalid', error: 'invalid target', errorCount: 7 } }, data, now + 7200000);
-  assert.equal(v.title, '等待目标需要修正'); assert.equal(v.monitor, '配置错误，已停止重试');
+  assert.equal(v.title, '等待配置需要修正'); assert.equal(v.monitor, '配置错误，已停止重试');
 });
 
 test('waiting view identifies collaborator, actual blocker and linked issue', () => {
@@ -58,4 +58,18 @@ test('time waits and active tasks are not mislabeled as collaborator waits', () 
   assert.equal(waitView({ ...task, status: 'stalled' }, data, now).monitor, '不会自动执行');
   assert.equal(waitView({ ...task, status: 'stopped', wait: null }, data, now), null);
   assert.equal(formatTime('bad'), '时间格式无效');
+});
+
+test('local dependency shows target and trigger source without misleading peer warning',()=>{
+  const dependency={id:'dep',status:'running',title:'Verification task',issue:{id:'child',identifier:'TEST-2'}};
+  const t={...task,wait:{kind:'task',taskId:'dep',issueId:'child',condition:'result',status:'watching'}};
+  const v=waitView(t,{...data,tasks:[dependency]},now);
+  assert.equal(v.title,'等待本机任务 TEST-2 完成');assert.equal(v.dependencyStatus,'running');assert.equal(v.assignmentMismatch,false);
+  assert.match(v.action,/持久完成回执/);assert.equal(v.identityStatus,null);
+});
+
+
+test('editing a local dependency preserves exact target and legacy replies require explicit authors',()=>{
+ assert.deepEqual(waitDraftFor({issue:{id:'source'},wait:{kind:'task',taskId:'target',condition:'result'}}),{kind:'task',taskId:'target',condition:'result'});
+ assert.deepEqual(waitDraftFor(task).expectedAuthorIds,[]);
 });

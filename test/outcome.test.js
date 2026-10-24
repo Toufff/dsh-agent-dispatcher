@@ -33,10 +33,15 @@ test('format repair receives actionable validator locations without echoing priv
 test('conditional next steps and expiry-only Linear waits classify as blocked, never complete', () => {
   const blocked = { ...valid, status: 'blocked', remaining: ['receipt'], next: 'After verification, release',
     blockers: [{ owner: 'peer', reason: 'missing receipt', resumeWhen: 'verified receipt' }],
-    wait: { kind: 'linear', condition: 'verify receipt', expiresAt: '2030-01-01T21:30:00+08:00' } };
+    wait: { kind: 'linear', expectedAuthorIds: ['peer'], condition: 'verify receipt', expiresAt: '2030-01-01T21:30:00+08:00' } };
   assert.equal(parseOutcome(wrap(blocked)).status, 'blocked');
   assert.equal(parseOutcome(wrap({ ...blocked, status: 'complete' })), null);
   assert.equal(parseOutcome(wrap({ ...blocked, wait: { ...blocked.wait, kind: 'time' } })), null);
   assert.equal(parseOutcome(wrap({ ...blocked, wait: { ...blocked.wait, notBefore: '2030-01-01T22:00:00+08:00' } })), null);
   assert.equal(parseOutcome(wrap({ ...blocked, wait: { ...blocked.wait, expiresAt: 'tomorrow' } })), null);
+});
+
+test('new reply waits must declare the producer instead of silently guessing a collaborator',()=>{
+ const blocked={...valid,status:'blocked',remaining:['receipt'],next:'',blockers:[{owner:'peer',reason:'reply',resumeWhen:'receipt'}],wait:{kind:'linear',condition:'receipt'}};
+ assert.match(inspectOutcome(wrap(blocked)).error,/expectedAuthorIds/);
 });

@@ -37,7 +37,7 @@ async function fixture({ count = 1 } = {}) {
       f.starts++; const resumed = !!attempt.resume;
       if (resumed) assert.equal(attempt.sessionId, `session-${task.issue.id}`);
       const outcome = resumed ? { status: 'complete', evidence: ['isolated'], remaining: [], blockers: [], next: '', progress: 'complete' }
-        : { status: 'blocked', evidence: ['isolated'], remaining: ['reply'], blockers: [{ owner: 'peer', reason: 'reply', resumeWhen: 'reply' }], next: '', progress: 'waiting', wait: { kind: 'linear', condition: 'verified receipt', issueId: task.issue.id } };
+        : { status: 'blocked', evidence: ['isolated'], remaining: ['reply'], blockers: [{ owner: 'peer', reason: 'reply', resumeWhen: 'reply' }], next: '', progress: 'waiting', wait: { kind: 'linear', expectedAuthorIds: ['peer'], condition: 'verified receipt', issueId: task.issue.id } };
       return { status: 'review', sessionId: `session-${task.issue.id}`, summary: `<dispatch-result>${JSON.stringify(outcome)}</dispatch-result>` };
     } };
     return r;

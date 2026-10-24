@@ -13,7 +13,7 @@ const contract = (status, extra = {}) => `<dispatch-result>${JSON.stringify({ st
   evidence: ['isolated check passed'], remaining: status === 'complete' ? [] : ['peer receipt'],
   next: '', progress: 'verified local work', blockers: status === 'blocked' ? [{ owner: 'peer', reason: 'await receipt', resumeWhen: 'verified receipt' }] : [], ...extra })}</dispatch-result>`;
 const comment = (id = 'reply', user = 'peer', when = new Date(Date.now() + 1).toISOString(), body = 'Receipt ready, please verify.') => ({ id, user: { id: user }, updatedAt: when, body });
-async function fixture(wait = { kind: 'linear', condition: 'verified peer receipt', issueId: 'child' }) {
+async function fixture(wait = { kind: 'linear', expectedAuthorIds: ['peer'], condition: 'verified peer receipt', issueId: 'child' }) {
   const store = new MemoryStore(), state = initialState();
   state.paused = false;
   state.settings.projects = [{ id: 'p', label: 'Synthetic', cwd: process.cwd(), executionInstructions: 'No production writes; verify all approvals.',
@@ -103,10 +103,10 @@ test('invalid target stops retrying durably, reports once and never launches', a
 test('manual wait validation rejects invalid target without replacing evidence and accepts corrected wait without launching', async () => {
   const f = await fixture(), before = (await f.runtime.snapshot()).tasks[0];
   f.runtime.linearFactory = () => ({ activity: async () => { throw new WaitTargetError(); } });
-  await assert.rejects(f.runtime.command({ action: 'arm-wait', id: before.id, wait: { kind: 'linear', issueId: 'unrelated', condition: 'receipt' } }), error => error.code === 'INVALID_WAIT_TARGET');
+  await assert.rejects(f.runtime.command({ action: 'arm-wait', id: before.id, wait: { kind: 'linear', expectedAuthorIds: ['peer'], issueId: 'unrelated', condition: 'receipt' } }), error => error.code === 'INVALID_WAIT_TARGET');
   assert.deepEqual((await f.runtime.snapshot()).tasks[0], before);
   f.runtime.linearFactory = f.factory;
-  await f.runtime.command({ action: 'arm-wait', id: before.id, wait: { kind: 'linear', issueId: 'parent', condition: 'reply on this issue' } });
+  await f.runtime.command({ action: 'arm-wait', id: before.id, wait: { kind: 'linear', expectedAuthorIds: ['peer'], issueId: 'parent', condition: 'reply on this issue' } });
   const after = (await f.runtime.snapshot()).tasks[0];
   assert.equal(after.wait.issueId, 'parent'); assert.equal(after.wait.status, 'watching');
   assert.deepEqual(after.waitHistory.at(-1), before.wait); assert.deepEqual(after.attempts, before.attempts); assert.equal(f.starts, 1);
@@ -116,7 +116,7 @@ test('changing a mapping during target validation cannot overwrite the existing 
   const f = await fixture(), before = (await f.runtime.snapshot()).tasks[0];
   let enter, release; const entered = new Promise(resolve => { enter = resolve; });
   f.runtime.linearFactory = () => ({ activity: async () => { enter(); return new Promise(resolve => { release = resolve; }); } });
-  const arming = f.runtime.command({ action: 'arm-wait', id: before.id, wait: { kind: 'linear', issueId: 'parent', condition: 'receipt' } });
+  const arming = f.runtime.command({ action: 'arm-wait', id: before.id, wait: { kind: 'linear', expectedAuthorIds: ['peer'], issueId: 'parent', condition: 'receipt' } });
   await entered; await f.runtime.dispatcher.update(s => { s.settings.projects[0].linear.projectId = 'changed'; });
   release({ comments: [] }); await assert.rejects(arming, /changed while checking/);
   assert.deepEqual((await f.runtime.snapshot()).tasks[0].wait, before.wait); assert.equal(f.starts, 1);
@@ -214,7 +214,7 @@ test('missing current attempts never allow rearming or continuing an unrelated h
     t.session={executor:'codex',id:'different-session'};
   });
   const t=(await f.runtime.snapshot()).tasks[0];
-  await assert.rejects(f.runtime.command({action:'arm-wait',id:t.id,wait:{kind:'linear',condition:'recheck',issueId:'child'}}), /confirmed finished/);
+  await assert.rejects(f.runtime.command({action:'arm-wait',id:t.id,wait:{kind:'linear', expectedAuthorIds: ['peer'],condition:'recheck',issueId:'child'}}), /confirmed finished/);
   await assert.rejects(f.runtime.command({action:'continue',id:t.id}), /unconfirmed/);
   assert.equal(f.starts,1);
 });
@@ -222,8 +222,8 @@ test('missing current attempts never allow rearming or continuing an unrelated h
 test('local mapping change and closed parent fail closed; completed child can wake parent', async () => {
   const f = await fixture(); f.setComments([comment()]);
   await f.runtime.dispatcher.update(s => { s.settings.projects[0].cwd = os.tmpdir(); });
-  await f.runtime.monitor(); assert.match((await f.runtime.snapshot()).tasks[0].wait.error, /configuration changed/);
-  const wait = { id: 'w', kind: 'linear', armedAt: '2000-01-01T00:00:00Z' };
+  await f.runtime.monitor(); assert.equal((await f.runtime.snapshot()).tasks[0].wait.errorCode, 'WAIT_CONFIGURATION_CHANGED');
+  const wait = { id: 'w', kind: 'linear', expectedAuthorIds: ['peer'], armedAt: '2000-01-01T00:00:00Z' };
   assert.equal(wakeEvent(wait, { parentState: { type: 'completed' }, comments: [comment()] }, { commentAuthorIds: ['peer'] }, Date.now()), null);
   assert.ok(wakeEvent(wait, { state: { type: 'completed' }, comments: [comment()] }, { commentAuthorIds: ['peer'] }, Date.now()));
 });
@@ -256,7 +256,7 @@ test('shareable summary rejects credentials and local paths; malformed time is n
   for (const text of ['C:/private/a', '/home/me/a', 'token=abc', 'lin_api_example', 'Bearer example', 'my secret-value'])
     assert.equal(shareable(text, ['secret-value']), false);
   assert.equal(parseOutcome(contract('blocked', { wait: { kind: 'time', condition: 'later', notBefore: '15:20' } })), null);
-  assert.equal(parseOutcome(contract('complete', { wait: { kind: 'linear', condition: 'reply' } })), null);
+  assert.equal(parseOutcome(contract('complete', { wait: { kind: 'linear', expectedAuthorIds: ['peer'], condition: 'reply' } })), null);
 });
 
 test('manual continuation supersedes monitoring even if cancellation write was interrupted', async () => {
@@ -268,18 +268,18 @@ test('manual continuation supersedes monitoring even if cancellation write was i
 
 test('explicit wait setup preserves the finished session and ignores historical replies', async () => {
   const f = await fixture(); const task = (await f.runtime.snapshot()).tasks[0];
-  await f.runtime.command({action:'arm-wait',id:task.id,wait:{kind:'linear',condition:'New peer receipt',issueId:'child'}});
+  await f.runtime.command({action:'arm-wait',id:task.id,wait:{kind:'linear', expectedAuthorIds: ['peer'],condition:'New peer receipt',issueId:'child'}});
   assert.equal((await f.runtime.snapshot()).tasks[0].attempts.at(-1).sessionId,'registered');
   f.setComments([comment('historical','peer','2000-01-01T00:00:00Z')]);
   await f.runtime.monitor(); assert.equal(f.starts,1); assert.equal((await f.runtime.snapshot()).tasks[0].status,'blocked');
   await f.runtime.command({action:'takeover',id:task.id});
-  await assert.rejects(f.runtime.command({action:'arm-wait',id:task.id,wait:{kind:'linear',condition:'test'}}),/scheduler-owned/);
+  await assert.rejects(f.runtime.command({action:'arm-wait',id:task.id,wait:{kind:'linear', expectedAuthorIds: ['peer'],condition:'test'}}),/scheduler-owned/);
 });
 
 test('another blocked round does not replay a consumed comment, but an edit can wake it', async () => {
   const f=await fixture(); const reply=comment(); f.setComments([reply]);
   await f.runtime.monitor(); await f.runtime.dispatcher.tick();
-  await f.runtime.dispatcher.update(s=>{s.tasks[0].summary=contract('blocked',{wait:{kind:'linear',condition:'Need fuller receipt',issueId:'child'}});});
+  await f.runtime.dispatcher.update(s=>{s.tasks[0].summary=contract('blocked',{wait:{kind:'linear', expectedAuthorIds: ['peer'],condition:'Need fuller receipt',issueId:'child'}});});
   await f.runtime.assess(); await f.runtime.monitor();
   assert.equal((await f.runtime.snapshot()).tasks[0].wakeups,1);
   f.setComments([{...reply,updatedAt:new Date(Date.now()+1000).toISOString(),body:'Additional receipt'}]);
@@ -325,7 +325,7 @@ test('reassessment recovers a stored result without executing and preserves repl
     const t = s.tasks[0]; t.status = 'needs_result'; t.outcome = null; t.formatRepair = true;
     t.wait.status = 'resolved'; t.attempts[0].startedAt = '2030-01-01T10:00:00Z';
     t.summary = contract('blocked', { next: 'Verify the receipt before any change',
-      wait: { kind: 'linear', issueId: 'child', condition: 'Receipt', expiresAt: '2030-01-01T21:30:00+08:00' } });
+      wait: { kind: 'linear', expectedAuthorIds: ['peer'], issueId: 'child', condition: 'Receipt', expiresAt: '2030-01-01T21:30:00+08:00' } });
   });
   const before = (await f.runtime.snapshot()).tasks[0];
   await f.runtime.command({ action: 'reassess-result', id });
@@ -376,13 +376,13 @@ test('each external wake gets one formatting repair, not a lifetime budget or an
 });
 
 test('expiry-only reply monitoring expires without executing a waiting next step', async () => {
-  const f = await fixture({ kind: 'linear', condition: 'receipt before deadline', expiresAt: '2000-01-01T00:00:00Z' });
+  const f = await fixture({ kind: 'linear', expectedAuthorIds: ['peer'], condition: 'receipt before deadline', expiresAt: '2000-01-01T00:00:00Z' });
   f.setComments([comment()]); await f.runtime.monitor(); await f.runtime.dispatcher.tick();
   assert.equal((await f.runtime.snapshot()).tasks[0].wait.status, 'expired'); assert.equal(f.starts, 1);
 });
 
 test('expired waits keep opt-in reply observation across restart, never execute or consume the future resume cursor', async () => {
- const f=await fixture({kind:'linear',condition:'Receipt',issueId:'child',expiresAt:'2000-01-01T00:00:00Z'});
+ const f=await fixture({kind:'linear', expectedAuthorIds: ['peer'],condition:'Receipt',issueId:'child',expiresAt:'2000-01-01T00:00:00Z'});
  await f.runtime.dispatcher.update(s=>{s.settings.projects[0].followup.observeAfterExpiry=true;s.tasks[0].waitProject=structuredClone(s.settings.projects[0]);});
  f.fail(true);await f.runtime.monitor();let t=(await f.runtime.snapshot()).tasks[0];assert.equal(t.wait.status,'expired');assert.ok(t.wait.error);
  f.fail(false);const reply=comment();f.setComments([reply]);await f.runtime.monitor();await f.runtime.report();
@@ -402,8 +402,139 @@ test('deadline is enforced locally even if a time-wait eligibility service is un
 test('explicit cursor-preserving rearm does not lose replies received during maintenance', async()=>{
  const f=await fixture();const before=(await f.runtime.snapshot()).tasks[0];
  f.setComments([comment('maintenance-reply','peer',new Date(Date.parse(before.wait.armedAt)+1).toISOString())]);
- await f.runtime.command({action:'arm-wait',id:before.id,preserveCursor:true,wait:{kind:'linear',condition:'Verify receipt',issueId:'child'}});
+ await f.runtime.command({action:'arm-wait',id:before.id,preserveCursor:true,wait:{kind:'linear', expectedAuthorIds: ['peer'],condition:'Verify receipt',issueId:'child'}});
  assert.equal((await f.runtime.snapshot()).tasks[0].wait.armedAt,before.wait.armedAt);
  assert.equal((await f.runtime.snapshot()).tasks[0].waitHistory.length,1);
  await f.runtime.monitor();assert.equal((await f.runtime.snapshot()).tasks[0].wakeups,1);
+});
+
+async function dependencyFixture() {
+  const f = await fixture();
+  const dependent = (await f.runtime.snapshot()).tasks[0];
+  const target = structuredClone(dependent);
+  Object.assign(target, { id: 'dependency', key: JSON.stringify(['local-dependency', '1']), issue: { id: 'dependency-issue', identifier: 'EX-99' }, status: 'running', wait: undefined, outcome: null });
+  target.attempts = [{ id: 'target-attempt', status: 'running', accepted: true, executor: 'codex', sessionId: 'target-session' }];
+  await f.runtime.dispatcher.update(s => { s.tasks.push(target); });
+  await f.runtime.command({ action: 'arm-wait', id: dependent.id, wait: { kind: 'task', issueId: 'EX-99', condition: 'verify local task result' } });
+  const complete = async () => f.runtime.dispatcher.update(s => {
+    const t = s.tasks.find(t => t.id === target.id); t.status = 'review'; t.assessed = true;
+    t.outcome = parseOutcome(contract('complete')); t.attempts[0].status = 'review';
+  });
+  return { ...f, dependentId: dependent.id, complete, targetId: target.id };
+}
+
+test('local dependency resumes original session exactly once without any author comment, across pause/restart and concurrent polls', async () => {
+  const f = await dependencyFixture();
+  await f.runtime.monitor({localOnly:true});
+  assert.equal((await f.runtime.snapshot()).tasks[0].status, 'blocked');
+  await f.runtime.command({action:'pause'}); await f.complete(); await f.runtime.monitor();
+  assert.equal((await f.runtime.snapshot()).tasks[0].status, 'blocked');
+  const next = await new Runtime({store:f.store,directory:os.tmpdir(),env:{TEST_TOKEN:'synthetic'},linearFactory:f.factory}).init(); next.adapters.codex=f.adapter;
+  await next.command({action:'resume'});
+  await Promise.all([next.monitor({localOnly:true}),next.monitor({localOnly:true})]);
+  let t=(await next.snapshot()).tasks[0]; assert.equal(t.wakeups,1); assert.equal(t.status,'queued'); assert.equal(t.session.id,'registered');
+  await next.dispatcher.tick(); await next.assess();
+  t=(await next.snapshot()).tasks[0]; assert.equal(t.status,'review'); assert.equal(t.previousAttempts.length,1);
+  assert.equal(t.attempts[0].sessionId,'registered'); assert.equal(t.rounds.length,1);
+});
+
+test('task references reject self, unknown, cross-project, ambiguous and cyclic dependencies without replacing evidence', async()=>{
+  const f=await dependencyFixture(), before=(await f.runtime.snapshot()).tasks[0];
+  for(const taskId of [before.id,'missing']) await assert.rejects(f.runtime.command({action:'arm-wait',id:before.id,wait:{kind:'task',taskId,condition:'verify'}}), e=>e.code==='WAIT_DEPENDENCY_INVALID');
+  await f.runtime.dispatcher.update(s=>{s.tasks[1].projectId='other';});
+  await assert.rejects(f.runtime.command({action:'arm-wait',id:before.id,wait:{kind:'task',taskId:f.targetId,condition:'verify'}}), e=>e.code==='WAIT_DEPENDENCY_INVALID');
+  await f.runtime.dispatcher.update(s=>{s.tasks[1].projectId='p';s.tasks.push({...structuredClone(s.tasks[1]),id:'duplicate'});});
+  await assert.rejects(f.runtime.command({action:'arm-wait',id:before.id,wait:{kind:'task',issueId:'EX-99',condition:'verify'}}), e=>e.code==='WAIT_DEPENDENCY_INVALID');
+  await f.runtime.dispatcher.update(s=>{s.tasks.pop(); s.tasks[1].status='blocked';s.tasks[1].wait={kind:'task',taskId:before.id};});
+  await assert.rejects(f.runtime.command({action:'arm-wait',id:before.id,wait:{kind:'task',taskId:f.targetId,condition:'verify'}}), e=>e.code==='WAIT_DEPENDENCY_CYCLE');
+  assert.deepEqual((await f.runtime.snapshot()).tasks[0].wait,before.wait);
+});
+
+test('agent-proposed impossible own-author wait is a persistent actionable fault, not a peer/network wait',async()=>{
+  const f=await fixture({kind:'linear',condition:'own task report',expectedAuthorIds:['owner']});
+  let t=(await f.runtime.snapshot()).tasks[0]; assert.equal(t.wait.status,'invalid'); assert.equal(t.wait.errorCode,'WAIT_REPLY_UNREACHABLE');
+  await f.runtime.report(); const n=f.reports.length;
+  const next=await new Runtime({store:f.store,directory:os.tmpdir(),env:{TEST_TOKEN:'synthetic'},linearFactory:f.factory}).init();next.adapters.codex=f.adapter;
+  await next.monitor();await next.report();assert.equal(f.reports.length,n);
+  assert.match(f.reports.at(-1).body,/本方任务/);assert.equal(f.starts,1);
+  await assert.rejects(next.command({action:'arm-wait',id:t.id,wait:{kind:'linear',condition:'bad author',expectedAuthorIds:['outsider']}}),e=>e.code==='WAIT_REPLY_UNREACHABLE');
+});
+
+test('failed dependency and changed receipt cannot become completion or trigger another executor',async()=>{
+  const f=await dependencyFixture();
+  await f.runtime.dispatcher.update(s=>{s.tasks[1].status='failed';});
+  await f.runtime.monitor({localOnly:true});let t=(await f.runtime.snapshot()).tasks[0];
+  assert.equal(t.wait.status,'invalid');assert.equal(t.wait.errorCode,'WAIT_DEPENDENCY_STOPPED');
+  await f.complete(); await f.runtime.command({action:'arm-wait',id:t.id,wait:{kind:'task',taskId:f.targetId,condition:'verified recovery'}});
+  await f.runtime.monitor({localOnly:true});assert.equal((await f.runtime.snapshot()).tasks[0].status,'queued');
+  await f.runtime.dispatcher.update(s=>{s.tasks[1].outcome=null;});
+  await f.runtime.dispatcher.tick(); t=(await f.runtime.snapshot()).tasks[0];
+  assert.equal(t.status,'blocked');assert.equal(t.wait.errorCode,'WAIT_DEPENDENCY_PENDING');assert.equal(t.attempts.length,0);
+});
+
+test('dependency changes during an API read and the atomic wake is rejected',async()=>{
+  const f=await dependencyFixture(); await f.complete();
+  let enter,release;const entered=new Promise(r=>enter=r);
+  f.runtime.linearFactory=()=>({...f.factory(),eligible:async()=>{enter();await new Promise(r=>release=r);}});
+  const monitoring=f.runtime.monitor({localOnly:true});await entered;
+  await f.runtime.dispatcher.update(s=>{s.tasks[1].status='failed';});release();await monitoring;
+  const t=(await f.runtime.snapshot()).tasks[0];assert.equal(t.status,'blocked');assert.equal(t.wait.errorCode,'WAIT_DEPENDENCY_STOPPED');
+});
+
+test('changed local instructions fault immediately even before timer; expiry is globally visible without extending permission',async()=>{
+  const f=await fixture({kind:'time',condition:'future',notBefore:new Date(Date.now()+60000).toISOString()});
+  await f.runtime.report();const baseline=f.reports.length;
+  await f.runtime.dispatcher.update(s=>{s.settings.projects[0].executionInstructions='Different local constraints';});
+  await f.runtime.monitor({localOnly:true});await f.runtime.report();await f.runtime.monitor();await f.runtime.report();
+  assert.equal(f.reports.length,baseline+1);assert.equal((await f.runtime.snapshot()).tasks[0].wait.errorCode,'WAIT_CONFIGURATION_CHANGED');
+  assert.match(f.reports.at(-1).body,/本地执行约束/);
+  const expired=await fixture({kind:'time',condition:'expired',notBefore:'2000-01-01T00:00:00Z',expiresAt:'2000-01-01T00:01:00Z'});
+  await expired.runtime.monitor({localOnly:true});assert.match((await expired.runtime.snapshot()).errors.join(''),/需要本地负责人/);assert.equal(expired.starts,1);
+});
+
+test('requested reply authors are a subset filter and never widen the trusted policy',()=>{
+  const wait={kind:'linear',id:'w',armedAt:'2000-01-01T00:00:00Z',expectedAuthorIds:['peer-2']};
+  const policy={assigneeId:'owner',commentAuthorIds:['peer','peer-2']};
+  assert.equal(wakeEvent(wait,{comments:[comment('other','peer')]},policy,Date.now()),null);
+  assert.ok(wakeEvent(wait,{comments:[comment('right','peer-2')]},policy,Date.now()));
+});
+
+test('dependency wake survives disk failure/reopen and reporting failure without executing twice',async()=>{
+  const {FileStore}=await import('../src/store.js');const {mkdtemp,rm}=await import('node:fs/promises');const path=await import('node:path');
+  const dir=await mkdtemp(path.join(os.tmpdir(),'dispatch-dependency-'));
+  const f=await dependencyFixture();await f.complete();const disk=await new FileStore(dir).open();let final;
+  try {
+    await disk.save(await f.store.load());
+    const r=await new Runtime({store:disk,directory:dir,env:{TEST_TOKEN:'synthetic'},linearFactory:f.factory}).init();r.adapters.codex=f.adapter;
+    const save=disk.save.bind(disk);let fail=true;
+    disk.save=async state=>{if(fail&&state.tasks[0].status==='queued')throw new Error('disk offline');return save(state);};
+    await r.monitor({localOnly:true});assert.equal((await r.snapshot()).tasks[0].status,'blocked');
+    fail=false;await r.monitor({localOnly:true});await disk.close();final=await new FileStore(dir).open();
+    const r2=await new Runtime({store:final,directory:dir,env:{TEST_TOKEN:'synthetic'},linearFactory:f.factory}).init();r2.adapters.codex=f.adapter;
+    await r2.monitor();await r2.dispatcher.tick();await r2.assess();
+    r2.linearFactory=()=>({...f.factory(),report:async()=>{throw new Error('write offline');}});
+    await r2.report();await r2.monitor();await r2.dispatcher.tick();
+    const t=(await r2.snapshot()).tasks[0];assert.equal(t.status,'review');assert.equal(t.wakeups,1);assert.equal(t.previousAttempts.length,1);assert.equal(t.attempts.length,1);
+  }finally{await disk.close();await final?.close();await rm(dir,{recursive:true,force:true});}
+});
+
+test('agent-proposed task wait resolves an existing issue, and a three-task cycle faults durably',async()=>{
+  const f=await dependencyFixture();
+  await f.runtime.dispatcher.update(s=>{
+    const t=s.tasks[0];t.status='review';t.assessed=false;t.summary=contract('blocked',{wait:{kind:'task',issueId:'EX-99',condition:'local completion'}});
+  });await f.runtime.assess();
+  assert.equal((await f.runtime.snapshot()).tasks[0].wait.taskId,f.targetId);
+  await f.runtime.dispatcher.update(s=>{
+    const third={...structuredClone(s.tasks[1]),id:'third',key:JSON.stringify(['third','1']),status:'blocked',wait:{kind:'task',taskId:s.tasks[0].id,status:'watching'}};
+    s.tasks[1].status='blocked';s.tasks[1].wait={kind:'task',taskId:'third',status:'watching'};s.tasks.push(third);
+  });await f.runtime.monitor({localOnly:true});
+  assert.equal((await f.runtime.snapshot()).tasks[0].wait.errorCode,'WAIT_DEPENDENCY_CYCLE');
+});
+
+test('pending local dependencies never poll Linear; an expired task wait never becomes a peer subscription',async()=>{
+ const f=await dependencyFixture();let calls=0;
+ f.runtime.linearFactory=()=>{calls++;throw new Error('No network expected');};
+ await f.runtime.monitor({localOnly:true});assert.equal(calls,0);
+ await f.runtime.dispatcher.update(s=>{s.settings.projects[0].followup.observeAfterExpiry=true;s.tasks[0].waitProject=structuredClone(s.settings.projects[0]);s.tasks[0].wait.expiresAt='2000-01-01T00:00:00Z';});
+ await f.runtime.monitor();assert.equal(calls,0);assert.equal((await f.runtime.snapshot()).tasks[0].wait.status,'expired');
 });

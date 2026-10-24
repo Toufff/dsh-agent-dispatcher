@@ -23,7 +23,7 @@ test('intake → format repair → timer → reply → restart/outage → comple
   if(starts===2){assert.match(task.prompt,/Validation error/);assert.match(task.prompt,/do not execute tools/);}
   return {status:'review',sessionId:'original',summary:starts===1?'Unclassified result':starts===2?
    result({kind:'time',condition:'Check scheduled condition',notBefore:'2000-01-01T00:00:00Z'}):starts===3?
-   'long narrative '.repeat(2000)+result({kind:'linear',condition:'Verify peer receipt',issueId:'child',expiresAt:new Date(Date.now()+60000).toISOString()}):result()};
+   'long narrative '.repeat(2000)+result({kind:'linear', expectedAuthorIds: ['peer'],condition:'Verify peer receipt',issueId:'child',expiresAt:new Date(Date.now()+60000).toISOString()}):result()};
  }};
  const make=async()=>{const r=await new Runtime({store,directory:dir,env:{TEST_TOKEN:'synthetic'},linearFactory:linear}).init();r.adapters.codex=adapter;return r;};
  try {

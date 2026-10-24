@@ -11,6 +11,7 @@ export function WaitDetails({ view }) {
       {view.owners && <><dt>{wait?.kind === 'linear' ? '等待谁的回复' : '下一步由谁处理'}</dt><dd>{view.owners}</dd></>}
       {wait?.kind === 'linear' && <><dt>在哪里等回复</dt><dd>{view.targetUrl ? <a href={view.targetUrl} target="_blank" rel="noreferrer">{view.targetLabel}</a> : view.targetLabel}</dd></>}
       {view.targetTitle && <><dt>关联工单</dt><dd>{view.targetTitle}</dd></>}
+      {wait?.kind === 'task' && <><dt>依赖任务当前状态</dt><dd>{view.dependencyStatus || '目标不存在或未绑定'}（由本机完成回执触发，不等评论）</dd></>}
       {view.targetAssignee && <><dt>关联工单负责人</dt><dd>{view.targetAssignee}</dd></>}
       {view.condition && <><dt>继续所需条件</dt><dd>{view.condition}</dd></>}
       {view.blockers.map((b, i) => <React.Fragment key={i}><dt>业务恢复要求{view.blockers.length > 1 ? ` ${i + 1}` : ''}</dt><dd>{b.resumeWhen}</dd></React.Fragment>)}

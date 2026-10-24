@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { captureResultText } from './result-text.js';
+import { waitFaults } from './followup.js';
 
 export const terminal = new Set(['review', 'failed', 'exhausted', 'stopped', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result']);
 async function bounded(operation, ms = 15000) {
@@ -69,7 +70,15 @@ export class Dispatcher {
       if (task.resumeWindow?.notBefore && Date.now() < Date.parse(task.resumeWindow.notBefore)) return;
       if (this.beforeStart) {
         try { await this.beforeStart(task, state); delete task.admissionError; delete task.admissionRetryAt; }
-        catch {
+        catch (error) {
+          if (task.wait && (waitFaults[error.code] || error.code === 'WAIT_DEPENDENCY_PENDING')) {
+            // A changed dependency receipt needs a new wait, not a retry with stale evidence.
+            task.status = 'blocked'; task.assessed = true; task.report = 'pending'; task.resumeNotice = false;
+            task.wait.status = 'invalid'; task.wait.failureNotified = true; task.wait.errorCode = error.code;
+            task.wait.error = waitFaults[error.code] || '依赖完成回执已改变，需重新核验并设置等待条件。';
+            task.events.push({ action: 'dependency-admission-blocked', at: new Date().toISOString() });
+            await this.store.save(state); return;
+          }
           // Keep the queue intact for a transient outage, but never execute from stale assignment data.
           task.admissionError = '启动前 Linear 指派或状态复核未通过，未执行；稍后自动重查。';
           task.admissionRetryAt = Date.now() + 30000;
