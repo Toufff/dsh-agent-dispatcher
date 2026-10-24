@@ -538,3 +538,10 @@ test('pending local dependencies never poll Linear; an expired task wait never b
  await f.runtime.dispatcher.update(s=>{s.settings.projects[0].followup.observeAfterExpiry=true;s.tasks[0].waitProject=structuredClone(s.settings.projects[0]);s.tasks[0].wait.expiresAt='2000-01-01T00:00:00Z';});
  await f.runtime.monitor();assert.equal(calls,0);assert.equal((await f.runtime.snapshot()).tasks[0].wait.status,'expired');
 });
+
+test('legacy undeclared producer becomes a once-reported local fault without replay or cursor loss',async()=>{
+ const f=await fixture();await f.runtime.dispatcher.update(s=>{delete s.tasks[0].wait.expectedAuthorIds;});
+ const before=(await f.runtime.snapshot()).tasks[0];await f.runtime.monitor({localOnly:true});await f.runtime.report();const n=f.reports.length;
+ await f.runtime.monitor();await f.runtime.report();const t=(await f.runtime.snapshot()).tasks[0];
+ assert.equal(t.wait.errorCode,'WAIT_REPLY_UNDECLARED');assert.equal(t.wait.armedAt,before.wait.armedAt);assert.deepEqual(t.attempts,before.attempts);assert.equal(f.reports.length,n);
+});

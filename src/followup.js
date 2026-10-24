@@ -23,6 +23,7 @@ export const waitSchema = z.object({
 });
 
 export const waitFaults = {
+  WAIT_REPLY_UNDECLARED: '旧等待没有明确回复人，无法证明条件能被触发。请本地负责人确认结果由谁产生，并改为明确回复人、任务依赖或人工决策；不会猜测并继续监听。',
   WAIT_DEPENDENCY_PENDING: '依赖完成回执已改变，需重新核验并设置等待条件。',
   WAIT_CONFIGURATION_CHANGED: '本地执行约束或项目配置已改变，需要核对并重新保存等待条件；反复检查不会解决。',
   WAIT_REPLY_UNREACHABLE: '要求的回复人不能通过本地信任规则。若等待本方任务结果，请使用 task 依赖，不要等待本方评论或扩大信任名单。',
@@ -36,6 +37,7 @@ export function waitFault(code) { return Object.assign(new Error(waitFaults[code
 export function validateLocalWait(wait, task, state) {
   const project = state.settings.projects.find(p => p.id === task.projectId);
   if (wait.kind === 'linear') {
+    if (!wait.expectedAuthorIds?.length) throw waitFault('WAIT_REPLY_UNDECLARED');
     const allowed = (project?.followup?.commentAuthorIds || []).filter(id => id !== project?.linear?.assigneeId);
     if (!allowed.length || wait.expectedAuthorIds?.some(id => !allowed.includes(id))) throw waitFault('WAIT_REPLY_UNREACHABLE');
   }
