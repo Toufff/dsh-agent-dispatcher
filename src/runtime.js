@@ -136,7 +136,11 @@ export class Runtime {
     const notificationErrors = (state.notifications?.outbox || []).filter(i => ['failed', 'unknown'].includes(i.status) &&
       Object.values(state.notifications?.active || {}).includes(i.id)).map(i => `飞书任务通知：${i.error}`);
     const tasks = state.tasks.map(t => ({ ...t, historical: !currentTask(t, state), attention: attentionFor(t, state) }));
-    const attentionErrors = tasks.filter(t => t.attention && !['invalid', 'expired'].includes(t.wait?.status))
+    const attentionErrors = tasks.filter(t => {
+      const project = state.settings.projects.find(p => p.id === t.projectId);
+      const dormantHistory = ['test', 'archive'].includes(project?.category) && !project?.linear?.enabled && !project?.followup?.enabled;
+      return t.attention && !dormantHistory && !['invalid', 'expired'].includes(t.wait?.status);
+    })
       .map(t => `${t.issue?.identifier || t.title}: ${t.attention.reason}；下一责任：${t.attention.owner}。`);
     return { ...state, tasks, linearSync: undefined, syncStatus, health: this.health, errors: [...this.errors, ...reportErrors, ...monitorErrors, ...expired, ...attentionErrors, ...notificationErrors] };
   }

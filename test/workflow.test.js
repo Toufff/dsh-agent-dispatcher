@@ -168,3 +168,13 @@ test('expired dates never conceal stopped, superseded or budget-limited monitori
   assert.equal(waitView({ ...task, historical: true }, s).monitor, '不再监听或回写');
   assert.equal(waitView({ ...task, wait: { ...task.wait, status: 'suspended' } }, s).monitor, '监听已停止');
 });
+
+test('disabled historical test projects retain local detail without polluting business alerts', async () => {
+  const r = await fixture();
+  await r.dispatcher.update(s => {
+    s.settings.projects.push({ id: 'old-test', category: 'test', cwd: process.cwd() });
+    s.tasks.push({ id: 'old-test-task', projectId: 'old-test', title: 'Archived synthetic test', status: 'needs_result', attempts: [], events: [] });
+  });
+  const s = await r.snapshot();
+  assert.ok(s.tasks[0].attention); assert.equal(s.errors.length, 0);
+});
