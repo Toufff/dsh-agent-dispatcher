@@ -5,7 +5,7 @@ import { Runtime } from '../src/runtime.js';
 import { initialState } from '../src/config.js';
 import { MemoryStore } from '../src/dispatcher.js';
 import { parseOutcome } from '../src/outcome.js';
-import { wakeEvent } from '../src/followup.js';
+import { wakeEvent, validateLocalWait } from '../src/followup.js';
 import { shareable } from '../src/reporting.js';
 import { WaitTargetError } from '../src/linear.js';
 import { workItems } from './workflow-fixtures.js';
@@ -523,6 +523,64 @@ async function dependencyFixture() {
   });
   return { ...f, dependentId: dependent.id, complete, targetId: target.id };
 }
+
+function replaceDependency(state) {
+  const old = state.tasks[1], [source] = JSON.parse(old.key);
+  const next = { ...structuredClone(old), id: 'replacement', continuationOf: old.id,
+    key: JSON.stringify([source, `continue:${old.id}`]), status: 'running', outcome: null };
+  old.supersededBy = next.id;
+  old.status = 'blocked';
+  state.tasks.push(next);
+  return next;
+}
+
+test('new dependency registration resolves historical IDs and issue names through verified continuation lineage', async () => {
+  const f = await dependencyFixture(), state = await f.store.load();
+  replaceDependency(state);
+  for (const reference of [{ taskId: f.targetId }, { issueId: 'EX-99' }, { issueId: 'dependency-issue' }]) {
+    const wait = validateLocalWait({ kind: 'task', condition: 'verify', ...reference }, state.tasks[0], state);
+    assert.equal(wait.taskId, 'replacement');
+    assert.equal(wait.resolvedFromTaskId, reference.taskId);
+  }
+  assert.throws(() => validateLocalWait(state.tasks[0].wait, state.tasks[0], state), { code: 'WAIT_DEPENDENCY_INVALID' });
+});
+
+test('lineage resolution rejects broken, cross-project, cross-issue, branched and self references', async () => {
+  const f = await dependencyFixture(), baseline = await f.store.load();
+  for (const change of [
+    s => { s.tasks[2].projectId = 'other'; },
+    s => { s.tasks[2].issue.id = 'another-issue'; },
+    s => { delete s.tasks[2].continuationOf; },
+    s => { delete s.tasks[1].supersededBy; },
+    s => { s.tasks.push({ ...structuredClone(s.tasks[2]), id: 'branch' }); }
+  ]) {
+    const s = structuredClone(baseline); replaceDependency(s); change(s);
+    assert.throws(() => validateLocalWait({ kind: 'task', taskId: f.targetId, condition: 'verify' }, s.tasks[0], s), { code: 'WAIT_DEPENDENCY_INVALID' });
+  }
+  const s = structuredClone(baseline), next = replaceDependency(s);
+  assert.throws(() => validateLocalWait({ kind: 'task', taskId: f.targetId, condition: 'self' }, next, s), { code: 'WAIT_DEPENDENCY_INVALID' });
+  next.status = 'blocked'; next.wait = { kind: 'task', taskId: s.tasks[0].id };
+  assert.throws(() => validateLocalWait({ kind: 'task', issueId: 'EX-99', condition: 'cycle' }, s.tasks[0], s), { code: 'WAIT_DEPENDENCY_CYCLE' });
+});
+
+test('corrected historical dependency persists binding and wakes original session once after restart', async () => {
+  const f = await dependencyFixture();
+  await f.runtime.dispatcher.update(s => { replaceDependency(s); });
+  await f.runtime.command({ action: 'arm-wait', id: f.dependentId, wait: { kind: 'task', taskId: f.targetId, condition: 'verify replacement' } });
+  let t = (await f.store.load()).tasks[0];
+  assert.equal(t.wait.taskId, 'replacement'); assert.equal(t.wait.resolvedFromTaskId, f.targetId);
+  await f.runtime.monitor({ localOnly: true });
+  assert.equal((await f.store.load()).tasks[0].status, 'blocked');
+  await f.runtime.dispatcher.update(s => {
+    const target = s.tasks.find(t => t.id === 'replacement');
+    target.status = 'review'; target.assessed = true; target.outcome = parseOutcome(contract('complete')); target.attempts[0].status = 'review';
+  });
+  const next = await new Runtime({ store: f.store, directory: os.tmpdir(), env: { TEST_TOKEN: 'synthetic' }, linearFactory: f.factory }).init(); next.adapters.codex = f.adapter;
+  await Promise.all([next.monitor({ localOnly: true }), next.monitor({ localOnly: true })]);
+  await next.dispatcher.tick(); await next.assess(); await next.monitor({ localOnly: true }); await next.dispatcher.tick();
+  t = (await f.store.load()).tasks[0];
+  assert.equal(t.wakeups, 1); assert.equal(t.attempts.length, 1); assert.equal(t.attempts[0].sessionId, 'registered');
+});
 
 test('local dependency resumes original session exactly once without any author comment, across pause/restart and concurrent polls', async () => {
   const f = await dependencyFixture();

@@ -33,7 +33,28 @@ export const waitFaults = {
 };
 export function waitFault(code) { return Object.assign(new Error(waitFaults[code]), { code }); }
 
-// Resolve issue references once, then persist the exact task identity. Never select "latest".
+// Resolve only kernel-recorded continuation edges, never infer a replacement by date.
+function continuationTarget(target, state) {
+  const seen = new Set();
+  while (target) {
+    if (seen.has(target.id)) throw waitFault('WAIT_DEPENDENCY_CYCLE');
+    seen.add(target.id);
+    const [source] = JSON.parse(target.key);
+    const children = state.tasks.filter(t => t.continuationOf === target.id ||
+      t.key === JSON.stringify([source, `continue:${target.id}`]) || t.id === target.supersededBy);
+    if (!children.length) {
+      if (target.supersededBy) throw waitFault('WAIT_DEPENDENCY_INVALID');
+      return target;
+    }
+    const next = children[0];
+    if (children.length !== 1 || next.continuationOf !== target.id || target.supersededBy !== next.id ||
+        next.key !== JSON.stringify([source, `continue:${target.id}`]) || next.projectId !== target.projectId ||
+        next.issue?.id !== target.issue?.id) throw waitFault('WAIT_DEPENDENCY_INVALID');
+    target = next;
+  }
+}
+
+// New waits may resolve a stale reference through verified lineage. Saved waits stay pinned.
 export function validateLocalWait(wait, task, state) {
   const project = state.settings.projects.find(p => p.id === task.projectId);
   if (wait.kind === 'linear') {
@@ -42,8 +63,13 @@ export function validateLocalWait(wait, task, state) {
     if (!allowed.length || wait.expectedAuthorIds?.some(id => !allowed.includes(id))) throw waitFault('WAIT_REPLY_UNREACHABLE');
   }
   if (wait.kind !== 'task') return wait;
-  const targets = state.tasks.filter(t => t.projectId === task.projectId &&
+  const matches = state.tasks.filter(t => t.projectId === task.projectId &&
     (wait.taskId ? t.id === wait.taskId : t.issue?.id === wait.issueId || t.issue?.identifier === wait.issueId));
+  const targets = [...new Map(matches.map(t => {
+    const resolved = continuationTarget(t, state);
+    if (wait.id && resolved.id !== t.id) throw waitFault('WAIT_DEPENDENCY_INVALID');
+    return [resolved.id, resolved];
+  })).values()];
   const target = targets[0];
   if (targets.length !== 1 || target.id === task.id || wait.taskId && wait.issueId &&
       ![target.issue?.id, target.issue?.identifier].includes(wait.issueId)) throw waitFault('WAIT_DEPENDENCY_INVALID');
@@ -57,7 +83,8 @@ export function validateLocalWait(wait, task, state) {
     cursor = cursor.status === 'blocked' && cursor.wait?.kind === 'task'
       ? state.tasks.find(t => t.id === cursor.wait.taskId) : null;
   }
-  return { ...wait, taskId: target.id, issueId: target.issue?.id };
+  return { ...wait, taskId: target.id, issueId: target.issue?.id,
+    ...(wait.taskId && wait.taskId !== target.id ? { resolvedFromTaskId: wait.taskId } : {}) };
 }
 
 export function dependencyEvent(wait, task, state, now) {
