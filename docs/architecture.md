@@ -2,6 +2,8 @@
 
 ## Ownership
 
+Opt-in Feishu notifications use a separate durable incident/outbox aggregate and a bounded background sender. They never start executors, approve actions or alter Linear state. See [configuration and delivery limits](feishu-notifications.md). An ambiguous send is not automatically replayed.
+
 Linear stores human-facing requirements, human assignees and acceptance. Each recipient's local DSH plugin owns routing. A remote issue must not select an executable, command line, local directory or session. Project mappings and enabled executor instances are configured locally.
 
 The first policy is an ordered list of enabled executors and FIFO tasks, with one automatically running task globally. Adapter types are separate from configured executor instances. Later policies can select an ordered candidate list through the same interface without changing execution semantics.

@@ -20,12 +20,24 @@ export const projectSchema = z.object({
     enabled: z.boolean().default(false), shareProgress: z.boolean().optional(), since: z.string().datetime(),
     round: id.default('1') }).strict().optional()
 }).strict();
-export const settingsSchema = z.object({ executors: z.array(executorSchema), projects: z.array(projectSchema) })
+export const notificationChannelSchema = z.object({
+  id, type: z.literal('feishu'), label: id, enabled: z.boolean(),
+  credentialsFile: z.string().refine(path.isAbsolute, 'Use an absolute private credential file'),
+  projectIds: z.array(id).min(1).max(100),
+  includeExisting: z.boolean().default(false), completed: z.boolean().default(false)
+}).strict();
+export const settingsSchema = z.object({ executors: z.array(executorSchema), projects: z.array(projectSchema),
+  notifications: z.object({ channels: z.array(notificationChannelSchema).max(10) }).strict().optional() })
   .strict().superRefine((value, ctx) => {
     for (const key of ['executors', 'projects']) {
       if (new Set(value[key].map(v => v.id)).size !== value[key].length)
         ctx.addIssue({ code: 'custom', message: `Duplicate ${key} identity` });
     }
+    const channels = value.notifications?.channels || [];
+    if (new Set(channels.map(c => c.id)).size !== channels.length)
+      ctx.addIssue({ code: 'custom', message: 'Duplicate notification channel identity' });
+    if (channels.some(c => c.projectIds.some(id => !value.projects.some(p => p.id === id))))
+      ctx.addIssue({ code: 'custom', message: 'Notification project does not exist' });
   });
 export const initialState = () => ({ version: 1, revision: 0, paused: true, tasks: [], outbox: [],
   settings: { executors: [

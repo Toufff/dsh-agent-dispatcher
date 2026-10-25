@@ -12,7 +12,7 @@ import { remote } from './remote.js';
 
 export const domainSpec = defineDomain({ name: 'agent_dispatcher', version: 1, tables: {},
   global: { schema: z.object({ version: z.literal(1), tasks: z.array(z.json()), settings: z.json(),
-    paused: z.boolean(), revision: z.number(), outbox: z.array(z.json()), linearSync: z.record(z.string(), z.json()).optional() }), initial: initialState() } });
+    paused: z.boolean(), revision: z.number(), outbox: z.array(z.json()), notifications: z.json().optional(), linearSync: z.record(z.string(), z.json()).optional() }), initial: initialState() } });
 
 export default class AgentDispatcher extends TypertRemoteService {
   static inject = ['storageDomain', 'sessionController', 'agents', 'typert'];
@@ -34,6 +34,7 @@ export default class AgentDispatcher extends TypertRemoteService {
       const timer = setInterval(() => this.ready.then(r => r.cycle()).catch(() => {}), 1500);
       return async () => { clearInterval(timer); await this.ready.catch(() => {});
         while (this.runtime?.cycling) await new Promise(r => setTimeout(r, 100));
+        await this.runtime?.notifications.pending?.catch(() => {});
         await this.domain?.close(); await this.release?.(); };
     });
   }

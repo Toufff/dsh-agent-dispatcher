@@ -12,6 +12,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { wakeEvent, waitSchema, validateLocalWait, dependencyEvent, waitFault, waitFaults } from './followup.js';
 import { reportBody } from './reporting.js';
 import { LinearSync } from './linear-sync.js';
+import { Notifications } from './notifications.js';
 
 // A queued continuation may expire before creating its next attempt. Reuse
 // only the latest confirmed historical attempt matching the durable session.
@@ -61,7 +62,7 @@ export class Runtime {
   constructor({ store, ctx = {}, directory, linearFactory = token => new LinearClient(token), env = process.env, registry }) {
     this.store = store; this.ctx = ctx; this.directory = directory; this.env = env;
     this.linearFactory = linearFactory; this.adapters = {}; this.health = {}; this.errors = [];
-    this.sync = new LinearSync(this); this.reads = new Map();
+    this.sync = new LinearSync(this); this.reads = new Map(); this.notifications = new Notifications(this);
     this.registry = registry || new AdapterRegistry();
     if (!registry) {
       for (const type of ['codex', 'claude']) this.registry.register(type, (config, deps) => new CliAdapter(config, path.join(deps.directory, 'runs'), deps.secretKeys));
@@ -117,7 +118,9 @@ export class Runtime {
       .map(([key, value]) => ({ key, ...Object.fromEntries(['lastAttemptAt','lastSuccessAt','nextAt','retryAt','intervalMs','failures','error'].map(k => [k,value[k]])) }));
     const expired = state.tasks.filter(t => t.status === 'blocked' && t.wait?.status === 'expired')
       .map(t => `${t.issue?.identifier || t.title}: 等待窗口已过期${t.wait.pendingUpdate ? '且已有新回执' : ''}，需要本地负责人重新安排；不会自动延期。`);
-    return { ...state, linearSync: undefined, syncStatus, health: this.health, errors: [...this.errors, ...reportErrors, ...monitorErrors, ...expired] };
+    const notificationErrors = (state.notifications?.outbox || []).filter(i => ['failed', 'unknown'].includes(i.status) &&
+      Object.values(state.notifications?.active || {}).includes(i.id)).map(i => `飞书任务通知：${i.error}`);
+    return { ...state, linearSync: undefined, syncStatus, health: this.health, errors: [...this.errors, ...reportErrors, ...monitorErrors, ...expired, ...notificationErrors] };
   }
   sharedRead(key, operation, ttl = 0) {
     const old = this.reads.get(key);
@@ -506,6 +509,9 @@ export class Runtime {
       await phase('Linear sync', () => this.sync.run());
       await phase('Execution', async () => { await this.dispatcher.tick(); await this.assess(); });
       await phase('Linear reporting', () => this.report());
+      // Independent single-flight delivery. Slow notification I/O does not hold
+      // the execution cycle or trigger any executor continuation.
+      this.notifications.run().catch(() => { this.errors.push('任务通知持久化失败，请检查本机存储'); });
       if (Date.now() - (this.lastHealth ?? 0) > 30000) {
         this.lastHealth = Date.now(); this.healthRequests ||= new Map();
         for (const [id, adapter] of Object.entries(this.adapters)) await phase(`Health ${id}`, async () => {
