@@ -39,7 +39,7 @@ export function notificationPresentation(text, type) {
   return {
     color, heading: `${status} · ${issue || '任务派发通知'}`, intervention, operation,
     title: read('任务：'),
-    blocker: ['review', 'preview'].includes(type) ? '' : (infrastructure ? reason : blockers[0] || reason) || '通知未记录具体原因，请在工单核对当前情况。',
+    blocker: type === 'review' ? '' : type === 'preview' ? blockers[0] || '' : (infrastructure ? reason : blockers[0] || reason) || '通知未记录具体原因，请在工单核对当前情况。',
     action: type === 'decision' && next ? next : read('现在需要：') || '打开工单核对当前状态和下一责任人。',
     // A concrete decision/next step is useful immediately, ahead of progress.
     next: type === 'decision' || type === 'review' || infrastructure ? '' : next,
@@ -57,25 +57,58 @@ export function notificationPresentation(text, type) {
 export function feishuCard(text, type) {
   const view = notificationPresentation(text, type);
   const plain = content => ({ tag: 'plain_text', content });
-  const paragraph = content => ({ tag: 'div', text: plain(content) });
-  // Only static section labels use Markdown. Every dynamic value is literal
-  // plain_text: executor output cannot create links, @mentions or fake buttons.
+  const paragraph = (content, size = 'normal', color = 'default') => ({
+    tag: 'div', text: { ...plain(content), text_size: size, text_color: color }, margin: '0px'
+  });
+  // Only code-owned labels use Markdown. Dynamic values stay literal even in
+  // nested containers, so executor output cannot create mentions or controls.
   const section = (label, value) => value ? [
-    { tag: 'div', text: { tag: 'lark_md', content: `**${label}**` } }, paragraph(value)
+    { tag: 'markdown', content: `**${label}**`, text_size: 'normal', margin: '0px' }, paragraph(value)
   ] : [];
-  const elements = [paragraph(`${view.intervention}\n${view.operation}`)];
-  if (view.title) elements.push(paragraph(view.title));
-  elements.push({ tag: 'hr' }, ...section('卡在哪里', view.blocker), ...section('现在要做什么', view.action));
-  if (view.next) elements.push(paragraph(`具体下一步（执行者报告）：${view.next}`));
-  if (view.resume) elements.push(paragraph(`满足后可继续：${view.resume}`));
-  if (view.progress || view.stages) {
-    elements.push({ tag: 'hr' }, ...section('已做到哪里 · 执行者报告', view.progress));
-    if (view.stages) elements.push(paragraph(`阶段记录（待验收）：${view.stages}`));
-  }
-  if (view.otherBlockers.length) elements.push(paragraph(`其他依赖：${view.otherBlockers.join('；')}`));
-  if (view.remaining) elements.push(paragraph(`剩余事项：${view.remaining}`));
-  if (view.legacy.length) elements.push(...section('原通知内容', view.legacy.join('\n')));
-  if (view.href) elements.push({ tag: 'action', actions: [{ tag: 'button', text: plain('打开 Linear 工单'), type: 'primary', url: view.href }] });
-  elements.push({ tag: 'note', elements: [plain(view.notice)] });
-  return { config: { wide_screen_mode: true }, header: { template: view.color, title: plain(view.heading) }, elements };
+  const column = (elements, background = 'default') => ({
+    tag: 'column', width: 'weighted', weight: 1, vertical_align: 'top',
+    vertical_spacing: '8px', padding: '12px', background_style: background, elements
+  });
+  const elements = [];
+  if (view.title) elements.push(paragraph(view.title, 'heading'));
+  elements.push(paragraph(view.operation, 'notation', 'grey'));
+  const columns = [];
+  if (view.blocker) columns.push(column(section('当前卡点', view.blocker), `${view.color}-50`));
+  columns.push(column(section(type === 'review' ? '验收下一步' : '现在要做什么', view.action), 'blue-50'));
+  // Critical text is never collapsed. Feishu stacks these columns on narrow
+  // screens instead of squeezing two long instructions into half-width cells.
+  elements.push({ tag: 'column_set', flex_mode: 'stretch', horizontal_spacing: '12px', columns });
+  if (view.next) elements.push(...section('具体下一步 · 执行者报告', view.next));
+  if (view.href) elements.push({
+    tag: 'button', text: plain(type === 'decision' ? '前往工单回复' : type === 'review' ? '查看交付并验收' : '打开 Linear 工单'),
+    type: 'primary_filled', size: 'medium', width: 'fill',
+    behaviors: [{ type: 'open_url', default_url: view.href }]
+  });
+  // Review recipients need the delivery summary immediately; interrupted work
+  // keeps progress and secondary dependencies behind a native disclosure.
+  if (type === 'review') elements.push(...section('交付摘要 · 执行者报告', view.progress));
+  const details = [
+    ...section('已做到哪里 · 执行者报告', type === 'review' ? '' : view.progress),
+    ...section('阶段记录 · 待验收', view.stages),
+    ...section('满足后可继续', view.resume),
+    ...section('其他依赖', view.otherBlockers.join('；')),
+    ...section('剩余事项', view.remaining),
+    ...section('原通知内容', view.legacy.join('\n'))
+  ];
+  if (details.length) elements.push({
+    tag: 'collapsible_panel', expanded: false,
+    header: { title: plain('进展与相关记录'), padding: '10px 12px 10px 12px',
+      icon: { tag: 'standard_icon', token: 'down-small-ccm_outlined', color: 'grey', size: '16px 16px' },
+      icon_position: 'right', icon_expanded_angle: -180 },
+    border: { color: 'grey-200', corner_radius: '8px' },
+    padding: '12px 12px 12px 12px', vertical_spacing: '8px', elements: details
+  });
+  elements.push(paragraph(view.notice, 'notation', 'grey'));
+  return {
+    schema: '2.0',
+    config: { update_multi: true, summary: { content: `${view.heading}｜${view.intervention}｜${view.blocker || view.operation}`.slice(0, 150) } },
+    header: { template: view.color, title: plain(view.heading), padding: '16px',
+      text_tag_list: [{ tag: 'text_tag', text: plain(view.intervention), color: view.color === 'grey' ? 'neutral' : view.color }] },
+    body: { direction: 'vertical', padding: '16px', vertical_spacing: '12px', elements }
+  };
 }

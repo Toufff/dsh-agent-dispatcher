@@ -11,6 +11,12 @@ import { domainSpec } from '../src/plugin.js';
 import { Runtime } from '../src/runtime.js';
 import { feishuCard, notificationPresentation } from '../src/notification-card.js';
 
+function cardNodes(node, includeCollapsed = true) {
+  if (!node || typeof node !== 'object') return [];
+  if (!includeCollapsed && node.tag === 'collapsible_panel' && !node.expanded) return [node];
+  return [node, ...Object.values(node).flatMap(value => Array.isArray(value) ? value.flatMap(v => cardNodes(v, includeCollapsed)) : cardNodes(value, includeCollapsed))];
+}
+
 const channel = { id: 'personal', type: 'feishu', enabled: true, label: 'Personal', credentialsFile: path.join(os.tmpdir(), 'private.json'), projectIds: ['p'], includeExisting: true, completed: false };
 async function fixture(send = async () => ({ status: 'sent' })) {
   const state = initialState();
@@ -152,13 +158,16 @@ test('Feishu signing, fixed destination, API errors, ambiguous timeout redaction
   await sendFeishu(c, '任务派发通知 · EX-1\n具体进展\nhttps://linear.app/example/issue/EX-1\nhttps://evil.example/\nhttps://linear.app/example?token=hidden', { fetchImpl: async (_url, options) => {
     const card = JSON.parse(options.body).card;
     assert.equal(card.header.title.content, '历史通知 · EX-1');
-    assert.deepEqual(card.elements.find(e => e.tag === 'action').actions[0], {
-      tag: 'button', text: { tag: 'plain_text', content: '打开 Linear 工单' }, type: 'primary', url: 'https://linear.app/example/issue/EX-1'
-    });
-    assert.equal(card.elements.find(e => e.text?.content.includes('https://evil.example/')).text.tag, 'plain_text');
+    assert.equal(card.schema, '2.0');
+    const button = card.body.elements.find(e => e.tag === 'button');
+    assert.equal(button.text.content, '打开 Linear 工单');
+    assert.deepEqual(button.behaviors, [{ type: 'open_url', default_url: 'https://linear.app/example/issue/EX-1' }]);
+    assert.equal(cardNodes(card).find(e => e.text?.content.includes('https://evil.example/')).text.tag, 'plain_text');
     return new Response('{"code":0}');
   } });
   assert.equal((await sendFeishu(c, 'test', { fetchImpl: async () => new Response('{"code":19021,"msg":"test-secret"}') })).status, 'failed');
+  const invalidCard = await sendFeishu(c, 'test', { fetchImpl: async () => new Response('{"code":11246,"msg":"test-secret"}') });
+  assert.equal(invalidCard.status, 'failed'); assert.match(invalidCard.error, /卡片格式/); assert.doesNotMatch(invalidCard.error, /test-secret/);
   const unknown = await sendFeishu(c, 'test', { fetchImpl: async () => { throw Error('test-secret https://private'); } });
   assert.equal(unknown.status, 'unknown'); assert.doesNotMatch(JSON.stringify(unknown), /test-secret|private/);
   const limited = await sendFeishu(c, 'test', { fetchImpl: async () => new Response('', { status: 429, headers: { 'retry-after': '120' } }) });
@@ -176,14 +185,20 @@ test('cards put intervention, concrete blocker and action before progress withou
   const card = feishuCard(text, 'decision');
   assert.equal(card.header.template, 'orange');
   assert.equal(card.header.title.content, '等待决定 · EX-1');
-  assert.match(card.elements[0].text.content, /需要你回复/);
-  const elements = card.elements;
-  const blocker = elements.findIndex(e => e.text?.content.includes('<at'));
-  const progress = elements.findIndex(e => e.text?.content === task.outcome.progress);
-  assert.ok(blocker > 0 && blocker < progress);
-  assert.equal(elements[blocker].text.tag, 'plain_text');
-  assert.ok(elements.findIndex(e => e.text?.content === task.outcome.next) < progress);
-  assert.equal(elements.filter(e => e.tag === 'action').length, 1);
+  assert.equal(card.header.text_tag_list[0].text.content, '需要你回复');
+  const nodes = cardNodes(card), visible = cardNodes(card, false);
+  const blocker = visible.find(e => e.text?.content.includes('<at'));
+  assert.equal(blocker.text.tag, 'plain_text');
+  assert.ok(visible.some(e => e.text?.content === task.outcome.next));
+  assert.ok(!visible.some(e => e.text?.content === task.outcome.progress));
+  assert.ok(nodes.some(e => e.text?.content === task.outcome.progress));
+  assert.equal(nodes.filter(e => e.tag === 'button').length, 1);
+  assert.equal(card.body.elements.find(e => e.tag === 'column_set').flex_mode, 'stretch');
+  assert.equal(card.body.elements.find(e => e.tag === 'collapsible_panel').expanded, false);
+  // Live custom-bot validation rejects two-value header padding despite the
+  // documented shorthand; keep all four sides explicit for this container.
+  assert.match(card.body.elements.find(e => e.tag === 'collapsible_panel').header.padding, /^(\d+px ){3}\d+px$/);
+  assert.match(card.config.summary.content, /等待决定.*需要你回复/);
   const review = notificationPresentation(notificationText(task, 'review'), 'review');
   assert.equal(review.color, 'blue'); assert.equal(review.blocker, '');
   assert.match(review.operation, /尚未人工验收/);
@@ -200,8 +215,23 @@ test('incident type travels with delivery; old text remains renderable without i
   await f.notifications.run(); assert.equal(type, 'decision');
   const old = feishuCard('任务派发通知 · EX-1\n旧格式说明', 'failed');
   assert.equal(old.header.template, 'red');
-  assert.match(old.elements.find(e => e.text?.content.includes('具体原因')).text.content, /未记录/);
+  assert.match(cardNodes(old, false).find(e => e.text?.content.includes('具体原因')).text.content, /未记录/);
   const unknown = feishuCard('旧通知\n原始说明');
   assert.equal(unknown.header.template, 'grey');
-  assert.ok(unknown.elements.some(e => e.text?.content === '原始说明'));
+  assert.ok(cardNodes(unknown).some(e => e.text?.content === '原始说明'));
+});
+
+test('v2 cards retain literal long content, visible delivery summary, and safe no-link fallback', () => {
+  const dynamic = '<at id=all>不要解释标记</at> **原文** ' + '长文本'.repeat(60);
+  const text = `任务派发通知 · EX-1\n任务：${dynamic}\n当前情况：需要验收\n现在需要：${dynamic}\n执行者报告：${dynamic}`;
+  const card = feishuCard(text, 'review');
+  const visible = cardNodes(card, false);
+  assert.ok(visible.some(e => e.text?.content === dynamic));
+  assert.equal(visible.filter(e => e.tag === 'button').length, 0);
+  assert.equal(card.header.template, 'blue');
+  assert.ok(!cardNodes(card).some(e => ['note', 'action', 'lark_md'].includes(e.tag)));
+  for (const node of cardNodes(card).filter(e => e.content?.includes('<at'))) assert.equal(node.tag, 'plain_text');
+  const minimal = feishuCard('任务派发通知 · EX-2\n当前情况：出错', 'failed');
+  assert.ok(cardNodes(minimal, false).some(e => e.text?.content.includes('打开工单核对')));
+  assert.ok(!cardNodes(minimal).some(e => e.tag === 'collapsible_panel'));
 });

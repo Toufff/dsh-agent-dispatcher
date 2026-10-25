@@ -121,6 +121,9 @@ export async function sendFeishu(channel, text, { fetchImpl = fetch, clock = Dat
     if (!response.ok) return { status: 'failed', error: `飞书 HTTP ${response.status}，请检查通知渠道` };
     const result = await response.json();
     if (result.code === 0 || result.StatusCode === 0 && result.code === undefined) return { status: 'sent' };
+    // Card validation is distinct from credentials. Never echo the server's
+    // error text, which may contain request content or destination details.
+    if (result.code === 11246) return { status: 'failed', error: '飞书卡片格式校验失败，请更新通知组件；无需更换凭据' };
     return { status: 'failed', error: '飞书拒绝消息，请检查签名、关键词或 IP 限制' };
   } catch {
     // A timeout can occur after delivery. Never silently duplicate a message.
