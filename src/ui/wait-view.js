@@ -19,12 +19,13 @@ export function waitDraftFor(task) {
 export function waitView(task, data, now = Date.now()) {
   if (!['blocked', 'decision', 'stalled', 'stopped'].includes(task.status) || (task.status === 'stopped' && !task.wait)) return null;
   const wait = task.wait;
+  const queueExpired = task.status === 'blocked' && task.events?.at(-1)?.action === 'window-expired';
   const project = data.settings.projects.find(p => p.id === task.projectId);
   const sync = data.syncStatus?.find(s => s.key === JSON.stringify([project?.linear?.workspaceId, project?.linear?.tokenEnv]));
   // A newly armed wait can still carry the previous round's result. Do not present its blockers as current.
   const prior = task.outcome?.wait;
-  const sameWait = !wait || (prior && ['kind', 'condition', 'notBefore', 'expiresAt'].every(k => prior[k] === wait[k]) &&
-    (prior.issueId || task.issue?.id) === (wait.issueId || task.issue?.id));
+  const sameWait = !queueExpired && (!wait || (prior && ['kind', 'condition', 'notBefore', 'expiresAt'].every(k => prior[k] === wait[k]) &&
+    (prior.issueId || task.issue?.id) === (wait.issueId || task.issue?.id)));
   const blockers = sameWait ? task.outcome?.blockers || [] : [];
   const dependency = wait?.kind === 'task' ? data.tasks.find(t => t.id === wait.taskId) : null;
   const targetId = wait?.issueId || task.issue?.id;
@@ -46,6 +47,7 @@ export function waitView(task, data, now = Date.now()) {
   else if (task.status === 'decision') { title = '需要你做决定'; monitor = '等待决策，不会自动执行'; action = '核对所需决策或授权后，再明确安排继续。'; }
   else if (task.status === 'stalled') { title = '续办已暂停'; monitor = '不会自动执行'; action = '需核对进展或次数限制，再设置恢复条件。'; }
   else if (task.status === 'stopped') { title = '任务已停止'; monitor = '监听已停止'; action = '需明确重新设置恢复条件才会继续监听。'; }
+  else if (queueExpired) { title = '执行时段已过期 · 本轮未启动'; monitor = '旧时段阻止了排队启动'; action = '在继续处理未完成事项中核对本轮要求，选择沿用原时段或重新核定执行时机。'; }
   else if (!wait) { monitor = '未设置自动恢复条件'; action = '需设置恢复条件，或核对阻塞后手动继续。'; }
   else if (wait.status === 'invalid') { title = '等待配置需要修正'; monitor = '配置错误，已停止重试'; action = '本地负责人需按下方原因修正依赖、回复人或执行约束，再重新保存恢复条件；重复评论不会解除。'; }
   else if (wait.status === 'limit') { title = '自动唤醒次数已用完'; monitor = '不会自动执行'; action = '需核对进展和唤醒限制后重新安排。'; }

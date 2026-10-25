@@ -7,7 +7,7 @@ import { initialState } from '../src/config.js';
 import { inspectOutcome } from '../src/outcome.js';
 import { attention } from '../src/notifications.js';
 import { waitView } from '../src/ui/wait-view.js';
-import { continuationPolicy } from '../src/workflow.js';
+import { continuationPolicy, attentionFor } from '../src/workflow.js';
 
 const done = id => ({ id, title: id, status: 'done', dependsOn: [], action: '', evidence: ['isolated verification'] });
 const ready = (id, dependsOn = []) => ({ id, title: id, status: 'ready', dependsOn, action: `Verify ${id} locally`, evidence: [] });
@@ -128,10 +128,54 @@ test('same-issue intake cannot compete with queued work; explicit continuation p
   let starts = 0; r.adapters.codex.start = async () => { starts++; throw Error('must not start'); };
   await r.dispatcher.tick();
   const t = (await r.snapshot()).tasks.at(-1); assert.equal(t.status, 'blocked'); assert.equal(starts, 0);
+  assert.match(attentionFor(t, await r.store.load()).reason, /本轮未启动/);
+  assert.match(waitView(t, await r.snapshot()).title, /本轮未启动/);
+  assert.deepEqual(waitView(t, await r.snapshot()).blockers, []);
   await r.command({ action: 'arm-wait', id: t.id, wait: { kind: 'time', condition: 'new explicit local interval', notBefore: '2099-01-01T00:00:00Z' } });
   const rearmed = (await r.snapshot()).tasks.at(-1);
   assert.equal(rearmed.wait.status, 'watching'); assert.equal(rearmed.session.id, 's');
   assert.ok(rearmed.summary.includes('dispatch-result')); assert.equal(starts, 0);
+});
+
+test('explicit owner timing revision survives restart and starts the original session exactly once', async () => {
+  const r = await fixture();
+  r.adapters.codex = { start: async () => ({ status: 'review', sessionId: 'original', summary: envelope('blocked', [done('code'), blocked('tests')]) }) };
+  const id = await r.submit({ projectId: 'p', prompt: 'Goal', issue: { id: 'i' } });
+  await r.dispatcher.tick(); await r.assess();
+  const oldWindow = { notBefore: '1999-01-01T00:00:00Z', expiresAt: '2000-01-01T00:00:00Z' };
+  await r.dispatcher.update(s => { s.tasks[0].resumeWindow = oldWindow; });
+  await r.command({ action: 'continue', id, continuationTiming: 'recheck', prompt: 'Continue isolated tests now; production timing must be checked separately.' });
+  const queued = (await r.snapshot()).tasks.at(-1);
+  assert.equal(queued.resumeWindow, undefined);
+  assert.deepEqual(queued.timingRevision.previousWindow, oldWindow);
+  assert.match(queued.timingRevision.instruction, /Continue isolated tests now/);
+  assert.match(queued.prompt, /Local work only; no deployment/);
+  assert.match(queued.prompt, /does not waive local project restrictions/);
+  assert.equal(queued.session.id, 'original'); assert.equal(queued.workItems[0].status, 'done');
+  assert.deepEqual((await r.store.load()).tasks[0].resumeWindow, oldWindow);
+  const restarted = await new Runtime({ store: r.store, directory: os.tmpdir(), env: r.env, linearFactory: r.linearFactory }).init();
+  let starts = 0;
+  restarted.adapters.codex = { start: async ({ task }) => {
+    starts++; assert.equal(task.session.id, 'original');
+    return { status: 'review', sessionId: 'original', summary: envelope('complete', [done('code'), done('tests')]) };
+  } };
+  await Promise.all([restarted.dispatcher.tick(), restarted.dispatcher.tick()]);
+  await restarted.assess(); await restarted.dispatcher.tick();
+  assert.equal(starts, 1); assert.equal((await restarted.snapshot()).tasks.at(-1).status, 'review');
+});
+
+test('timing revision requires an explicit owner continuation and fails atomically on persistence error', async () => {
+  const r = await fixture();
+  r.adapters.codex = { start: async () => ({ status: 'review', sessionId: 's', summary: envelope('blocked', [blocked('goal')]) }) };
+  const id = await r.submit({ projectId: 'p', prompt: 'Goal' }); await r.dispatcher.tick(); await r.assess();
+  await r.dispatcher.update(s => { s.tasks[0].resumeWindow = { expiresAt: '2000-01-01T00:00:00Z' }; });
+  const before = await r.store.load();
+  await assert.rejects(r.command({ action: 'continue', id, continuationTiming: 'recheck', prompt: ' ' }), /Describe/);
+  await assert.rejects(r.command({ action: 'continue', id, continuationTiming: 'anything', prompt: 'Go' }), /Describe/);
+  await assert.rejects(r.command({ action: 'submit', projectId: 'p', continuationTiming: 'recheck', prompt: 'Go' }), /Only an explicit owner/);
+  r.store.save = async () => { throw Error('disk unavailable'); };
+  await assert.rejects(r.command({ action: 'continue', id, continuationTiming: 'recheck', prompt: 'Do isolated work now' }), /disk unavailable/);
+  assert.deepEqual(await r.store.load(), before);
 });
 
 test('in-flight old reporting finishes before continuation is published; no late old retry', async () => {

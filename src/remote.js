@@ -8,6 +8,7 @@ const commandSchema = z.object({ action: z.enum(['configure', 'submit', 'pause',
   tokenEnv: z.string().regex(/^[A-Z][A-Z0-9_]+$/).max(160).optional(), cwd: z.string().max(4096).optional(),
   revision: z.number().optional(), confirmedIdle: z.boolean().optional(), preserveCursor: z.boolean().optional(), projectId: z.string().optional(), title: z.string().max(300).optional(),
   prompt: z.string().min(1).max(100000).optional(),
+  continuationTiming: z.enum(['inherit', 'recheck']).optional(),
   session: z.object({ executor: z.string(), id: z.string() }).optional() }).strict();
 export const remote = createTypertRemoteInfo({ package: 'dsh-agent-dispatcher', methods: {
   'agentDispatcher/snapshot': { service: 'agentDispatcher', invocation: { kind: 'direct' }, parameters: [],

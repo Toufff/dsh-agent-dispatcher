@@ -28,7 +28,7 @@ export class Dispatcher {
     return result;
   }
 
-  enqueue({ source, round, cwd, prompt, executors, title = source, projectId, issue, session, resultContract = false, basePrompt, continuationOf, workflowVersion, goalPrompt, workItems, ownerInstructions }) {
+  enqueue({ source, round, cwd, prompt, executors, title = source, projectId, issue, session, resultContract = false, basePrompt, continuationOf, workflowVersion, goalPrompt, workItems, ownerInstructions, continuationTiming = 'inherit' }) {
     return this.#exclusive(async () => {
       if (!source || !round || !cwd || !prompt || !executors?.length)
         throw new Error('source, explicit round, local cwd, prompt and executors required');
@@ -39,6 +39,8 @@ export class Dispatcher {
       const existing = state.tasks.find(t => t.key === key);
       if (existing) return existing.id;
       const prior = continuationOf && state.tasks.find(t => t.id === continuationOf);
+      if (!['inherit', 'recheck'].includes(continuationTiming) || (continuationTiming === 'recheck' && (!prior || !ownerInstructions?.at(-1)?.trim())))
+        throw new Error('Timing changes require an explicit owner continuation instruction');
       if (continuationOf && (!prior || !currentTask(prior, state) || prior.owner === 'human' ||
           !['review', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result'].includes(prior.status)))
         throw new Error('Continue the current completed task, not a historical or active task');
@@ -55,7 +57,10 @@ export class Dispatcher {
           previousAttempts: [...(prior.previousAttempts || []), ...prior.attempts],
           rounds: [{ summary: prior.summary || prior.rounds?.at(-1)?.summary || '', outcome: prior.outcome,
             attempts: prior.attempts.length ? prior.attempts : (prior.previousAttempts || []).slice(-1), at: new Date().toISOString() }],
-          resumeWindow: prior.resumeWindow || (prior.wait ? { notBefore: prior.wait.notBefore, expiresAt: prior.wait.expiresAt } : undefined) } : {}),
+          ...(continuationTiming === 'recheck' ? {
+            timingRevision: { mode: 'recheck', previousWindow: prior.resumeWindow || (prior.wait ? { notBefore: prior.wait.notBefore, expiresAt: prior.wait.expiresAt } : null),
+              instruction: ownerInstructions.at(-1), at: new Date().toISOString() }
+          } : { resumeWindow: prior.resumeWindow || (prior.wait ? { notBefore: prior.wait.notBefore, expiresAt: prior.wait.expiresAt } : undefined) }) } : {}),
         createdAt: new Date().toISOString(), ...(projectId ? { projectId } : {}),
         ...(issue ? { issue } : {}), ...(session ? { session } : {}) };
       state.tasks.push(task);

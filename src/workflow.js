@@ -91,6 +91,8 @@ export function attentionFor(task, state) {
   if (task.status === 'stalled') reason = task.continuationStop === 'budget' ? '自动续办预算已用完' : '本轮没有可确认的新进展';
   else if (task.status === 'needs_result') reason = '结果或阶段清单校验失败';
   else if (task.status === 'decision') reason = '需要具体决策或授权';
+  else if (task.status === 'blocked' && task.events?.at(-1)?.action === 'window-expired')
+    reason = '继承的执行时段已过期，本轮未启动；可按本轮要求重新核定执行时机';
   else if (task.status === 'blocked' && ['invalid', 'expired', 'limit'].includes(task.wait?.status))
     reason = { invalid: '等待配置无效', expired: '等待时段已过期', limit: '自动唤醒预算已用完' }[task.wait.status];
   else if (task.status === 'blocked' && !task.wait) reason = '阻塞未设置可触发的恢复条件';
