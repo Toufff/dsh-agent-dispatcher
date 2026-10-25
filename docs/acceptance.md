@@ -1,5 +1,9 @@
 # Version 0.1 acceptance — 2026-10-21
 
+## Workflow continuity repair — 2026-10-25
+
+Code `1160e4d` passes 172 tests, syntax/schema checks and build locally and on [Windows and Ubuntu CI](https://github.com/Toufff/dsh-agent-dispatcher/actions/runs/40179546110). New regressions cover seven original-session continuations across restart, evidence cycling and the hard ceiling, instruction edits preserving reply cursors and current restrictions, rejection of expired/invalid/rerouted waits, and obsolete in-flight errors after configuration changes. Native host update preserved all existing tasks and attempts; an existing original session started successfully and a repaired same-target wait resumed fresh monitoring with its original cursor and deadline. These are dispatcher checks, not acceptance of the business results or independent proof of every evidence claim.
+
 ## Additional acceptance — 2026-10-23
 
 - Collaborator simulation now has a reusable opt-in command: `node scripts/simulated-peer-acceptance.js --execute /new/private/evidence-directory`. It runs the real runtime, official Codex CLI and disk persistence with an in-memory GraphQL transport and explicitly synthetic identities. The live exercise passed two accepted attempts in one original session, one trusted-reply wake, four reports with readback, ignored owner/untrusted comments, restart before and after event consumption, read-outage recovery and repeated-poll deduplication. This establishes the simulated collaboration path independently of another person's availability; it does not claim a real cross-account roundtrip. Native Codex/DSH/Claude tests below remain the separate live-host evidence.
