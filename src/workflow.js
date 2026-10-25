@@ -66,6 +66,24 @@ export function currentTask(task, state) {
   return !key || state.tasks.findLast(t => issueKey(t, state) === key)?.id === task.id;
 }
 
+// Evidence remains an executor claim. Changing prose alone cannot renew a budget.
+export function continuationPolicy(task, outcome) {
+  const normalize = value => value.trim().replace(/\s+/g, ' ');
+  const history = [...(task.rounds || []).flatMap(r => r.outcome?.workItems || []), ...(task.workItems || [])];
+  const checkpoint = (outcome.workItems || []).some(item => {
+    const old = history.filter(previous => previous.id === item.id);
+    if (!old.length || old.some(previous => previous.status === 'done')) return false;
+    if (item.status === 'done' && !old.some(previous => previous.status === 'done')) return true;
+    const seen = new Set(old.flatMap(previous => previous.evidence).map(normalize));
+    return item.evidence.some(value => !seen.has(normalize(value)));
+  });
+  const idle = checkpoint ? 0 : (task.continuationIdleRounds ?? task.autoRounds ?? 0);
+  const budget = (task.autoRounds || 0) >= 40 || idle >= 3;
+  const progress = checkpoint || Boolean(outcome.progress.trim()) && outcome.progress !== task.lastProgress;
+  return { repeat: progress && !budget, idle: checkpoint ? 0 : idle + 1, checkpoint,
+    stop: budget ? 'budget' : 'no-progress' };
+}
+
 // One durable local owner/action, consumed by both the panel and notification path.
 export function attentionFor(task, state) {
   if (!currentTask(task, state)) return null;

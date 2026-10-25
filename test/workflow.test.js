@@ -7,6 +7,7 @@ import { initialState } from '../src/config.js';
 import { inspectOutcome } from '../src/outcome.js';
 import { attention } from '../src/notifications.js';
 import { waitView } from '../src/ui/wait-view.js';
+import { continuationPolicy } from '../src/workflow.js';
 
 const done = id => ({ id, title: id, status: 'done', dependsOn: [], action: '', evidence: ['isolated verification'] });
 const ready = (id, dependsOn = []) => ({ id, title: id, status: 'ready', dependsOn, action: `Verify ${id} locally`, evidence: [] });
@@ -177,4 +178,40 @@ test('disabled historical test projects retain local detail without polluting bu
   });
   const s = await r.snapshot();
   assert.ok(s.tasks[0].attention); assert.equal(s.errors.length, 0);
+});
+
+test('checkpoint progress crosses three rounds, survives restart and ends at the actual goal', async () => {
+  let starts = 0;
+  let r = await fixture();
+  const adapter = { start: async ({ attempt }) => {
+    const n = ++starts;
+    if (n > 1) assert.equal(attempt.sessionId, 'original');
+    const items = Array.from({ length: 7 }, (_, i) => i < n - 1 ? done(`stage${i}`) : ready(`stage${i}`));
+    return { status: 'review', sessionId: 'original', summary: envelope(n === 8 ? 'complete' : 'continue', items,
+      { progress: 'Progress is recorded in the stable ledger' }) };
+  } };
+  r.adapters.codex = adapter;
+  await r.submit({ projectId: 'p', prompt: 'Finish all seven stages' });
+  for (let i = 0; i < 9; i++) {
+    await r.dispatcher.tick(); await r.assess();
+    if (i === 3) {
+      assert.equal((await r.snapshot()).tasks[0].status, 'queued');
+      r = await new Runtime({ store: r.store, directory: os.tmpdir(), env: r.env, linearFactory: r.linearFactory }).init();
+      r.adapters.codex = adapter;
+    }
+  }
+  const t = (await r.snapshot()).tasks[0];
+  assert.equal(starts, 8); assert.equal(t.status, 'review'); assert.equal(t.autoRounds, 7);
+  assert.equal(t.previousAttempts.length, 7); assert.ok(t.workItems.every(i => i.status === 'done'));
+});
+
+test('checkpoint policy rejects cycling evidence, invented stages and endless fresh claims', () => {
+  const prior = { ...ready('goal'), evidence: ['artifact A'] };
+  const t = { autoRounds: 8, continuationIdleRounds: 3, workItems: [prior],
+    rounds: [{ outcome: { workItems: [{ ...ready('goal'), evidence: ['artifact B'] }] } }] };
+  const outcome = items => ({ workItems: items, progress: 'Another paraphrase' });
+  assert.equal(continuationPolicy(t, outcome([{ ...prior, evidence: [' artifact   B '] }])).repeat, false);
+  assert.equal(continuationPolicy(t, outcome([prior, done('invented')])).repeat, false);
+  assert.equal(continuationPolicy(t, outcome([{ ...prior, evidence: ['artifact C'] }])).repeat, true);
+  assert.equal(continuationPolicy({ ...t, autoRounds: 40 }, outcome([done('goal')])).repeat, false);
 });

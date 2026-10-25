@@ -235,7 +235,7 @@ export class Dispatcher {
           task.executors = [attempt.executor];
         }
         task.attempts = []; task.status = 'queued'; task.report = 'pending'; task.assessed = false; task.outcome = null;
-        task.formatRepair = false; task.autoRounds = 0; task.lastProgress = '';
+        task.formatRepair = false; task.autoRounds = 0; task.continuationIdleRounds = 0; task.lastProgress = '';
       } else if (action === 'accept') {
         if (task.status !== 'review') throw new Error('Task is not ready for review');
         if (!task.resultContract || task.outcome?.status !== 'complete') throw new Error('Completion evidence has not been classified');

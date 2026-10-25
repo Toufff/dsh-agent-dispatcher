@@ -38,7 +38,7 @@ export function notificationText(task, type, secrets = []) {
   const lines = [`任务派发通知 · ${issueLabel(task)}`];
   if (title) lines.push(`任务：${title}`);
   const reason = type === 'stalled' ? task.continuationStop === 'budget'
-    ? '本轮自动续办次数已用完，任务仍有未完成事项。' : '本轮没有可确认的新进展，自动续办已停止。' : reasons[type];
+    ? '自动续办已触及阶段进展或总次数保护上限，任务仍有未完成事项。' : '本轮没有可确认的新进展，自动续办已停止。' : reasons[type];
   lines.push(`当前情况：${reason}`);
   const progress = safe(outcome.publicSummary, 400) || safe(outcome.progress);
   lines.push(progress ? `执行者报告：${progress}` : '进展摘要：本轮未提供可分享的进展，请查看工单核对。');

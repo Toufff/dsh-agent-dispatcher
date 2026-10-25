@@ -14,12 +14,68 @@ const contract = (status, extra = {}) => `<dispatch-result>${JSON.stringify({ st
   evidence: ['isolated check passed'], remaining: status === 'complete' ? [] : ['peer receipt'],
   next: '', progress: 'verified local work', blockers: status === 'blocked' ? [{ owner: 'peer', reason: 'await receipt', resumeWhen: 'verified receipt' }] : [], ...extra })}</dispatch-result>`;
 const comment = (id = 'reply', user = 'peer', when = new Date(Date.now() + 1).toISOString(), body = 'Receipt ready, please verify.') => ({ id, user: { id: user }, updatedAt: when, body });
+
+test('instruction edit preserves wait cursor and wakes once with current restrictions after restart', async () => {
+  const f = await fixture();
+  const before = await f.runtime.snapshot();
+  const wait = structuredClone(before.tasks[0].wait);
+  f.setComments([comment('during-edit')]);
+  const settings = structuredClone(before.settings);
+  settings.projects[0].executionInstructions = 'No production writes; newly tightened read-only boundary.';
+  await f.runtime.configure(settings, before.revision);
+  assert.deepEqual((await f.runtime.snapshot()).tasks[0].wait, wait);
+  const restarted = await new Runtime({ store: f.store, directory: os.tmpdir(), env: f.runtime.env, linearFactory: f.factory }).init();
+  restarted.adapters.codex = f.adapter;
+  await Promise.all([restarted.monitor(), restarted.monitor()]);
+  let t = (await restarted.snapshot()).tasks[0];
+  assert.equal(t.status, 'queued'); assert.equal(t.wakeups, 1);
+  assert.match(t.prompt, /newly tightened read-only boundary/);
+  await restarted.dispatcher.tick(); await restarted.assess(); await restarted.monitor();
+  assert.equal(f.starts, 2);
+});
+
+test('instruction edit cannot rearm invalid waits, extend deadlines or approve changed routing', async () => {
+  for (const mode of ['invalid', 'expired', 'routing']) {
+    const f = await fixture();
+    await f.runtime.dispatcher.update(s => {
+      if (mode === 'invalid') { s.tasks[0].wait.status = 'invalid'; s.tasks[0].wait.errorCode = 'WAIT_CONFIGURATION_CHANGED'; }
+      if (mode === 'expired') s.tasks[0].wait.expiresAt = '2000-01-01T00:00:00Z';
+    });
+    const before = await f.runtime.snapshot(), settings = structuredClone(before.settings);
+    settings.projects[0].executionInstructions += ' Read only.';
+    if (mode === 'routing') settings.projects[0].linear.assigneeId = 'other-owner';
+    await f.runtime.configure(settings, before.revision);
+    f.setComments([comment()]); await f.runtime.monitor(); await f.runtime.dispatcher.tick();
+    const t = (await f.runtime.snapshot()).tasks[0];
+    assert.equal(f.starts, 1); assert.equal(t.wait.status, mode === 'expired' ? 'expired' : 'invalid');
+    if (mode === 'expired') assert.equal(t.wait.expiresAt, '2000-01-01T00:00:00Z');
+    else assert.equal(t.wait.errorCode, 'WAIT_CONFIGURATION_CHANGED');
+  }
+});
+
+test('an obsolete in-flight monitor error cannot invalidate the refreshed wait', async () => {
+  const f = await fixture();
+  let enter, release;
+  const entered = new Promise(resolve => { enter = resolve; });
+  f.runtime.linearFactory = () => ({ activity: async () => {
+    enter(); await new Promise(resolve => { release = resolve; });
+    throw Object.assign(new Error('old request'), { code: 'INVALID_WAIT_TARGET' });
+  } });
+  const monitoring = f.runtime.monitor(); await entered;
+  const s = await f.runtime.snapshot(), settings = structuredClone(s.settings);
+  settings.projects[0].executionInstructions += ' Updated local restriction.';
+  await f.runtime.configure(settings, s.revision);
+  release(); await monitoring;
+  const t = (await f.runtime.snapshot()).tasks[0];
+  assert.equal(t.wait.status, 'validating'); assert.equal(t.wait.errorCode, undefined);
+  assert.equal(f.starts, 1);
+});
 async function fixture(wait = { kind: 'linear', expectedAuthorIds: ['peer'], condition: 'verified peer receipt', issueId: 'child' }) {
   const store = new MemoryStore(), state = initialState();
   state.paused = false;
   state.settings.projects = [{ id: 'p', label: 'Synthetic', cwd: process.cwd(), executionInstructions: 'No production writes; verify all approvals.',
     followup: { enabled: true, commentAuthorIds: ['peer'], maxWakeups: 3 },
-    linear: { enabled: true, tokenEnv: 'TEST_TOKEN', workspaceId: 'w', projectId: 'project', assigneeId: 'owner', activeStateId: 'active', reviewStateId: 'review', blockedStateId: 'blocked', shareProgress: true, round: '1' } }];
+    linear: { enabled: true, tokenEnv: 'TEST_TOKEN', workspaceId: 'w', projectId: 'project', assigneeId: 'owner', readyStateId: 'ready', since: '2026-01-01T00:00:00Z', activeStateId: 'active', reviewStateId: 'review', blockedStateId: 'blocked', shareProgress: true, round: '1' } }];
   await store.save(state);
   let starts = 0, comments = [], failActivity = false;
   const reports = [];

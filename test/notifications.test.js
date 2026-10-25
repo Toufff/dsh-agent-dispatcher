@@ -48,7 +48,7 @@ test('notification explains business progress, blockers and local continuation s
   }));
   await f.notifications.run();
   assert.match(messages[0], /任务：EX-1 · 归档校验\n/);
-  assert.match(messages[0], /次数已用完/);
+  assert.match(messages[0], /阶段进展或总次数保护上限/);
   assert.match(messages[0], /执行者报告：归档复制已完成/);
   assert.match(messages[0], /1\/3 完成，1 项可继续/);
   assert.match(messages[0], /缺少校验明细（责任方：Example User）/);
