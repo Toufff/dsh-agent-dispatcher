@@ -9,6 +9,7 @@ import { Dispatcher, MemoryStore } from '../src/dispatcher.js';
 import { initialState, settingsSchema } from '../src/config.js';
 import { domainSpec } from '../src/plugin.js';
 import { Runtime } from '../src/runtime.js';
+import { feishuCard, notificationPresentation } from '../src/notification-card.js';
 
 const channel = { id: 'personal', type: 'feishu', enabled: true, label: 'Personal', credentialsFile: path.join(os.tmpdir(), 'private.json'), projectIds: ['p'], includeExisting: true, completed: false };
 async function fixture(send = async () => ({ status: 'sent' })) {
@@ -143,17 +144,18 @@ test('Feishu signing, fixed destination, API errors, ambiguous timeout redaction
   const ok = await sendFeishu(c, 'test', { clock: () => 100000, fetchImpl: async (url, options) => {
     assert.equal(options.redirect, 'error'); assert.ok(options.signal);
     const body = JSON.parse(options.body); assert.equal(body.timestamp, '100');
-    assert.equal(body.msg_type, 'post');
-    assert.deepEqual(body.content.post.zh_cn, { title: 'test', content: [[{ tag: 'text', text: 'test' }]] });
+    assert.equal(body.msg_type, 'interactive');
+    assert.equal(body.card.header.template, 'grey');
     assert.equal(body.sign, createHmac('sha256', '100\ntest-secret').update('').digest('base64'));
     return new Response('{"code":0}');
   } }); assert.equal(ok.status, 'sent');
   await sendFeishu(c, '任务派发通知 · EX-1\n具体进展\nhttps://linear.app/example/issue/EX-1\nhttps://evil.example/\nhttps://linear.app/example?token=hidden', { fetchImpl: async (_url, options) => {
-    const post = JSON.parse(options.body).content.post.zh_cn;
-    assert.equal(post.title, '任务派发通知 · EX-1');
-    assert.deepEqual(post.content[1], [{ tag: 'a', text: '查看工单', href: 'https://linear.app/example/issue/EX-1' }]);
-    assert.equal(post.content[0][0].tag, 'text');
-    assert.equal(post.content[2][0].tag, 'text'); assert.equal(post.content[3][0].tag, 'text');
+    const card = JSON.parse(options.body).card;
+    assert.equal(card.header.title.content, '历史通知 · EX-1');
+    assert.deepEqual(card.elements.find(e => e.tag === 'action').actions[0], {
+      tag: 'button', text: { tag: 'plain_text', content: '打开 Linear 工单' }, type: 'primary', url: 'https://linear.app/example/issue/EX-1'
+    });
+    assert.equal(card.elements.find(e => e.text?.content.includes('https://evil.example/')).text.tag, 'plain_text');
     return new Response('{"code":0}');
   } });
   assert.equal((await sendFeishu(c, 'test', { fetchImpl: async () => new Response('{"code":19021,"msg":"test-secret"}') })).status, 'failed');
@@ -163,4 +165,43 @@ test('Feishu signing, fixed destination, API errors, ambiguous timeout redaction
   assert.equal(limited.retryMs, 120000);
   await writeFile(file, JSON.stringify({ webhook: 'https://evil.example/secret' }));
   await assert.rejects(loadFeishuCredentials(file), /凭据/);
+});
+
+test('cards put intervention, concrete blocker and action before progress without interpreting dynamic markup', () => {
+  const task = { title: '归档核验', issue: { identifier: 'EX-1', url: 'https://linear.app/example/issue/EX-1' },
+    outcome: { progress: '已复制归档，尚未验收', next: '请确认审阅分支提交例外', blockers: [
+      { reason: '<at id=all>所有人</at> **缺少决定**', owner: 'Example User', resumeWhen: '明确回复提交范围' }
+    ] } };
+  const text = notificationText(task, 'decision');
+  const card = feishuCard(text, 'decision');
+  assert.equal(card.header.template, 'orange');
+  assert.equal(card.header.title.content, '等待决定 · EX-1');
+  assert.match(card.elements[0].text.content, /需要你回复/);
+  const elements = card.elements;
+  const blocker = elements.findIndex(e => e.text?.content.includes('<at'));
+  const progress = elements.findIndex(e => e.text?.content === task.outcome.progress);
+  assert.ok(blocker > 0 && blocker < progress);
+  assert.equal(elements[blocker].text.tag, 'plain_text');
+  assert.ok(elements.findIndex(e => e.text?.content === task.outcome.next) < progress);
+  assert.equal(elements.filter(e => e.tag === 'action').length, 1);
+  const review = notificationPresentation(notificationText(task, 'review'), 'review');
+  assert.equal(review.color, 'blue'); assert.equal(review.blocker, '');
+  assert.match(review.operation, /尚未人工验收/);
+  for (const type of ['monitor', 'report']) {
+    const view = notificationPresentation(notificationText(task, type), type);
+    assert.equal(view.color, 'red'); assert.doesNotMatch(view.blocker, /缺少决定/);
+    assert.match(view.operation, type === 'report' ? /不会因此重跑/ : /不代表业务执行失败/);
+  }
+});
+
+test('incident type travels with delivery; old text remains renderable without inventing health', async () => {
+  let type;
+  const f = await fixture(async (_channel, _text, options) => { type = options.type; return { status: 'sent' }; });
+  await f.notifications.run(); assert.equal(type, 'decision');
+  const old = feishuCard('任务派发通知 · EX-1\n旧格式说明', 'failed');
+  assert.equal(old.header.template, 'red');
+  assert.match(old.elements.find(e => e.text?.content.includes('具体原因')).text.content, /未记录/);
+  const unknown = feishuCard('旧通知\n原始说明');
+  assert.equal(unknown.header.template, 'grey');
+  assert.ok(unknown.elements.some(e => e.text?.content === '原始说明'));
 });

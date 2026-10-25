@@ -2,6 +2,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { attentionFor, currentTask } from './workflow.js';
 import { shareable } from './reporting.js';
+import { feishuCard } from './notification-card.js';
 
 const reasons = {
   decision: '任务需要你作出决定，请打开工单查看具体问题。',
@@ -40,7 +41,7 @@ export function notificationText(task, type, secrets = []) {
   const reason = type === 'stalled' ? task.continuationStop === 'budget'
     ? '自动续办已触及阶段进展或总次数保护上限，任务仍有未完成事项。' : '本轮没有可确认的新进展，自动续办已停止。' : reasons[type];
   lines.push(`当前情况：${reason}`);
-  const progress = safe(outcome.publicSummary, 400) || safe(outcome.progress);
+  const progress = safe(outcome.publicSummary, 220) || safe(outcome.progress);
   lines.push(progress ? `执行者报告：${progress}` : '进展摘要：本轮未提供可分享的进展，请查看工单核对。');
   if (task.workItems?.length) {
     const count = status => task.workItems.filter(i => i.status === status).length;
@@ -99,18 +100,13 @@ export async function loadFeishuCredentials(file) {
   } catch { throw new Error('飞书凭据文件缺失或格式不正确'); }
 }
 
-export async function sendFeishu(channel, text, { fetchImpl = fetch, clock = Date.now } = {}) {
+export async function sendFeishu(channel, text, { fetchImpl = fetch, clock = Date.now, type } = {}) {
   let credentials;
   try { credentials = await loadFeishuCredentials(channel.credentialsFile); }
   catch { return { status: 'failed', error: '飞书凭据文件缺失或格式不正确' }; }
-  // Keep the durable text format compatible with old outbox entries. Only a
-  // standalone validated Linear URL becomes a link, never user-supplied markup.
-  const [title, ...lines] = text.split('\n');
-  const content = (lines.length ? lines : [title]).map(line => {
-    const href = issueLink({ issue: { url: line } });
-    return [href ? { tag: 'a', text: '查看工单', href } : { tag: 'text', text: line }];
-  });
-  const body = { msg_type: 'post', content: { post: { zh_cn: { title, content } } } };
+  // Keep durable text and incident identities compatible; upgrade presentation
+  // only at delivery, without replaying sent history or adding remote controls.
+  const body = { msg_type: 'interactive', card: feishuCard(text, type) };
   if (credentials.signingSecret) {
     body.timestamp = String(Math.floor(clock() / 1000));
     body.sign = createHmac('sha256', `${body.timestamp}\n${credentials.signingSecret}`).update('').digest('base64');
@@ -182,7 +178,7 @@ export class Notifications {
     });
     if (!entry) return;
     let result;
-    try { result = await this.send(channel, entry.text); }
+    try { result = await this.send(channel, entry.text, { type: entry.type }); }
     catch { result = { status: 'unknown', error: '飞书发送结果未知，请先核对群消息；未自动重发' }; }
     await this.runtime.dispatcher.update(state => {
       const item = state.notifications.outbox.find(i => i.id === entry.id);
