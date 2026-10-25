@@ -16,6 +16,7 @@ export function WaitDetails({ view }) {
       {view.condition && <><dt>继续所需条件</dt><dd>{view.condition}</dd></>}
       {view.blockers.map((b, i) => <React.Fragment key={i}><dt>业务恢复要求{view.blockers.length > 1 ? ` ${i + 1}` : ''}</dt><dd>{b.resumeWhen}</dd></React.Fragment>)}
       {wait?.notBefore && <><dt>最早恢复检查</dt><dd><time dateTime={wait.notBefore}>{formatTime(wait.notBefore)}</time></dd></>}
+      {wait?.recheckAt && <><dt>独立复查时间</dt><dd><time dateTime={wait.recheckAt}>{formatTime(wait.recheckAt)}</time> · 无回复也复查，不新增操作权限</dd></>}
       {wait?.expiresAt && <><dt>执行截止</dt><dd><time dateTime={wait.expiresAt}>{formatTime(wait.expiresAt)}</time> · 过期不执行</dd></>}
       <dt>系统接下来做什么</dt><dd>{view.action}</dd>
       {view.next && <><dt>条件满足后的下一步</dt><dd>{view.next}</dd></>}

@@ -24,6 +24,7 @@ export function reportBody(task, mapping, secrets) {
     else if (wait.recoveredAt) body += `\n本地条件监听已于 ${wait.recoveredAt} 恢复，后续仍按原条件核对；恢复连接不等于任务完成或新增授权。`;
     if (shareable(wait.condition, secrets) && mapping?.shareProgress) body += `\n需核对：${wait.condition}`;
     if (wait.notBefore) body += `\n最早核对时间：${wait.notBefore}`;
+    if (wait.recheckAt) body += `\n独立复查：${wait.recheckAt}（无回复也复查，不代表条件满足或新增授权）`;
     if (wait.expiresAt) body += `\n窗口截止：${wait.expiresAt}（过期不执行）`;
     if (wait.status === 'expired') body += '\n下一责任：本地负责人核对执行约束并重新安排有效等待；重复评论或对方催办不能解除过期门。';
     if (wait.kind === 'task') body += '\n等待本机依赖任务的已完成结果；由调度器检查持久回执，不依赖本人或协作者转发评论，不代表人工验收。';

@@ -13,7 +13,7 @@ export function waitDraftFor(task) {
   return { kind, condition: wait.condition || '', ...(issueId ? { issueId } : {}),
     ...(kind === 'task' && wait.taskId ? { taskId: wait.taskId } : {}),
     ...(kind === 'linear' ? { expectedAuthorIds: wait.expectedAuthorIds || [] } : {}),
-    ...(wait.notBefore ? { notBefore: wait.notBefore } : {}), ...(wait.expiresAt ? { expiresAt: wait.expiresAt } : {}) };
+    ...(wait.notBefore ? { notBefore: wait.notBefore } : {}), ...(wait.recheckAt ? { recheckAt: wait.recheckAt } : {}), ...(wait.expiresAt ? { expiresAt: wait.expiresAt } : {}) };
 }
 
 export function waitView(task, data, now = Date.now()) {
@@ -24,7 +24,7 @@ export function waitView(task, data, now = Date.now()) {
   const sync = data.syncStatus?.find(s => s.key === JSON.stringify([project?.linear?.workspaceId, project?.linear?.tokenEnv]));
   // A newly armed wait can still carry the previous round's result. Do not present its blockers as current.
   const prior = task.outcome?.wait;
-  const sameWait = !queueExpired && (!wait || (prior && ['kind', 'condition', 'notBefore', 'expiresAt'].every(k => prior[k] === wait[k]) &&
+  const sameWait = !queueExpired && (!wait || (prior && ['kind', 'condition', 'notBefore', 'recheckAt', 'expiresAt'].every(k => prior[k] === wait[k]) &&
     (prior.issueId || task.issue?.id) === (wait.issueId || task.issue?.id)));
   const blockers = sameWait ? task.outcome?.blockers || [] : [];
   const dependency = wait?.kind === 'task' ? data.tasks.find(t => t.id === wait.taskId) : null;
@@ -63,7 +63,7 @@ export function waitView(task, data, now = Date.now()) {
     action = stale ? '请核对宿主和连接状态，旧记录不能证明监听在线。' : wait.kind === 'task'
       ? '由本机调度器检查依赖任务的持久完成回执；不需要本人或协作者转发评论，完成后由原会话复核。' : wait.kind === 'time'
       ? '到约定时间后，由原会话重新核验条件；通过后才继续。'
-      : `由宿主增量同步可信回复；${sync?.nextAt ? `下次检查 ${formatTime(sync.nextAt)}，` : ''}收到后由原会话核验并继续。`;
+      : `由宿主增量同步可信回复；${sync?.nextAt ? `下次检查 ${formatTime(sync.nextAt)}，` : ''}收到后由原会话核验并继续。${wait.recheckAt ? `即使没有回复，也会在 ${formatTime(wait.recheckAt)} 起独立复查；不代表条件已满足。` : ''}`;
   } else { monitor = ({ triggered: '已触发，等待原会话核验', suspended: '监听已停止', resolved: '本轮等待已结束', superseded: '已由后续处理替代' })[wait.status] || '等待状态待核对'; action = '核对当前任务状态后再安排后续处理。'; }
   if (task.attention && !task.historical) action = task.attention.action;
   return { title, monitor, action, blockers, targetId, targetLabel, targetUrl, targetAssignee, sourceAssignee,

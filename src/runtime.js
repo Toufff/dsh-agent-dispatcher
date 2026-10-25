@@ -486,7 +486,8 @@ export class Runtime {
       const project = snapshot.settings.projects.find(p => p.id === old.projectId);
       if (!project?.followup?.enabled || snapshot.paused) continue;
       const observing = old.wait.status === 'expired';
-      const remote = old.wait.kind === 'linear' || observing && old.wait.kind !== 'task';
+      const recheck = !observing && old.wait.kind === 'linear' && old.wait.recheckAt && Date.now() >= Date.parse(old.wait.recheckAt);
+      const remote = !recheck && (old.wait.kind === 'linear' || observing && old.wait.kind !== 'task');
       if (options.localOnly && remote) continue;
       if (options.activities && (!remote || options.activities.get(old.id)?.waitId !== old.wait.id)) continue;
       if (options.localOnly && old.wait.error && Date.now() - Date.parse(old.wait.lastCheckedAt) < 30000) continue;
@@ -499,14 +500,14 @@ export class Runtime {
         if (old.wait.kind === 'linear' && (!project.linear?.enabled || !project.followup.commentAuthorIds.length || !old.issue?.id))
           throw new Error('Configure Linear and trusted comment authors before monitoring');
         const localEvent = old.wait.kind === 'task' ? dependencyEvent(old.wait, old, snapshot, Date.now()) : null;
-        if (!observing && old.wait.kind !== 'linear' && old.issue?.id && (old.wait.kind === 'time' || localEvent)) {
+        if (!observing && old.issue?.id && (recheck || old.wait.kind === 'time' || localEvent)) {
           if (!project.linear?.enabled) throw new Error('Enable Linear before resuming an issue timer');
           await this.client(project.linear).eligible(project.linear, old.issue.id);
         }
         const supplied = options.activities?.get(old.id);
-        if (supplied?.error) throw supplied.error;
+        if (remote && supplied?.error) throw supplied.error;
         const activity = remote ? supplied ? supplied.value : await this.client(project.linear).activity(project.linear, old.wait.issueId, old.issue.id) : null;
-        let event = old.wait.kind === 'task' ? localEvent : wakeEvent(observing ? { ...old.wait, kind: 'linear', notBefore: undefined, expiresAt: undefined,
+        let event = old.wait.kind === 'task' ? localEvent : wakeEvent(observing ? { ...old.wait, kind: 'linear', notBefore: undefined, expiresAt: undefined, recheckAt: undefined,
           seen: [...(old.wait.seen || []), ...(old.wait.observedRevisions || [])] } : old.wait,
           activity, { ...project.followup, assigneeId: project.linear?.assigneeId }, Date.now(), snapshot.outbox.map(i => i.id));
         await this.dispatcher.update(state => {
@@ -516,6 +517,8 @@ export class Runtime {
             state.tasks.some(t => t.key === JSON.stringify([source, `continue:${old.id}`])) ||
             !isDeepStrictEqual(project, state.settings.projects.find(p => p.id === task.projectId))) return;
           task.wait.lastCheckedAt = new Date().toISOString();
+          // A deadline may pass while the admission request is in flight.
+          if (!observing && task.wait.expiresAt && Date.now() >= Date.parse(task.wait.expiresAt)) event = { expired: true };
           // The target can change during the admission read. Recheck under the aggregate lock.
           if (task.wait.kind === 'task') {
             try { event = dependencyEvent(task.wait, task, state, Date.now()); }

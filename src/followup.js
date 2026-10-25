@@ -8,6 +8,7 @@ export const waitSchema = z.object({
   taskId: z.string().min(1).max(160).optional(),
   expectedAuthorIds: z.array(z.string().min(1).max(160)).min(1).max(30).optional(),
   notBefore: timestamp.optional(),
+  recheckAt: timestamp.optional(),
   expiresAt: timestamp.optional()
 }).strict().superRefine((wait, ctx) => {
   if (wait.kind === 'linear' && !wait.expectedAuthorIds)
@@ -18,6 +19,11 @@ export const waitSchema = z.object({
     ctx.addIssue({ code: 'custom', message: 'Dependency and reply fields must match the wait kind' });
   if (wait.kind === 'time' && !wait.notBefore)
     ctx.addIssue({ code: 'custom', message: 'Time waits require an exact timestamp with timezone' });
+  if (wait.recheckAt && wait.kind !== 'linear')
+    ctx.addIssue({ code: 'custom', message: 'Independent rechecks are only supported for Linear waits' });
+  if (wait.recheckAt && ((wait.notBefore && Date.parse(wait.recheckAt) < Date.parse(wait.notBefore)) ||
+      (wait.expiresAt && Date.parse(wait.recheckAt) >= Date.parse(wait.expiresAt))))
+    ctx.addIssue({ code: 'custom', message: 'Recheck must be within the permitted monitoring window' });
   if (wait.expiresAt && wait.notBefore && Date.parse(wait.expiresAt) <= Date.parse(wait.notBefore))
     ctx.addIssue({ code: 'custom', message: 'Window end must follow its start' });
 });
@@ -107,6 +113,8 @@ export function wakeEvent(wait, activity, policy, now, ownCommentIds = []) {
   if (wait.expiresAt && now >= Date.parse(wait.expiresAt)) return { expired: true };
   if (wait.notBefore && now < Date.parse(wait.notBefore)) return null;
   if (wait.kind === 'time') return { key: `time:${wait.id}`, reason: `Scheduled check reached ${wait.notBefore}` };
+  if (wait.kind === 'linear' && wait.recheckAt && now >= Date.parse(wait.recheckAt))
+    return { key: `recheck:${wait.id}`, reason: `Independent recheck reached ${wait.recheckAt}. No peer receipt is implied. Read current evidence and verify all remaining conditions; this timer is NOT authorization.` };
   if (!activity || ['completed', 'canceled'].includes(activity.parentState?.type)) return null;
   const comments = activity.comments.filter(c =>
     policy.commentAuthorIds.includes(c.user?.id) && c.user?.id !== policy.assigneeId &&

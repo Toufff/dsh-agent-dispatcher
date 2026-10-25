@@ -15,6 +15,69 @@ const contract = (status, extra = {}) => `<dispatch-result>${JSON.stringify({ st
   next: '', progress: 'verified local work', blockers: status === 'blocked' ? [{ owner: 'peer', reason: 'await receipt', resumeWhen: 'verified receipt' }] : [], ...extra })}</dispatch-result>`;
 const comment = (id = 'reply', user = 'peer', when = new Date(Date.now() + 1).toISOString(), body = 'Receipt ready, please verify.') => ({ id, user: { id: user }, updatedAt: when, body });
 
+test('independent Linear recheck wakes once in the same session across restart without a reply', async () => {
+  const f = await fixture({ kind: 'linear', expectedAuthorIds: ['peer'], condition: 'review existing evidence', recheckAt: '2000-01-01T00:00:00Z' });
+  let activityReads = 0, admissions = 0;
+  const factory = () => ({ activity: async () => { activityReads++; throw new Error('reply service unavailable'); },
+    eligible: async () => { admissions++; return {}; } });
+  const next = await new Runtime({ store: f.store, directory: os.tmpdir(), env: f.runtime.env, linearFactory: factory }).init();
+  next.adapters.codex = f.adapter;
+  await Promise.all([next.monitor({ localOnly: true }), next.monitor({ localOnly: true })]);
+  const queued = (await next.snapshot()).tasks[0];
+  assert.equal(queued.status, 'queued'); assert.equal(queued.wakeups, 1);
+  assert.match(queued.wait.eventKey, /^recheck:/); assert.match(queued.prompt, /No peer receipt is implied/);
+  assert.deepEqual(queued.followupSeen, []); assert.equal(activityReads, 0);
+  await next.dispatcher.tick(); await next.assess(); await next.monitor({ localOnly: true });
+  assert.equal(f.starts, 2); assert.ok(admissions >= 2);
+});
+
+test('reply may wake before independent recheck; deadline never becomes a timer', async () => {
+  const f = await fixture({ kind: 'linear', expectedAuthorIds: ['peer'], condition: 'verify receipt', recheckAt: '2999-01-01T00:00:00Z' });
+  await f.runtime.monitor({ localOnly: true }); assert.equal((await f.runtime.snapshot()).tasks[0].status, 'blocked');
+  f.setComments([comment()]); await f.runtime.monitor();
+  const t = (await f.runtime.snapshot()).tasks[0]; assert.equal(t.status, 'queued'); assert.doesNotMatch(t.wait.eventKey, /^recheck:/);
+  const expired = await fixture({ kind: 'linear', expectedAuthorIds: ['peer'], condition: 'verify receipt',
+    recheckAt: '2000-01-01T00:00:00Z', expiresAt: '2000-01-02T00:00:00Z' });
+  await expired.runtime.monitor({ localOnly: true }); assert.equal((await expired.runtime.snapshot()).tasks[0].wait.status, 'expired');
+  assert.equal(expired.starts, 1);
+});
+
+test('independent recheck retains pause, ownership, routing, executor and admission guards', async () => {
+  for (const guard of ['pause', 'human', 'routing', 'executor', 'admission']) {
+    const f = await fixture({ kind: 'linear', expectedAuthorIds: ['peer'], condition: 'verify', recheckAt: '2000-01-01T00:00:00Z' });
+    await f.runtime.dispatcher.update(s => {
+      if (guard === 'pause') s.paused = true;
+      if (guard === 'human') s.tasks[0].owner = 'human';
+      if (guard === 'routing') s.settings.projects[0].linear.assigneeId = 'changed';
+      if (guard === 'executor') s.settings.executors.find(e => e.id === 'codex').enabled = false;
+    });
+    if (guard === 'admission') f.runtime.linearFactory = () => ({ eligible: async () => { throw new Error('assignment unavailable'); } });
+    await f.runtime.monitor({ localOnly: true }); await f.runtime.dispatcher.tick();
+    assert.equal(f.starts, 1, guard); assert.equal((await f.runtime.snapshot()).tasks[0].status, 'blocked', guard);
+  }
+});
+
+test('independent recheck cannot enqueue after expiry during admission', async () => {
+  const f = await fixture({ kind: 'linear', expectedAuthorIds: ['peer'], condition: 'verify',
+    recheckAt: '2000-01-01T00:00:00Z', expiresAt: '2999-01-01T00:00:00Z' });
+  let entered, release;
+  const ready = new Promise(r => { entered = r; });
+  f.runtime.linearFactory = () => ({ eligible: async () => { entered(); await new Promise(r => { release = r; }); } });
+  const checking = f.runtime.monitor({ localOnly: true }); await ready;
+  await f.runtime.dispatcher.update(s => { s.tasks[0].wait.expiresAt = '2000-01-02T00:00:00Z'; });
+  release(); await checking;
+  const t = (await f.runtime.snapshot()).tasks[0]; assert.equal(t.status, 'blocked'); assert.equal(t.wait.status, 'expired');
+  assert.equal(f.starts, 1);
+});
+
+test('recheck schema rejects irrelevant kinds and times outside an explicit window', () => {
+  for (const wait of [
+    { kind: 'time', condition: 'check', notBefore: '2000-01-01T00:00:00Z', recheckAt: '2000-01-02T00:00:00Z' },
+    { kind: 'linear', condition: 'check', expectedAuthorIds: ['peer'], recheckAt: '2000-01-02T00:00:00Z', expiresAt: '2000-01-02T00:00:00Z' },
+    { kind: 'linear', condition: 'check', expectedAuthorIds: ['peer'], recheckAt: '2000-01-01T00:00:00Z', notBefore: '2000-01-02T00:00:00Z' }
+  ]) assert.equal(parseOutcome(contract('blocked', { wait })), null);
+});
+
 test('instruction edit preserves wait cursor and wakes once with current restrictions after restart', async () => {
   const f = await fixture();
   const before = await f.runtime.snapshot();

@@ -1,11 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { waitView, formatTime, waitDraftFor } from '../src/ui/wait-view.js';
+import { reportBody } from '../src/reporting.js';
 const now = Date.parse('2030-01-01T04:00:00Z');
 const wait = { kind: 'linear', expectedAuthorIds: ['peer'], issueId: 'child', condition: 'Provide a verified receipt', status: 'watching', lastCheckedAt: new Date(now).toISOString(), expiresAt: '2030-01-01T05:00:00Z' };
 const task = { status: 'blocked', projectId: 'p', issue: { id: 'parent' }, wait,
   outcome: { wait, next: 'Verify before proceeding', blockers: [{ owner: 'Collaborator', reason: 'Receipt is missing', resumeWhen: 'Receipt arrives' }] } };
 const data = { paused: false, settings: { projects: [{ id: 'p', linear: { enabled: true }, followup: { enabled: true, observeAfterExpiry: true } }] }, tasks: [{ issue: { id: 'child', identifier: 'TEST-2', url: 'https://linear.app/example/issue/TEST-2' } }] };
+
+test('wait editing and reporting preserve independent recheck separately from expiry', () => {
+  const updated = { ...task, wait: { ...wait, recheckAt: '2030-01-01T04:30:00Z' } };
+  const draft = waitDraftFor(updated);
+  assert.equal(draft.recheckAt, updated.wait.recheckAt); assert.equal(draft.expiresAt, wait.expiresAt);
+  assert.match(waitView(updated, data, now).action, /没有回复.*独立复查/);
+  const report = reportBody(updated, { shareProgress: true }, []);
+  assert.match(report, /独立复查：2030-01-01T04:30:00Z/); assert.match(report, /窗口截止：2030-01-01T05:00:00Z/);
+  assert.equal(waitView(updated, data, now).next, null); // Old claims must not overwrite the new trigger.
+});
 
 test('invalid target is a configuration fault, not a retrying network failure or expired window', () => {
   const v = waitView({ ...task, wait: { ...wait, status: 'invalid', error: 'invalid target', errorCount: 7 } }, data, now + 7200000);
