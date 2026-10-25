@@ -1,6 +1,7 @@
 import { readFile, stat } from 'node:fs/promises';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { attentionFor, currentTask } from './workflow.js';
+import { shareable } from './reporting.js';
 
 const reasons = {
   decision: '任务需要你作出决定，请打开工单查看具体问题。',
@@ -23,8 +24,49 @@ function issueLink(task) {
   catch { return ''; }
 }
 
-// Deliberately omit prompts, summaries, local paths and executor output.
-export function attention(state, channel) {
+// Validate the whole field BEFORE shortening it. Never fall back to raw transcripts.
+function excerpt(value, secrets, limit = 220) {
+  if (typeof value !== 'string' || !shareable(value, secrets) || /https?:\/\/|[\w.+-]+@[\w.-]+\.[a-z]{2,}/i.test(value)) return '';
+  const clean = value.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, ' ').replace(/\s+/g, ' ').trim();
+  return clean.length > limit ? `${clean.slice(0, limit)}…` : clean;
+}
+
+export function notificationText(task, type, secrets = []) {
+  const safe = (value, limit) => excerpt(value, secrets, limit);
+  const title = safe(task.title, 140).replace(/(?:\s*·\s*续办)+$/, '');
+  const outcome = task.outcome || {};
+  const lines = [`任务派发通知 · ${issueLabel(task)}`];
+  if (title) lines.push(`任务：${title}`);
+  const reason = type === 'stalled' ? task.continuationStop === 'budget'
+    ? '本轮自动续办次数已用完，任务仍有未完成事项。' : '本轮没有可确认的新进展，自动续办已停止。' : reasons[type];
+  lines.push(`当前情况：${reason}`);
+  const progress = safe(outcome.publicSummary, 400) || safe(outcome.progress);
+  lines.push(progress ? `执行者报告：${progress}` : '进展摘要：本轮未提供可分享的进展，请查看工单核对。');
+  if (task.workItems?.length) {
+    const count = status => task.workItems.filter(i => i.status === status).length;
+    lines.push(`阶段记录（待验收）：${count('done')}/${task.workItems.length} 完成，${count('ready')} 项可继续，${count('blocked') + count('decision')} 项受阻或待决定。`);
+  }
+  const blockers = (outcome.blockers || []).map(b => ({ owner: safe(b.owner, 60), reason: safe(b.reason), resume: safe(b.resumeWhen) })).filter(b => b.reason).slice(0, 2);
+  for (const blocker of blockers) {
+    lines.push(`卡点：${blocker.reason}${blocker.owner ? `（责任方：${blocker.owner}）` : ''}`);
+    if (blocker.resume) lines.push(`恢复条件：${blocker.resume}`);
+  }
+  const remaining = (outcome.remaining || []).map(v => safe(v, 120)).filter(Boolean).slice(0, 2);
+  if (remaining.length) lines.push(`未完成：${remaining.join('；')}`);
+  const next = safe(outcome.next);
+  if (next) lines.push(`后续步骤（执行者报告）：${next}`);
+  const action = ({
+    stalled: '本地负责人核对进展与剩余事项，在派发面板补充本轮要求后继续。',
+    unrouted: '本地负责人在派发面板设置恢复条件，或确认可做的下一步后继续。',
+    review: '请核对工单中的交付与验证证据，完成验收。',
+    report: '本地负责人检查 Linear 连接与权限，恢复回写；不要重跑业务任务。',
+    monitor: '本地负责人检查 Linear 连接、权限和等待对象。'
+  })[type] || '本地负责人查看工单具体问题，并在派发面板处理该提示。';
+  lines.push(`现在需要：${action}`, issueLink(task) || '请在本机任务派发面板查看。', '通知仅作提醒；执行者报告不等于验收，也不会授予新权限。');
+  return lines.join('\n');
+}
+
+export function attention(state, channel, secrets = []) {
   const found = new Map();
   for (const task of state.tasks.filter(t => currentTask(t, state))) {
     if (!channel.projectIds.includes(task.projectId) || task.wait?.status === 'superseded') continue;
@@ -39,7 +81,7 @@ export function attention(state, channel) {
     if (channel.completed && task.status === 'review') types.push('review');
     for (const type of types) {
       const key = `${task.id}:${type}`;
-      found.set(key, { taskId: task.id, type, text: `任务派发通知 · ${issueLabel(task)}\n${reasons[type]}\n${issueLink(task) || '请在本机任务派发面板查看。'}\n此通知不会执行任务或授予操作权限。` });
+      found.set(key, { taskId: task.id, type, text: notificationText(task, type, secrets) });
     }
   }
   return found;
@@ -61,7 +103,14 @@ export async function sendFeishu(channel, text, { fetchImpl = fetch, clock = Dat
   let credentials;
   try { credentials = await loadFeishuCredentials(channel.credentialsFile); }
   catch { return { status: 'failed', error: '飞书凭据文件缺失或格式不正确' }; }
-  const body = { msg_type: 'text', content: { text } };
+  // Keep the durable text format compatible with old outbox entries. Only a
+  // standalone validated Linear URL becomes a link, never user-supplied markup.
+  const [title, ...lines] = text.split('\n');
+  const content = (lines.length ? lines : [title]).map(line => {
+    const href = issueLink({ issue: { url: line } });
+    return [href ? { tag: 'a', text: '查看工单', href } : { tag: 'text', text: line }];
+  });
+  const body = { msg_type: 'post', content: { post: { zh_cn: { title, content } } } };
   if (credentials.signingSecret) {
     body.timestamp = String(Math.floor(clock() / 1000));
     body.sign = createHmac('sha256', `${body.timestamp}\n${credentials.signingSecret}`).update('').digest('base64');
@@ -103,7 +152,8 @@ export class Notifications {
       const active = {};
       for (const channel of channels.filter(c => c.enabled)) {
         const revision = fingerprint(channel), first = !data.initialized[revision];
-        for (const [key, incident] of attention(state, channel)) {
+        const secrets = Object.values(this.runtime.env || {}).filter(v => typeof v === 'string' && v.length > 12);
+        for (const [key, incident] of attention(state, channel, secrets)) {
           const identity = `${revision}:${key}`;
           active[identity] = data.active[identity] || randomUUID();
           if (!data.active[identity] && (!first || channel.includeExisting)) data.outbox.push({

@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHmac } from 'node:crypto';
-import { Notifications, sendFeishu, loadFeishuCredentials } from '../src/notifications.js';
+import { Notifications, sendFeishu, loadFeishuCredentials, notificationText } from '../src/notifications.js';
 import { Dispatcher, MemoryStore } from '../src/dispatcher.js';
 import { initialState, settingsSchema } from '../src/config.js';
 import { domainSpec } from '../src/plugin.js';
@@ -36,6 +36,44 @@ test('existing incidents baseline quietly unless explicitly included; recurrence
   await f.notifications.run(); assert.equal(sent, 0);
   await f.edit(s => { s.tasks[0].status = 'running'; }); await f.notifications.run();
   await f.edit(s => { s.tasks[0].status = 'decision'; }); await f.notifications.run(); assert.equal(sent, 1);
+});
+
+test('notification explains business progress, blockers and local continuation separately', async () => {
+  const messages = [], f = await fixture(async (_c, text) => { messages.push(text); return { status: 'sent' }; });
+  await f.edit(s => Object.assign(s.tasks[0], {
+    title: 'EX-1 · 归档校验 · 续办 · 续办', status: 'stalled', continuationStop: 'budget',
+    outcome: { progress: '归档复制已完成，恢复抽验尚未通过。', remaining: ['核验恢复结果'], next: '收到明细后复核。',
+      blockers: [{ owner: 'Example User', reason: '缺少校验明细', resumeWhen: '交付逐文件校验清单' }] },
+    workItems: [{ status: 'done' }, { status: 'ready' }, { status: 'blocked' }]
+  }));
+  await f.notifications.run();
+  assert.match(messages[0], /任务：EX-1 · 归档校验\n/);
+  assert.match(messages[0], /次数已用完/);
+  assert.match(messages[0], /执行者报告：归档复制已完成/);
+  assert.match(messages[0], /1\/3 完成，1 项可继续/);
+  assert.match(messages[0], /缺少校验明细（责任方：Example User）/);
+  assert.match(messages[0], /恢复条件：交付逐文件校验清单/);
+  assert.match(messages[0], /未完成：核验恢复结果/);
+  assert.match(messages[0], /现在需要：本地负责人/);
+  // Updating the summary must not turn every poll into another alert.
+  await f.edit(s => { s.tasks[0].outcome.progress = '有更新的业务报告'; });
+  f.advance(2000); await f.notifications.run(); assert.equal(messages.length, 1);
+});
+
+test('notification excludes raw output, known secrets and unsafe full fields before truncating', () => {
+  const secret = 'test-credential-not-for-sharing';
+  const task = { issue: { identifier: 'EX-1' }, title: 'F:/private/project', summary: 'RAW_TRANSCRIPT',
+    prompt: 'RAW_PROMPT', outcome: { publicSummary: 'x'.repeat(450) + secret, progress: '安全的简短进展',
+      next: 'token=hidden', remaining: ['访问 https://private.example/secret', '公开未完成步骤'],
+      blockers: [{ owner: secret, reason: '缺少验收回执', resumeWhen: '/home/private/receipt' }] } };
+  const text = notificationText(task, 'unrouted', [secret]);
+  assert.match(text, /安全的简短进展/); assert.match(text, /公开未完成步骤/); assert.match(text, /缺少验收回执/);
+  assert.doesNotMatch(text, /RAW_|private|credential|hidden|xxxx/);
+  task.outcome = {};
+  assert.match(notificationText(task, 'unrouted'), /未提供可分享的进展/);
+  task.outcome = { publicSummary: '公开摘要', progress: '不会重复的内部进展' };
+  const preferred = notificationText(task, 'review');
+  assert.match(preferred, /公开摘要/); assert.doesNotMatch(preferred, /内部进展/);
 });
 test('ordinary waits and unrelated projects are silent; latest issue task supersedes history', async () => {
   let sent = 0; const f = await fixture(async () => { sent++; return { status: 'sent' }; });
@@ -105,9 +143,19 @@ test('Feishu signing, fixed destination, API errors, ambiguous timeout redaction
   const ok = await sendFeishu(c, 'test', { clock: () => 100000, fetchImpl: async (url, options) => {
     assert.equal(options.redirect, 'error'); assert.ok(options.signal);
     const body = JSON.parse(options.body); assert.equal(body.timestamp, '100');
+    assert.equal(body.msg_type, 'post');
+    assert.deepEqual(body.content.post.zh_cn, { title: 'test', content: [[{ tag: 'text', text: 'test' }]] });
     assert.equal(body.sign, createHmac('sha256', '100\ntest-secret').update('').digest('base64'));
     return new Response('{"code":0}');
   } }); assert.equal(ok.status, 'sent');
+  await sendFeishu(c, '任务派发通知 · EX-1\n具体进展\nhttps://linear.app/example/issue/EX-1\nhttps://evil.example/\nhttps://linear.app/example?token=hidden', { fetchImpl: async (_url, options) => {
+    const post = JSON.parse(options.body).content.post.zh_cn;
+    assert.equal(post.title, '任务派发通知 · EX-1');
+    assert.deepEqual(post.content[1], [{ tag: 'a', text: '查看工单', href: 'https://linear.app/example/issue/EX-1' }]);
+    assert.equal(post.content[0][0].tag, 'text');
+    assert.equal(post.content[2][0].tag, 'text'); assert.equal(post.content[3][0].tag, 'text');
+    return new Response('{"code":0}');
+  } });
   assert.equal((await sendFeishu(c, 'test', { fetchImpl: async () => new Response('{"code":19021,"msg":"test-secret"}') })).status, 'failed');
   const unknown = await sendFeishu(c, 'test', { fetchImpl: async () => { throw Error('test-secret https://private'); } });
   assert.equal(unknown.status, 'unknown'); assert.doesNotMatch(JSON.stringify(unknown), /test-secret|private/);
