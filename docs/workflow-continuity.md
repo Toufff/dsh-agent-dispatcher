@@ -1,0 +1,15 @@
+# Workflow continuity
+
+New tasks and explicit continuations use result contract version 2. Each result must include a persistent `workItems` ledger for the requested goal. Existing stored results remain readable; installing the update does not replay completed work or rearm old waits.
+
+Each item has a stable ID, title, status, dependencies, next action and evidence. Blocked items identify the responsible party, blocker type and observable recovery condition. See `src/workflow.js` for the schema. The runtime rejects missing stages, dependency cycles, completion without evidence, and whole-task blocking/completion while authorized ready items remain. Requested code, merge, deployment and acceptance stages must be represented separately. The ledger does not invent stages or authorize production operations.
+
+A malformed or contradictory result gets at most one formatting-only repair per execution round, in the registered session. It does not execute tools. A corrected result with ready work then uses the normal bounded continuation path. Three automatic continuation rounds without terminal resolution, repeated progress, invalid waits and missing triggers are surfaced as actionable local attention. Existing configured notifications also receive unrouted blockers. Budgets are not silently reset, and missing authorization is never inferred from a timer or comment.
+
+Explicit continuation uses a required instruction form in the panel. The original goal, recorded stages, applicable owner instructions, project restrictions and registered session survive. Historical result excerpts are bounded rather than recursively embedding every prior prompt. Oversized owner instruction history is rejected, never silently truncated.
+
+Publishing a continuation and retiring its predecessor is one atomic state save. Only the latest task for a workspace/issue can monitor, report or accept task actions; historical rows remain available through an explicit history toggle. An active or human-owned issue cannot admit a competing new round. Remote reporting and continuation publication serialize, so an already-running old report completes before the new round is published; pending obsolete retries are retired. This protects this host's writer, not independent remote actors or human edits in Linear.
+
+Evidence strings are executor claims. Structural consistency cannot independently prove code quality, CI success, correct scope decomposition, production health or business acceptance. Human acceptance remains explicit; a stage ledger is not a replacement for project quality gates. No public webhook or background coordinator is required.
+
+Validation: `npm test`, `npm run check`, `npm run build`. Workflow tests exercise mixed local/external stages, restart, duplicate polls, original-session continuation, disk-save failure, stale outbox retries, active-issue collision, inherited deadlines and budget escalation. `node scripts/workflow-ui-preview.js` serves a synthetic browser fixture without credentials, business requests or worker launches; `/mobile` uses a 390px iframe viewport.

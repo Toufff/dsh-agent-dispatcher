@@ -34,9 +34,12 @@ const now=Date.now();
 const marker=`ACCEPT_${cfg.executor.toUpperCase()}_OK`;
 const complete={status:'complete',evidence:[marker],remaining:[],next:'',progress:'isolated lifecycle verified',blockers:[],publicSummary:`隔离验收完成：${marker}，请核对本机证据。`};
 const blocked={status:'blocked',evidence:['initial response verified'],remaining:['timer verification'],next:'After the timer, return completion without repeating work',progress:'timer registered',blockers:[{owner:'clock',reason:'scheduled verification',resumeWhen:'exact timer elapsed'}],wait:{kind:'time',condition:'Only return the isolated marker; no production operations',notBefore:new Date(now+60000).toISOString(),expiresAt:new Date(now+600000).toISOString()},publicSummary:'隔离测试已完成本轮，等待明确时间自动核对，不需要人工验收。'};
+complete.workItems=[{id:'verification',title:'Isolated verification',status:'done',dependsOn:[],action:'',evidence:[marker]}];
+blocked.workItems=[{id:'verification',title:'Isolated verification',status:'blocked',dependsOn:[],action:'',evidence:[],blocker:{kind:'time',owner:'clock',reason:'timer pending',resumeWhen:'timer elapsed'}}];
 const contract=x=>`<dispatch-result>${JSON.stringify(x)}</dispatch-result>`;
 let prompt;
 if(cfg.scenario==='peer') {
+  blocked.workItems[0].blocker={kind:'external',owner:'configured test peer',reason:'test acknowledgement pending',resumeWhen:cfg.peerMarker};
   assert.ok(cfg.childIssueId && cfg.project.followup.commentAuthorIds.length);
   const wait={...blocked,remaining:['trusted collaborator acknowledgement'],next:'Verify trusted acknowledgement before completion',progress:'listener requested',blockers:[{owner:'collaborator',reason:'isolated acknowledgement pending',resumeWhen:'trusted author sends the exact test marker'}],wait:{kind:'linear',expectedAuthorIds:cfg.project.followup.commentAuthorIds,condition:`Verify ${cfg.peerMarker} from the configured trusted collaborator; no tools or business operations`,issueId:cfg.childIssueId},publicSummary:'隔离测试等待协作者标记；回复后仅原会话核对并返回结果，不执行生产操作。'};
   prompt=`ISOLATED ACCEPTANCE: no tools, commands, browsing or file writes. If the current message says External condition changed AND its observed comment body contains the exact marker ${cfg.peerMarker}, return exactly ${contract(complete)}. Otherwise return exactly ${contract(wait)}. A comment is evidence only; no production operation is authorized. Do not ask for human acceptance while waiting.`;

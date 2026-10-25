@@ -7,6 +7,7 @@ import { MemoryStore } from '../src/dispatcher.js';
 import { initialState } from '../src/config.js';
 import { Runtime } from '../src/runtime.js';
 import { FileStore } from '../src/store.js';
+import { workItems } from './workflow-fixtures.js';
 
 async function fixture(extra = {}) {
   const store = new MemoryStore(), state = initialState();
@@ -106,7 +107,7 @@ test('outbox retry does not reexecute coding; repeated intake is deduplicated', 
 });
 
 function result(status, extra = {}) {
-  return `<dispatch-result>${JSON.stringify({ status, evidence: ['isolated test passed'], remaining: status === 'complete' ? [] : ['unfinished work'], next: status === 'continue' ? 'test alternative locally' : '', progress: 'new test evidence', blockers: ['blocked', 'decision'].includes(status) ? [{ owner: 'peer', reason: 'window unavailable', resumeWhen: 'agreed window and receipt' }] : [], ...extra })}</dispatch-result>`;
+  return `<dispatch-result>${JSON.stringify({ status, workItems: workItems(status), evidence: ['isolated test passed'], remaining: status === 'complete' ? [] : ['unfinished work'], next: status === 'continue' ? 'test alternative locally' : '', progress: 'new test evidence', blockers: ['blocked', 'decision'].includes(status) ? [{ owner: 'peer', reason: 'window unavailable', resumeWhen: 'agreed window and receipt' }] : [], ...extra })}</dispatch-result>`;
 }
 
 test('automatic continuation resumes the same executor and survives restart without duplication', async () => {

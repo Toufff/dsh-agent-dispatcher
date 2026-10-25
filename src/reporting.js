@@ -1,5 +1,6 @@
 import { outcomeReports } from './outcome.js';
 import { waitFaults } from './followup.js';
+import { attentionFor } from './workflow.js';
 
 // Conservative accidental-disclosure guard, not a general-purpose DLP system.
 export function shareable(text, secrets = []) {
@@ -9,6 +10,9 @@ export function shareable(text, secrets = []) {
 
 export function reportBody(task, mapping, secrets) {
   let body = outcomeReports[task.status] || '本地已收到新的条件变化，正在排队重新核对；这不代表已获得执行授权。';
+  const attention = attentionFor(task, { tasks: [task], settings: { projects: [] } });
+  if (attention) body += `\n\n下一责任：${attention.owner}。${attention.reason}。${attention.action}`;
+  if (task.workItems) body += `\n阶段进度（执行者报告，非独立验收）：${task.workItems.filter(i => i.status === 'done').length}/${task.workItems.length} 完成。`;
   if (mapping?.shareProgress && shareable(task.outcome?.publicSummary, secrets))
     body += `\n\n${task.outcome.publicSummary}`;
   if (task.wait) {

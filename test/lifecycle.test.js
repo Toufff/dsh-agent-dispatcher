@@ -6,6 +6,7 @@ import path from 'node:path';
 import { FileStore } from '../src/store.js';
 import { initialState } from '../src/config.js';
 import { Runtime } from '../src/runtime.js';
+import { workItems } from './workflow-fixtures.js';
 
 test('intake → format repair → timer → reply → restart/outage → completion keeps one task and session', async () => {
  const dir=await mkdtemp(path.join(os.tmpdir(),'dispatch-lifecycle-'));
@@ -17,7 +18,7 @@ test('intake → format repair → timer → reply → restart/outage → comple
   activity:async()=>{if(offline)throw new Error('Transient network outage');return {parentState:{type:'started'},comments};},
   report:async item=>{remoteComments.set(item.id,item);if(failReport){failReport=false;throw new Error('response lost after write');}}
  });
- const result=wait=>`<dispatch-result>${JSON.stringify({status:wait?'blocked':'complete',evidence:['synthetic verification'],remaining:wait?['receipt']:[],next:wait?'Verify dependencies before proceeding':'',progress:'new evidence',blockers:wait?[{owner:'peer',reason:'waiting',resumeWhen:'verified receipt'}]:[],...(wait?{wait}:{})})}</dispatch-result>`;
+ const result=wait=>`<dispatch-result>${JSON.stringify({status:wait?'blocked':'complete',workItems:workItems(wait?'blocked':'complete'),evidence:['synthetic verification'],remaining:wait?['receipt']:[],next:wait?'Verify dependencies before proceeding':'',progress:'new evidence',blockers:wait?[{owner:'peer',reason:'waiting',resumeWhen:'verified receipt'}]:[],...(wait?{wait}:{})})}</dispatch-result>`;
  const adapter={start:async({task,attempt})=>{
   starts++;if(starts>1){assert.equal(attempt.sessionId,'original');assert.equal(attempt.resume,true);}
   if(starts===2){assert.match(task.prompt,/Validation error/);assert.match(task.prompt,/do not execute tools/);}

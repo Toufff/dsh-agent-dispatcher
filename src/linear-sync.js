@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { WaitTargetError, validWaitTarget } from './linear.js';
+import { currentTask } from './workflow.js';
 
 const overlap = 60000, reconcileEvery = 15 * 60000;
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -11,7 +12,7 @@ export function syncGroups(state) {
     if (!groups.has(key)) groups.set(key, { key, projects: [], waits: [] });
     const group = groups.get(key); group.projects.push(project);
     if (!state.paused && project.followup?.enabled) for (const task of state.tasks) {
-      if (task.projectId !== project.id || task.status !== 'blocked' || task.owner === 'human' || !task.issue?.id ||
+      if (!currentTask(task, state) || task.projectId !== project.id || task.status !== 'blocked' || task.owner === 'human' || !task.issue?.id ||
           !['watching', 'validating', 'expired'].includes(task.wait?.status)) continue;
       if (task.wait.kind === 'task' || task.wait.kind !== 'linear' && task.wait.status !== 'expired') continue;
       if (task.wait.status === 'expired' && !project.followup.observeAfterExpiry) continue;

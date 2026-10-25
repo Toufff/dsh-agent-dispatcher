@@ -8,8 +8,9 @@ import { parseOutcome } from '../src/outcome.js';
 import { wakeEvent } from '../src/followup.js';
 import { shareable } from '../src/reporting.js';
 import { WaitTargetError } from '../src/linear.js';
+import { workItems } from './workflow-fixtures.js';
 
-const contract = (status, extra = {}) => `<dispatch-result>${JSON.stringify({ status,
+const contract = (status, extra = {}) => `<dispatch-result>${JSON.stringify({ status, workItems: workItems(status),
   evidence: ['isolated check passed'], remaining: status === 'complete' ? [] : ['peer receipt'],
   next: '', progress: 'verified local work', blockers: status === 'blocked' ? [{ owner: 'peer', reason: 'await receipt', resumeWhen: 'verified receipt' }] : [], ...extra })}</dispatch-result>`;
 const comment = (id = 'reply', user = 'peer', when = new Date(Date.now() + 1).toISOString(), body = 'Receipt ready, please verify.') => ({ id, user: { id: user }, updatedAt: when, body });

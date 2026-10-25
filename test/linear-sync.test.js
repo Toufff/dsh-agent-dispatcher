@@ -7,6 +7,7 @@ import { LinearSync } from '../src/linear-sync.js';
 import { MemoryStore } from '../src/dispatcher.js';
 import { initialState } from '../src/config.js';
 import { domainSpec } from '../src/plugin.js';
+import { workItems } from './workflow-fixtures.js';
 
 async function fixture({ count = 1 } = {}) {
   const store = new MemoryStore(), state = initialState(); state.paused = false;
@@ -43,6 +44,7 @@ async function fixture({ count = 1 } = {}) {
       if (resumed) assert.equal(attempt.sessionId, `session-${task.issue.id}`);
       const outcome = resumed ? { status: 'complete', evidence: ['isolated'], remaining: [], blockers: [], next: '', progress: 'complete' }
         : { status: 'blocked', evidence: ['isolated'], remaining: ['reply'], blockers: [{ owner: 'peer', reason: 'reply', resumeWhen: 'reply' }], next: '', progress: 'waiting', wait: { kind: 'linear', expectedAuthorIds: ['peer'], condition: 'verified receipt', issueId: task.issue.id } };
+      outcome.workItems = workItems(outcome.status);
       return { status: 'review', sessionId: `session-${task.issue.id}`, summary: `<dispatch-result>${JSON.stringify(outcome)}</dispatch-result>` };
     } };
     return r;

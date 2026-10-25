@@ -1,5 +1,6 @@
 import { readFile, stat } from 'node:fs/promises';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { attentionFor, currentTask } from './workflow.js';
 
 const reasons = {
   decision: '任务需要你作出决定，请打开工单查看具体问题。',
@@ -12,7 +13,8 @@ const reasons = {
   limit: '已达到自动唤醒上限，需要复核任务进展。',
   monitor: '条件监听连续失败，需要检查连接或权限。',
   report: 'Linear 回写连续失败，需要检查连接或权限；任务不会重跑。',
-  review: '执行已完成，等待你验收；尚未自动标记为 Done。'
+  review: '执行已完成，等待你验收；尚未自动标记为 Done。',
+  unrouted: '阻塞未设置恢复条件，需要本地负责人明确下一触发。'
 };
 const fingerprint = channel => createHash('sha256').update(JSON.stringify(channel)).digest('hex');
 const issueLabel = task => /^[A-Z][A-Z0-9]*-\d+$/.test(task.issue?.identifier || '') ? task.issue.identifier : '本地任务';
@@ -23,16 +25,13 @@ function issueLink(task) {
 
 // Deliberately omit prompts, summaries, local paths and executor output.
 export function attention(state, channel) {
-  const found = new Map(), latest = new Map();
-  for (const task of state.tasks) {
-    const key = JSON.stringify([task.projectId, task.issue?.id || task.id]);
-    latest.set(key, task);
-  }
-  for (const task of latest.values()) {
+  const found = new Map();
+  for (const task of state.tasks.filter(t => currentTask(t, state))) {
     if (!channel.projectIds.includes(task.projectId) || task.wait?.status === 'superseded') continue;
     const types = [];
     if (['decision', 'failed', 'exhausted', 'stalled', 'needs_result'].includes(task.status)) types.push(task.status);
     if (task.status === 'blocked') {
+      if (!task.wait && attentionFor(task, state)) types.push('unrouted');
       if (['invalid', 'expired', 'limit'].includes(task.wait?.status)) types.push(task.wait.status);
       else if (task.wait?.errorCount >= 3) types.push('monitor');
     }

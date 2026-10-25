@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { waitSchema } from './followup.js';
+import { workItemsSchema, workflowError, workflowProtocol } from './workflow.js';
 
 const text = z.string().trim().min(1).max(2000);
 const schema = z.object({
@@ -10,6 +11,7 @@ const schema = z.object({
   progress: z.string().max(2000),
   blockers: z.array(z.object({ owner: text, reason: text, resumeWhen: text }).strict()).max(20),
   wait: waitSchema.optional(),
+  workItems: workItemsSchema.optional(),
   publicSummary: z.string().trim().min(1).max(4000).optional()
 }).strict();
 
@@ -24,9 +26,9 @@ For blocked results you MAY add "wait":{"kind":"linear|time","condition":"what m
 You MAY add "publicSummary" containing a concise shareable business update: completed work, actual validation, remaining work, responsible party, and exact resumption condition/time with timezone. Exclude local paths, credentials, transcripts and private identifiers. Only locally opted-in projects publish this field. Never claim a proposal, simulated test or process exit is production acceptance.
 Waiting for another task ON THIS RECEIVER is NOT a collaborator-comment wait. Use "wait":{"kind":"task","taskId":"existing local task ID","condition":"result to verify"}, or issueId with that task's existing Linear UUID/identifier if its local task ID is unavailable. The dispatcher binds exactly one existing task in the same local project and rejects self-dependencies, cycles and ambiguous references. It wakes only on a confirmed complete result, not on failed/blocked/stopped work, and does not mark human acceptance. Never invent task identities. Remote tasks still use linear waits.
 For a linear wait, you MUST specify expectedAuthorIds with the actual Linear user IDs of the people whose replies are required, not role words. These must be allowed by local policy and cannot be the receiver's own author. Do not use a peer comment to proxy a local task result. If local instructions or an expired execution window prevent any authorized action, report the concrete local decision needed; do not wait for a peer to remove local restrictions. Never extend a deadline yourself.
-`;
+${workflowProtocol}`;
 
-export function inspectOutcome(summary) {
+export function inspectOutcome(summary, { previous = [], required = false } = {}) {
   const invalid = error => ({ outcome: null, error });
   const source = summary || '';
   const matches = [...source.matchAll(/<dispatch-result>([\s\S]*?)<\/dispatch-result>/g)];
@@ -51,6 +53,8 @@ export function inspectOutcome(summary) {
   if (result.status === 'continue' && (!result.next.trim() || !result.remaining.length)) return invalid('Continue requires remaining work and a concrete next step.');
   // A blocked next step describes what follows the dependency; it is not a command to execute.
   if (['blocked', 'decision'].includes(result.status) && (!result.blockers.length || !result.remaining.length)) return invalid('Blocked/decision requires remaining work and named blockers.');
+  const flowError = workflowError(result, previous, required);
+  if (flowError) return invalid(flowError);
   return { outcome: result, error: null, ...(missingClose ? { framingRecovery: 'missing-close-tag' } : {}) };
 }
 export const parseOutcome = summary => inspectOutcome(summary).outcome;
@@ -62,7 +66,7 @@ export const outcomeReports = {
   unknown: '本地执行回执持续不明确，正在自动核对；为防止重复操作，暂不启动另一执行器。',
   accepted: '接收方已在本地确认验收；Linear 的最终 Done 状态仍由人工管理。',
   review: '本地 agent 报告需求已完成并提供验证证据，等待人工验收；尚未标记 Done。',
-  blocked: '本地执行存在外部依赖，当前无可继续的本地步骤；等待依赖满足后续办。尚未完成，不需要验收。',
+  blocked: '执行者报告当前步骤受阻；请结合阶段清单及恢复条件核对。整单尚未完成，不需要验收。',
   decision: '本地执行需要具体的人类决策或授权；尚未完成，不需要验收。请在接收方本地查看问题。',
   stalled: '自动续办达到次数或无进展限制；任务尚未完成，需要排查执行卡点，不是验收。',
   needs_result: '执行已结束，但结果分类无法确认；尚未满足验收条件。请在接收方检查结果格式。'

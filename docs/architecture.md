@@ -119,6 +119,8 @@ The owner-only `issue-context` command is display-only: it reads the source/targ
 
 ## Typed producers and deadlock prevention
 
+See [Workflow continuity](workflow-continuity.md) for the version 2 stage ledger, atomic continuation publication, current-round reporting ownership and actionable budget escalation. Existing results remain compatible without replay.
+
 A wait is an event subscription, not merely a natural-language blocker. New Linear waits require `expectedAuthorIds`: the actual required producer IDs, constrained by the local allowlist and excluding the receiver. A missing identity is a result-format error (one bounded formatting repair), while an impossible identity is a durable configuration fault. Legacy persisted waits retain history and cursors, but an undeclared producer becomes an actionable local configuration fault; explicit rearming is required. The scheduler cannot infer an intended person reliably from arbitrary prose.
 
 Local handoffs use `kind: "task"` with an existing `taskId`, or an unambiguous local task's `issueId` (UUID or identifier). Resolution binds the exact task in the same local mapping. Self, missing, ambiguous, superseded and cross-project targets are rejected. Dependency traversal detects cycles, including indirect cycles. A confirmed `complete` outcome on a finished accepted attempt in review/accepted triggers the dependent's original session once. Completion is an agent result, not human acceptance or production authorization. Failure, stop, decisions, expired/invalid dependency waits and human takeover surface an actionable local fault instead of being treated as completion. Blocked/running dependencies release the slot and remain observable.

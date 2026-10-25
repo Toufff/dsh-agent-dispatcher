@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { captureResultText } from './result-text.js';
 import { waitFaults } from './followup.js';
+import { currentTask, issueKey } from './workflow.js';
 
 export const terminal = new Set(['review', 'failed', 'exhausted', 'stopped', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result']);
 async function bounded(operation, ms = 15000) {
@@ -27,7 +28,7 @@ export class Dispatcher {
     return result;
   }
 
-  enqueue({ source, round, cwd, prompt, executors, title = source, projectId, issue, session, resultContract = false, basePrompt }) {
+  enqueue({ source, round, cwd, prompt, executors, title = source, projectId, issue, session, resultContract = false, basePrompt, continuationOf, workflowVersion, goalPrompt, workItems, ownerInstructions }) {
     return this.#exclusive(async () => {
       if (!source || !round || !cwd || !prompt || !executors?.length)
         throw new Error('source, explicit round, local cwd, prompt and executors required');
@@ -37,12 +38,33 @@ export class Dispatcher {
       const key = JSON.stringify([source, round]);
       const existing = state.tasks.find(t => t.key === key);
       if (existing) return existing.id;
+      const prior = continuationOf && state.tasks.find(t => t.id === continuationOf);
+      if (continuationOf && (!prior || !currentTask(prior, state) || prior.owner === 'human' ||
+          !['review', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result'].includes(prior.status)))
+        throw new Error('Continue the current completed task, not a historical or active task');
+      const issueIdentity = issueKey({ projectId, issue }, state);
+      if (issueIdentity && state.tasks.some(t => issueKey(t, state) === issueIdentity &&
+          (!terminal.has(t.status) || t.owner === 'human')))
+        throw new Error('This issue already has an active or human-owned task');
       const task = { id: this.id(), key, cwd, prompt, title, executors: [...executors],
         status: 'queued', attempts: [], report: 'pending', owner: 'scheduler', events: [], resultContract,
-        ...(basePrompt ? { basePrompt } : {}),
+        ...(basePrompt ? { basePrompt } : {}), ...(workflowVersion ? { workflowVersion } : {}),
+        ...(goalPrompt ? { goalPrompt } : {}), ...(workItems ? { workItems } : {}),
+        ...(ownerInstructions ? { ownerInstructions } : {}),
+        ...(prior ? { continuationOf: prior.id, rootTaskId: prior.rootTaskId || prior.id,
+          previousAttempts: [...(prior.previousAttempts || []), ...prior.attempts],
+          rounds: [{ summary: prior.summary || prior.rounds?.at(-1)?.summary || '', outcome: prior.outcome,
+            attempts: prior.attempts.length ? prior.attempts : (prior.previousAttempts || []).slice(-1), at: new Date().toISOString() }],
+          resumeWindow: prior.resumeWindow || (prior.wait ? { notBefore: prior.wait.notBefore, expiresAt: prior.wait.expiresAt } : undefined) } : {}),
         createdAt: new Date().toISOString(), ...(projectId ? { projectId } : {}),
         ...(issue ? { issue } : {}), ...(session ? { session } : {}) };
       state.tasks.push(task);
+      if (prior) {
+        prior.supersededBy = task.id;
+        if (prior.wait) prior.wait.status = 'superseded';
+        prior.report = 'superseded';
+      }
+      for (const item of state.outbox || []) if (item.status === 'pending' && !currentTask(state.tasks.find(t => t.id === item.taskId) || {}, state)) item.status = 'superseded';
       await this.store.save(state);
       return task.id;
     });
@@ -177,6 +199,7 @@ export class Dispatcher {
     return this.update(async state => {
       const task = state.tasks.find(t => t.id === id);
       if (!task) throw new Error('Task not found');
+      if (!currentTask(task, state)) throw new Error('Historical task is superseded; open the current task');
       const attempt = task.attempts.at(-1);
       if (action === 'stop' || action === 'takeover') {
         if (!terminal.has(task.status) && task.status !== 'queued' && task.status !== 'busy') {
