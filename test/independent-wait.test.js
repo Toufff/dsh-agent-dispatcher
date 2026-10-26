@@ -8,6 +8,7 @@ import { inspectOutcome } from '../src/outcome.js';
 import { attention } from '../src/notifications.js';
 import { reportBody } from '../src/reporting.js';
 import { waitView, waitDraftFor } from '../src/ui/wait-view.js';
+import { validateLocalWait } from '../src/followup.js';
 
 const approval = { id: 'transfer', title: 'Transfer attachment', status: 'decision', dependsOn: [], action: '', evidence: [],
   blocker: { kind: 'permission', owner: 'Owner', reason: 'Transfer requires approval', resumeWhen: 'Explicit approval' } };
@@ -142,4 +143,13 @@ test('future independent timer and historical UI do not imply execution', async 
   assert.equal(task.status, 'blocked'); assert.equal(task.attempts.length, 1);
   assert.match(waitView({ ...task, supersededBy: 'replacement' }, state).title, /历史记录/);
   assert.match(waitView({ ...task, status: 'stopped' }, state).title, /任务已停止/);
+});
+
+test('upgrade preserves a registered legacy wait without relaxing new registration', async () => {
+  const legacy = { ...waiting(), id: 'registered-before-upgrade' }; delete legacy.workItemIds;
+  const task = { status: 'blocked', projectId: 'p', workItems: [approval, check] };
+  const state = { settings: { projects: [{ id: 'p' }] } };
+  assert.equal(validateLocalWait(legacy, task, state), legacy);
+  const fresh = { ...legacy }; delete fresh.id;
+  assert.throws(() => validateLocalWait(fresh, task, state), { code: 'WAIT_SCOPE_INVALID' });
 });

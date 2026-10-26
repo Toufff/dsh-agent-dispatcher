@@ -65,7 +65,9 @@ function continuationTarget(target, state) {
 
 // New waits may resolve a stale reference through verified lineage. Saved waits stay pinned.
 export function validateLocalWait(wait, task, state) {
-  if (waitScopeError(wait, task.workItems, task.status === 'decision')) throw waitFault('WAIT_SCOPE_INVALID');
+  // Previously registered waits predate stage scopes. Preserve their existing
+  // restrictions; only new registrations/results must adopt the new contract.
+  if ((!wait.id || wait.workItemIds) && waitScopeError(wait, task.workItems, task.status === 'decision')) throw waitFault('WAIT_SCOPE_INVALID');
   const project = state.settings.projects.find(p => p.id === task.projectId);
   if (wait.kind === 'linear') {
     if (!wait.expectedAuthorIds?.length) throw waitFault('WAIT_REPLY_UNDECLARED');
