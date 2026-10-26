@@ -1,9 +1,11 @@
 import { z } from 'zod';
+import { waitScopeError } from './workflow.js';
 
 const timestamp = z.string().datetime({ offset: true });
 export const waitSchema = z.object({
   kind: z.enum(['linear', 'time', 'task']),
   condition: z.string().trim().min(1).max(2000),
+  workItemIds: z.array(z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/)).min(1).max(40).optional(),
   issueId: z.string().min(1).max(160).optional(),
   taskId: z.string().min(1).max(160).optional(),
   expectedAuthorIds: z.array(z.string().min(1).max(160)).min(1).max(30).optional(),
@@ -29,6 +31,7 @@ export const waitSchema = z.object({
 });
 
 export const waitFaults = {
+  WAIT_SCOPE_INVALID: '独立等待必须绑定未受审批影响的未完成阶段，且其依赖已完成；不能用定时唤醒替代审批。',
   WAIT_REPLY_UNDECLARED: '旧等待没有明确回复人，无法证明条件能被触发。请本地负责人确认结果由谁产生，并改为明确回复人、任务依赖或人工决策；不会猜测并继续监听。',
   WAIT_DEPENDENCY_PENDING: '依赖完成回执已改变，需重新核验并设置等待条件。',
   WAIT_CONFIGURATION_CHANGED: '本地执行约束或项目配置已改变，需要核对并重新保存等待条件；反复检查不会解决。',
@@ -62,6 +65,7 @@ function continuationTarget(target, state) {
 
 // New waits may resolve a stale reference through verified lineage. Saved waits stay pinned.
 export function validateLocalWait(wait, task, state) {
+  if (waitScopeError(wait, task.workItems, task.status === 'decision')) throw waitFault('WAIT_SCOPE_INVALID');
   const project = state.settings.projects.find(p => p.id === task.projectId);
   if (wait.kind === 'linear') {
     if (!wait.expectedAuthorIds?.length) throw waitFault('WAIT_REPLY_UNDECLARED');

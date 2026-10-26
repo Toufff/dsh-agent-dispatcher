@@ -1,6 +1,6 @@
 import { readFile, stat } from 'node:fs/promises';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
-import { attentionFor, currentTask } from './workflow.js';
+import { attentionFor, currentTask, decisionItems } from './workflow.js';
 import { shareable } from './reporting.js';
 import { feishuCard } from './notification-card.js';
 
@@ -47,6 +47,8 @@ export function notificationText(task, type, secrets = []) {
     const count = status => task.workItems.filter(i => i.status === status).length;
     lines.push(`阶段记录（待验收）：${count('done')}/${task.workItems.length} 完成，${count('ready')} 项可继续，${count('blocked') + count('decision')} 项受阻或待决定。`);
   }
+  if (decisionItems(task).length && task.wait?.workItemIds?.length)
+    lines.push('独立阶段仍按已登记条件复核；待审批操作不会因唤醒获得授权。');
   const blockers = (outcome.blockers || []).map(b => ({ owner: safe(b.owner, 60), reason: safe(b.reason), resume: safe(b.resumeWhen) })).filter(b => b.reason).slice(0, 2);
   for (const blocker of blockers) {
     lines.push(`卡点：${blocker.reason}${blocker.owner ? `（责任方：${blocker.owner}）` : ''}`);
@@ -73,6 +75,7 @@ export function attention(state, channel, secrets = []) {
     if (!channel.projectIds.includes(task.projectId) || task.wait?.status === 'superseded') continue;
     const types = [];
     if (['decision', 'failed', 'exhausted', 'stalled', 'needs_result'].includes(task.status)) types.push(task.status);
+    else if (!['accepted', 'stopped'].includes(task.status) && decisionItems(task).length) types.push('decision');
     if (task.status === 'blocked') {
       if (!task.wait && attentionFor(task, state)) types.push('unrouted');
       if (['invalid', 'expired', 'limit'].includes(task.wait?.status)) types.push(task.wait.status);

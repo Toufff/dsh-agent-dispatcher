@@ -17,6 +17,7 @@ export function reportBody(task, mapping, secrets) {
     body += `\n\n${task.outcome.publicSummary}`;
   if (task.wait) {
     const wait = task.wait;
+    if (wait.workItemIds?.length) body += '\n独立阶段单独监控；待审批阶段仍未授权，回复或到点不会解除审批。';
     body += `\n\n恢复监控：${({ validating: '正在校验目标', watching: '监听中', invalid: '目标配置无效', expired: '已过期', suspended: '已停止', triggered: '已触发核验', resolved: '已结束', superseded: '已被续办替代', limit: '达到唤醒上限' })[wait.status] || wait.status}。`;
     // Never publish arbitrary exception text (paths/tokens may occur in it).
     if (wait.status === 'invalid') body += `\n${waitFaults[wait.errorCode] || '等待目标配置无效：只能监听当前工单、同项目直接子单或 Linear 明确关联的工单。'}已停止重试，需本地负责人修正后重新保存；未启动执行。`;

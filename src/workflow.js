@@ -10,9 +10,32 @@ export const workItemsSchema = z.array(z.object({
     owner: text, reason: text, resumeWhen: text }).strict().optional()
 }).strict()).min(1).max(40);
 
+export const decisionItems = task => (task.workItems || []).filter(i =>
+  i.status !== 'done' && (i.status === 'decision' || i.blocker?.kind === 'permission'));
+
+// Explicit stage IDs only. Natural-language dates/reasons never grant a wake.
+export function waitScopeError(wait, items = [], decision = false) {
+  if (!wait) return null;
+  const needsScope = decision || decisionItems({ workItems: items }).length > 0;
+  if (!wait.workItemIds) return needsScope ? 'Mixed permission waits require explicit independent wait.workItemIds.' : null;
+  const ids = wait.workItemIds, byId = new Map(items.map(i => [i.id, i]));
+  if (new Set(ids).size !== ids.length || !ids.length) return 'wait.workItemIds must be unique and nonempty.';
+  for (const id of ids) {
+    const item = byId.get(id);
+    if (!item || item.status !== 'blocked' || !item.blocker || item.blocker.kind === 'permission' ||
+        !item.dependsOn.every(dep => byId.get(dep)?.status === 'done'))
+      return 'Wait scope must reference independent blocked stages with completed dependencies, never permission stages.';
+    const kinds = wait.kind === 'linear' ? ['external', ...(wait.recheckAt ? ['time'] : [])] : [wait.kind];
+    if (!kinds.includes(item.blocker.kind)) return 'Wait kind must match its scoped stage blocker.';
+  }
+  return null;
+}
+
 // Claims are checked for consistency, never promoted to verified production facts.
 export function workflowError(outcome, previous = [], required = false) {
   const items = outcome.workItems;
+  const scopeError = waitScopeError(outcome.wait, items, outcome.status === 'decision');
+  if (scopeError) return scopeError;
   if (!items) return required || previous.length ? 'Return workItems covering the whole goal, including all unfinished stages.' : null;
   const byId = new Map(items.map(item => [item.id, item]));
   if (byId.size !== items.length) return 'workItems IDs must be unique.';
@@ -48,10 +71,14 @@ export function workflowError(outcome, previous = [], required = false) {
   if (ready && outcome.status !== 'continue') return 'Authorized ready workItems remain: return continue, not whole-task blocked/complete/decision.';
   if (outcome.status === 'continue' && !ready) return 'Continue requires at least one ready authorized workItem.';
   if ((outcome.status === 'complete') !== done) return 'Complete requires every recorded stage to be done; stage completion is not goal completion.';
+  if (['blocked', 'decision'].includes(outcome.status) && !outcome.wait && items.some(item =>
+    item.status === 'blocked' && item.blocker.kind === 'time' && item.dependsOn.every(id => byId.get(id).status === 'done')))
+    return 'Independent timed stages require an explicit structured wait; a permission decision must not cancel their scheduled verification. Supply the known timezone-aware timestamp, never infer one.';
   return null;
 }
 
 export const workflowProtocol = `
+Independent waiting stages MUST retain a structured wait even when a different stage requires permission. For mixed permission/wait results, bind wait.workItemIds to the stable IDs of independent blocked stages with completed dependencies; never include a permission stage. A time wait requires a time blocker; Linear waits bind external blockers (or time blockers with recheckAt). Do not put dates only in prose. Use decision plus a scoped wait when human attention and independent monitoring coexist. On wake perform ONLY scoped already-authorized work, retain every pending decision and never interpret a timer/reply as approval.
 REQUIRED workItems ledger: cover the ENTIRE requested goal, not just this turn. Each item has {"id":"stable-id","title":"stage or requirement","status":"ready|blocked|decision|done","dependsOn":[],"action":"authorized next action or empty","evidence":[]}. Blocked/decision items also require "blocker":{"kind":"external|task|permission|time","owner":"actual responsible party","reason":"precise missing input","resumeWhen":"observable condition"}. Keep stable IDs, never drop old items, never replay done items. Done requires actual evidence; evidence is a claim pending independent verification/human acceptance. Record code, merge, deployment and acceptance as separate items WHEN requested; do not invent extra scope. A production permission blocker must not stop independent local development. Only mark ready actions already permitted by current local instructions. If any ready item remains, return continue even if another item is blocked. The ledger never grants permission or changes local policy. If all items are blocked, declare a real wait or a concrete local decision; do not call an unknown dependency an external blocker without checking its applicability.
 `;
 
@@ -96,6 +123,10 @@ export function attentionFor(task, state) {
   else if (task.status === 'blocked' && ['invalid', 'expired', 'limit'].includes(task.wait?.status))
     reason = { invalid: '等待配置无效', expired: '等待时段已过期', limit: '自动唤醒预算已用完' }[task.wait.status];
   else if (task.status === 'blocked' && !task.wait) reason = '阻塞未设置可触发的恢复条件';
+  if (!reason && task.status === 'blocked' && decisionItems(task).length) return {
+    owner: '本地负责人', reason: '部分阶段需要决定；独立阶段继续监控',
+    action: '仅处理待审批阶段的具体决定；独立阶段按已登记条件复核，唤醒不代表审批通过。'
+  };
   if (!reason) return null;
   return { owner: '本地负责人', reason,
     action: '核对剩余阶段和有效约束，补充本轮要求后继续，或修正恢复条件；不会自动扩大权限或重做已完成步骤。' };

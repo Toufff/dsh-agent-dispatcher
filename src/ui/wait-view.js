@@ -11,6 +11,7 @@ export function waitDraftFor(task) {
   const wait = task.wait || {}, kind = wait.kind || 'linear';
   const issueId = wait.issueId || (kind !== 'task' ? task.issue?.id : undefined);
   return { kind, condition: wait.condition || '', ...(issueId ? { issueId } : {}),
+    ...(wait.workItemIds ? { workItemIds: wait.workItemIds } : {}),
     ...(kind === 'task' && wait.taskId ? { taskId: wait.taskId } : {}),
     ...(kind === 'linear' ? { expectedAuthorIds: wait.expectedAuthorIds || [] } : {}),
     ...(wait.notBefore ? { notBefore: wait.notBefore } : {}), ...(wait.recheckAt ? { recheckAt: wait.recheckAt } : {}), ...(wait.expiresAt ? { expiresAt: wait.expiresAt } : {}) };
@@ -25,7 +26,8 @@ export function waitView(task, data, now = Date.now()) {
   // A newly armed wait can still carry the previous round's result. Do not present its blockers as current.
   const prior = task.outcome?.wait;
   const sameWait = !queueExpired && (!wait || (prior && ['kind', 'condition', 'notBefore', 'recheckAt', 'expiresAt'].every(k => prior[k] === wait[k]) &&
-    (prior.issueId || task.issue?.id) === (wait.issueId || task.issue?.id)));
+    (prior.issueId || task.issue?.id) === (wait.issueId || task.issue?.id) &&
+    JSON.stringify(prior.workItemIds || []) === JSON.stringify(wait.workItemIds || [])));
   const blockers = sameWait ? task.outcome?.blockers || [] : [];
   const dependency = wait?.kind === 'task' ? data.tasks.find(t => t.id === wait.taskId) : null;
   const targetId = wait?.issueId || task.issue?.id;
@@ -66,6 +68,11 @@ export function waitView(task, data, now = Date.now()) {
       : `由宿主增量同步可信回复；${sync?.nextAt ? `下次检查 ${formatTime(sync.nextAt)}，` : ''}收到后由原会话核验并继续。${wait.recheckAt ? `即使没有回复，也会在 ${formatTime(wait.recheckAt)} 起独立复查；不代表条件已满足。` : ''}`;
   } else { monitor = ({ triggered: '已触发，等待原会话核验', suspended: '监听已停止', resolved: '本轮等待已结束', superseded: '已由后续处理替代' })[wait.status] || '等待状态待核对'; action = '核对当前任务状态后再安排后续处理。'; }
   if (task.attention && !task.historical) action = task.attention.action;
+  if (wait?.workItemIds?.length && task.status === 'blocked' && !task.historical && !task.supersededBy && !expired && !queueExpired && ['watching', 'validating'].includes(wait.status)) {
+    const labels = (task.workItems || []).filter(i => wait.workItemIds.includes(i.id)).map(i => i.title).join('、');
+    title = `独立阶段：${labels || '等待核验'}`;
+    action += ' 待审批阶段保持暂停，独立唤醒不会批准或执行它们。';
+  }
   return { title, monitor, action, blockers, targetId, targetLabel, targetUrl, targetAssignee, sourceAssignee,
     targetTitle: dependency?.title || context?.target?.title,
     dependencyStatus: dependency?.status,
