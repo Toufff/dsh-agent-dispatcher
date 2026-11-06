@@ -97,6 +97,8 @@ To enable external-condition monitoring, add `followup: {"enabled": true, "comme
 
 Set `linear.shareProgress: true` only when you want the agent's explicit `publicSummary` and safe wait condition shared with collaborators. Include completed work, next responsible party, required receipt and exact times in that summary; never put credentials or local paths there. The plugin has a conservative disclosure guard but no comprehensive DLP. Full transcripts remain local. See architecture.md for deduplication, ownership and reporting limitations.
 
+Parallel execution is opt-in. Set top-level `"concurrency": N` (1–8) in **高级配置 JSON** for the global cap and `"maxConcurrent": N` on a project to let it run several tasks at once; both default to 1, so omitting them keeps one task at a time. Tasks of one project share its `cwd`, so raise `maxConcurrent` only when the project's instructions make each task write in its own isolated checkout. Changing a project's mapping requires stopping its active tasks first.
+
 For maintenance startup, `DISPATCH_START_PAUSED=1` persists a paused queue before the host begins cycling. The panel can explicitly resume after configuration is verified.
 
 Set `followup.observeAfterExpiry: true` to keep receiving trusted replies after an execution window expires. The panel and Linear will show a pending reply, but no agent is started and the old window stays expired. Confirm the new timing locally and use **设置恢复条件**. When updating the same watched issue/type during maintenance, check **保留原监听起点** to retain replies received in the meantime; leaving it unchecked ignores older comments. Both modes preserve the consumed execution cursor and prior wait history.

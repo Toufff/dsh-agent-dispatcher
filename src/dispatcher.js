@@ -11,6 +11,18 @@ async function bounded(operation, ms = 15000) {
   })]); } finally { clearTimeout(timer); }
 }
 
+const slotGroup = task => task.projectId ? `project:${task.projectId}` : `cwd:${task.cwd}`;
+export function globalLimit(state) { return Math.max(1, state.settings?.concurrency ?? 1); }
+export function projectLimit(task, state) {
+  return Math.max(1, (task.projectId && state.settings?.projects?.find(p => p.id === task.projectId)?.maxConcurrent) || 1);
+}
+/** A queued task may start when its project has a free slot and no other project is running in the same directory. */
+export function hasSlot(task, occupied, state) {
+  const group = slotGroup(task);
+  if (occupied.some(o => o.cwd === task.cwd && slotGroup(o) !== group)) return false;
+  return occupied.filter(o => slotGroup(o) === group).length < projectLimit(task, state);
+}
+
 /** A single-owner kernel. store.save must durably replace the aggregate atomically. */
 export class Dispatcher {
   #tail = Promise.resolve();
@@ -79,10 +91,14 @@ export class Dispatcher {
     return this.#exclusive(async () => {
       const state = await this.store.load();
       if (state.paused) return;
-      // Any unresolved task owns the single automatic execution slot.
+      // Every unresolved, non-queued task owns one automatic execution slot. The global
+      // limit (settings.concurrency) and each project's limit (maxConcurrent) default to 1,
+      // which keeps the original single-slot behavior.
       const active = state.tasks.filter(t => !terminal.has(t.status) && t.owner !== 'human');
-      if (active.some(t => t.status !== 'queued')) return;
-      const task = active.find(t => (!t.admissionRetryAt || Date.now() >= t.admissionRetryAt) && !state.tasks.some(other => other.owner === 'human' && other.cwd === t.cwd));
+      const occupied = active.filter(t => t.status !== 'queued');
+      if (occupied.length >= globalLimit(state)) return;
+      const task = active.find(t => t.status === 'queued' && hasSlot(t, occupied, state) &&
+        (!t.admissionRetryAt || Date.now() >= t.admissionRetryAt) && !state.tasks.some(other => other.owner === 'human' && other.cwd === t.cwd));
       if (!task || task.status !== 'queued' || task.owner === 'human') return;
       if (task.resumeWindow?.expiresAt && Date.now() >= Date.parse(task.resumeWindow.expiresAt)) {
         task.status = 'blocked'; task.assessed = true; task.report = 'pending'; task.resumeNotice = false;
@@ -164,31 +180,42 @@ export class Dispatcher {
 
   reconcile() {
     return this.#exclusive(async () => {
-      const state = await this.store.load();
-      const task = state.tasks.find(t => !terminal.has(t.status) && t.owner !== 'human' && t.status !== 'queued');
-      if (!task || task.status === 'queued' || task.owner === 'human') return;
-      const attempt = task.attempts.at(-1);
-      const adapter = this.adapters[attempt.executor];
-      let result;
-      try { result = await bounded(() => adapter?.reconcile(structuredClone({ task, attempt }))); }
-      catch { result = { status: 'unknown' }; }
-      if (task.pendingStop && ['review', 'failed', 'stopped'].includes(result?.status)) {
-        const action = task.pendingStop;
-        attempt.status = 'stopped'; task.status = action === 'takeover' ? 'manual' : 'stopped';
-        task.owner = action === 'takeover' ? 'human' : 'scheduler';
-        if (task.wait) task.wait.status = 'suspended';
-        delete task.pendingStop;
-        task.events.push({ action, at: new Date().toISOString() });
-        await this.store.save(state); return;
+      const ids = (await this.store.load()).tasks
+        .filter(t => !terminal.has(t.status) && t.owner !== 'human' && t.status !== 'queued').map(t => t.id);
+      // Each running slot is reconciled independently; one task's failure must not skip the rest.
+      let failure;
+      for (const id of ids) {
+        try { await this.#reconcileOne(id); } catch (error) { failure ??= error; }
       }
-      // Once accepted, a later failure cannot become a pre-start rejection.
-      if (result?.status === 'rejected' && attempt.accepted)
-        result = { status: 'unknown' };
-      if (attempt.status === 'busy' && result?.status === 'ready') {
-        task.attempts.pop(); task.status = 'queued';
-      } else this.#apply(task, attempt, result);
-      await this.store.save(state);
+      if (failure) throw failure;
     });
+  }
+
+  async #reconcileOne(id) {
+    const state = await this.store.load();
+    const task = state.tasks.find(t => t.id === id);
+    if (!task || terminal.has(task.status) || task.status === 'queued' || task.owner === 'human') return;
+    const attempt = task.attempts.at(-1);
+    const adapter = this.adapters[attempt.executor];
+    let result;
+    try { result = await bounded(() => adapter?.reconcile(structuredClone({ task, attempt }))); }
+    catch { result = { status: 'unknown' }; }
+    if (task.pendingStop && ['review', 'failed', 'stopped'].includes(result?.status)) {
+      const action = task.pendingStop;
+      attempt.status = 'stopped'; task.status = action === 'takeover' ? 'manual' : 'stopped';
+      task.owner = action === 'takeover' ? 'human' : 'scheduler';
+      if (task.wait) task.wait.status = 'suspended';
+      delete task.pendingStop;
+      task.events.push({ action, at: new Date().toISOString() });
+      await this.store.save(state); return;
+    }
+    // Once accepted, a later failure cannot become a pre-start rejection.
+    if (result?.status === 'rejected' && attempt.accepted)
+      result = { status: 'unknown' };
+    if (attempt.status === 'busy' && result?.status === 'ready') {
+      task.attempts.pop(); task.status = 'queued';
+    } else this.#apply(task, attempt, result);
+    await this.store.save(state);
   }
 
   update(fn) {

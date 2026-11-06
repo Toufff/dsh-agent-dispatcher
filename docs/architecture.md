@@ -6,7 +6,7 @@ Opt-in Feishu notifications use a separate durable incident/outbox aggregate and
 
 Linear stores human-facing requirements, human assignees and acceptance. Each recipient's local DSH plugin owns routing. A remote issue must not select an executable, command line, local directory or session. Project mappings and enabled executor instances are configured locally.
 
-The first policy is an ordered list of enabled executors and FIFO tasks, with one automatically running task globally. Adapter types are separate from configured executor instances. Later policies can select an ordered candidate list through the same interface without changing execution semantics.
+The first policy is an ordered list of enabled executors and FIFO tasks. By default one automatic task runs globally; `settings.concurrency` raises the global cap and a project's `maxConcurrent` lets that project run several tasks at once (both default to 1). Every non-queued unresolved task holds one slot, reconciliation visits every slot, and tasks of different projects that share a directory never run together. Raise a project's limit only when each task isolates its own writes (for example a per-task git worktree). Adapter types are separate from configured executor instances. Later policies can select an ordered candidate list through the same interface without changing execution semantics.
 
 ## Kernel invariants
 

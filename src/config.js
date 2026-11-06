@@ -12,6 +12,8 @@ export const projectSchema = z.object({
   id, label: id, cwd: z.string().refine(path.isAbsolute, 'Use an absolute local directory'),
   category: z.enum(['business', 'test', 'archive']).optional(),
   executionInstructions: z.string().max(6000).optional(),
+  // Parallel tasks of one project share its cwd; raise above 1 only when each task isolates its own writes.
+  maxConcurrent: z.number().int().min(1).max(8).optional(),
   followup: z.object({ enabled: z.boolean(), commentAuthorIds: z.array(id).max(30),
     observeAfterExpiry: z.boolean().optional(),
     maxWakeups: z.number().int().min(1).max(50).default(8) }).strict().optional(),
@@ -27,6 +29,8 @@ export const notificationChannelSchema = z.object({
   includeExisting: z.boolean().default(false), completed: z.boolean().default(false)
 }).strict();
 export const settingsSchema = z.object({ executors: z.array(executorSchema), projects: z.array(projectSchema),
+  // Global cap on simultaneously running automatic tasks (default 1).
+  concurrency: z.number().int().min(1).max(8).optional(),
   notifications: z.object({ channels: z.array(notificationChannelSchema).max(10) }).strict().optional() })
   .strict().superRefine((value, ctx) => {
     for (const key of ['executors', 'projects']) {
