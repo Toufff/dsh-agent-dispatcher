@@ -78,6 +78,13 @@ function monitorRecovered(task) {
   delete task.wait.errorCount; delete task.wait.failureNotified;
 }
 
+/** First-round prompt for a Linear issue. The identifier leads so the agent never has to guess it from the title. */
+export function issuePrompt(issue) {
+  const id = issue.identifier ? `${issue.identifier} ` : '';
+  const link = issue.url ? `\nLinear issue: ${issue.identifier ?? issue.id} ${issue.url}` : '';
+  return `${id}${issue.title}${link}\n\n${issue.description ?? ''}\n\nReturn a concise implementation and verification summary.`;
+}
+
 export class Runtime {
   constructor({ store, ctx = {}, directory, linearFactory = token => new LinearClient(token), env = process.env, registry }) {
     this.store = store; this.ctx = ctx; this.directory = directory; this.env = env;
@@ -346,7 +353,7 @@ export class Runtime {
       const client = this.client(project.linear);
       for (const issue of batch ? batch.issues.filter(i => i.project?.id === project.linear.projectId && i.assignee?.id === project.linear.assigneeId && i.state?.id === project.linear.readyStateId && i.updatedAt >= project.linear.since) : await client.issues(project.linear)) {
         await this.submit({ projectId: project.id, title: `${issue.identifier} · ${issue.title}`,
-          prompt: `${issue.title}\n\n${issue.description ?? ''}\n\nReturn a concise implementation and verification summary.`,
+          prompt: issuePrompt(issue),
           source: `${project.linear.workspaceId}/${issue.id}`, round: project.linear.round,
           issue: { id: issue.id, url: issue.url, identifier: issue.identifier } });
       }
