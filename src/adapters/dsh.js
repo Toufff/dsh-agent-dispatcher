@@ -59,9 +59,22 @@ export class DshAdapter {
     return listed?.items?.find(item => item.sessionId === sessionId)?.cwd;
   }
 
+  /**
+   * The Workspace registered for a project directory, registering it when missing, so dispatched
+   * sessions appear under the project in the sidebar instead of "ungrouped". Grouping is cosmetic:
+   * any registry failure falls back to a plain cwd session.
+   */
+  async workspace(cwd) {
+    const registry = this.ctx.workspaceRegistry;
+    if (typeof registry?.resolveByPath !== 'function') return undefined;
+    try { return (await registry.resolveByPath(cwd)) ?? (typeof registry.create === 'function' ? await registry.create(cwd) : undefined); }
+    catch { return undefined; }
+  }
+
   async start({ task, attempt }) {
     const controller = this.ctx.sessionController;
     if (!controller) return { status: 'rejected', reason: 'DSH session service unavailable' };
+    const workspace = await this.workspace(task.cwd);
     if (attempt.resume) {
       const inspection = await this.inspect(attempt.sessionId);
       if (path.resolve((await this.cwd(attempt.sessionId, inspection)) || '') !== path.resolve(task.cwd))
@@ -70,8 +83,11 @@ export class DshAdapter {
       if (resolved.error) return { status: 'busy', reason: 'Session writer unavailable' };
       if (resolved.agent.status !== 'idle' || pending(resolved.agent).length)
         return { status: 'busy', reason: 'Session already has active or queued work' };
+      // Sessions created before Workspace attachment existed are attached on their next round.
+      if (typeof workspace?.attachSession === 'function') await workspace.attachSession(attempt.sessionId).catch(() => {});
     } else {
-      const created = await controller.create({ sessionId: attempt.sessionId, cwd: task.cwd,
+      const created = await controller.create({ sessionId: attempt.sessionId,
+        ...(workspace?.id ? { workspaceId: workspace.id } : { cwd: task.cwd }),
         ...(this.config.preset ? { agentPreset: this.config.preset } : {}) });
       // Do not lose a changed identity across a crash before receipt persistence.
       if (created.sessionId !== attempt.sessionId)

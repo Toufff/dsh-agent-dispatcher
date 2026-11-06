@@ -96,6 +96,37 @@ test('DSH 0.2.2: history that does not advance fails instead of looping', async 
   assert.equal((await adapter.reconcile({ attempt: { id: 'a', sessionId: 'session' } }).catch(e => ({ status: 'threw', e }))).status, 'threw');
 });
 
+test('new DSH sessions are created inside the project Workspace, registering it when missing', async () => {
+  const created = [], registered = [];
+  const registry = { resolveByPath: async () => undefined, create: async cwd => { registered.push(cwd); return { id: 'ws-1' }; } };
+  const sessionController = { create: async request => { created.push(request); return { sessionId: request.sessionId }; }, prompt: async () => {} };
+  const adapter = new DshAdapter({ workspaceRegistry: registry, sessionController });
+  const result = await adapter.start({ task: { cwd: 'D:/quant-mining', prompt: 'p' }, attempt: { id: 'a', sessionId: 's' } });
+  assert.equal(result.status, 'running');
+  assert.deepEqual(registered, ['D:/quant-mining']);
+  assert.equal(created[0].workspaceId, 'ws-1'); assert.equal(created[0].cwd, undefined);
+});
+
+test('Workspace grouping never blocks execution: no registry or a failing one falls back to cwd', async () => {
+  for (const workspaceRegistry of [undefined, { resolveByPath: async () => { throw new Error('registry down'); } }]) {
+    const created = [];
+    const adapter = new DshAdapter({ workspaceRegistry, sessionController: {
+      create: async request => { created.push(request); return { sessionId: request.sessionId }; }, prompt: async () => {} } });
+    assert.equal((await adapter.start({ task: { cwd: '/work', prompt: 'p' }, attempt: { id: 'a', sessionId: 's' } })).status, 'running');
+    assert.equal(created[0].cwd, '/work'); assert.equal(created[0].workspaceId, undefined);
+  }
+});
+
+test('resuming an ungrouped session attaches it to the project Workspace', async () => {
+  const attached = [];
+  const workspace = { id: 'ws-1', attachSession: async id => { attached.push(id); } };
+  const ctx = { agents: { get: () => undefined }, workspaceRegistry: { resolveByPath: async () => workspace },
+    sessionController: { inspect: async () => ({ meta: { cwd: process.cwd() }, events: [] }),
+      resolveAgent: async () => ({ agent: { status: 'idle', inbox: { nextTurn: [], nextStep: [] } } }), prompt: async () => {} } };
+  const result = await new DshAdapter(ctx).start({ task: { cwd: process.cwd(), prompt: 'p' }, attempt: { id: 'a', sessionId: 'old', resume: true } });
+  assert.equal(result.status, 'running'); assert.deepEqual(attached, ['old']);
+});
+
 test('DSH receipt uses its first completed turn, not a later unrelated session result', async () => {
  const events=[
   {type:'agent/inbox/spliced',data:{inserted:[{source:{rpcId:'attempt'}}]}},

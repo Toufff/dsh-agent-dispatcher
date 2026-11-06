@@ -15,7 +15,8 @@ export const domainSpec = defineDomain({ name: 'agent_dispatcher', version: 1, t
     paused: z.boolean(), revision: z.number(), outbox: z.array(z.json()), notifications: z.json().optional(), linearSync: z.record(z.string(), z.json()).optional() }), initial: initialState() } });
 
 export default class AgentDispatcher extends TypertRemoteService {
-  static inject = ['storageDomain', 'sessionController', 'agents', 'typert'];
+  // workspaceRegistry: dispatched sessions are attached to the project's Workspace so the UI groups them.
+  static inject = ['storageDomain', 'sessionController', 'agents', 'typert', 'workspaceRegistry'];
   static Config = Schema.object({ directory: Schema.string().description('Private runtime receipt directory (outside the source repository)') });
   constructor(ctx, config = {}) {
     super(ctx, 'agentDispatcher');
