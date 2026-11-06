@@ -6,7 +6,9 @@ const pending = agent => [...agent.inbox.nextTurn, ...agent.inbox.nextStep];
 function coldPending(events) {
   const queues = new Map();
   for (const event of events) if (event.type === 'agent/inbox/spliced') {
-    const { target, start, removedCount, inserted } = event.data;
+    const { target, start, inserted } = event.data;
+    // DSH 0.2.2 omits removedCount for pure insertions; an event without a usable queue window is unreadable.
+    const removedCount = event.data.removedCount ?? (Array.isArray(inserted) && Number.isInteger(start) ? 0 : undefined);
     if (removedCount === undefined) return null;
     const queue = queues.get(target) || [];
     queue.splice(start, removedCount, ...inserted); queues.set(target, queue);
@@ -14,14 +16,55 @@ function coldPending(events) {
   return [...queues.values()].flat();
 }
 
+// Largest page the history API is asked for; long sessions are read in several pages at one fixed cut.
+const HISTORY_PAGE = 1000;
+
 export class DshAdapter {
   constructor(ctx, config = {}) { this.ctx = ctx; this.config = config; }
+
+  /**
+   * Durable session events (and the session header when cheaply known).
+   * DSH <= 0.2.1 exposes sessionController.inspect. DSH 0.2.2 removed it: a live Agent's
+   * session gives an exact in-memory snapshot, and a cold session is read through the paged
+   * `events` history at one fixed cut, oldest page first.
+   */
+  async inspect(sessionId) {
+    const controller = this.ctx.sessionController;
+    if (typeof controller.inspect === 'function') return controller.inspect(sessionId);
+    const live = this.ctx.agents?.get(sessionId)?.session;
+    if (typeof live?.snapshotEvents === 'function') return { meta: live.header, events: live.snapshotEvents() };
+    if (typeof controller.events !== 'function') throw new Error('DSH session history API unavailable');
+    const signal = new AbortController().signal;
+    const pages = [];
+    let throughSeq, beforeSeq;
+    for (;;) {
+      const page = await controller.events({ address: { kind: 'session', sessionId }, maxMessages: HISTORY_PAGE,
+        ...(throughSeq === undefined ? {} : { throughSeq }), ...(beforeSeq === undefined ? {} : { beforeSeq }) }, signal);
+      throughSeq ??= page.cursor;
+      const events = (page.records || []).filter(r => r.type === 'event').map(r => r.event);
+      if (events.length) pages.unshift(events);
+      if (!page.hasMore || !events.length) break;
+      if (beforeSeq !== undefined && events[0].seq >= beforeSeq) throw new Error('DSH session history did not advance');
+      beforeSeq = events[0].seq;
+    }
+    return { events: pages.flat() };
+  }
+
+  /** The session's working directory: from its header when available, else from the session list. */
+  async cwd(sessionId, inspection) {
+    if (inspection?.meta?.cwd) return inspection.meta.cwd;
+    const controller = this.ctx.sessionController;
+    if (typeof controller.list !== 'function') return inspection?.meta?.cwd;
+    const listed = await controller.list({}, new AbortController().signal);
+    return listed?.items?.find(item => item.sessionId === sessionId)?.cwd;
+  }
+
   async start({ task, attempt }) {
     const controller = this.ctx.sessionController;
     if (!controller) return { status: 'rejected', reason: 'DSH session service unavailable' };
     if (attempt.resume) {
-      const inspection = await controller.inspect(attempt.sessionId);
-      if (path.resolve(inspection.meta.cwd || '') !== path.resolve(task.cwd))
+      const inspection = await this.inspect(attempt.sessionId);
+      if (path.resolve((await this.cwd(attempt.sessionId, inspection)) || '') !== path.resolve(task.cwd))
         return { status: 'rejected', reason: 'Session directory differs from project' };
       const resolved = await controller.resolveAgent(attempt.sessionId);
       if (resolved.error) return { status: 'busy', reason: 'Session writer unavailable' };
@@ -41,7 +84,7 @@ export class DshAdapter {
   async reconcile({ attempt }) {
     const agent = this.ctx.agents?.get(attempt.sessionId);
     if (attempt.status === 'busy') return { status: agent?.status === 'idle' && !pending(agent).length ? 'ready' : 'busy' };
-    const inspection = await this.ctx.sessionController.inspect(attempt.sessionId);
+    const inspection = await this.inspect(attempt.sessionId);
     const events = inspection.events;
     const index = events.findIndex(event => event.type === 'agent/inbox/spliced'
       && event.data.inserted?.some(message => belongs(message, attempt)));
@@ -61,7 +104,7 @@ export class DshAdapter {
   async idle({ attempt }) {
     const agent = this.ctx.agents?.get(attempt.sessionId);
     if (agent) return agent.status === 'idle' && pending(agent).length === 0;
-    const inspection = await this.ctx.sessionController.inspect(attempt.sessionId);
+    const inspection = await this.inspect(attempt.sessionId);
     const last = inspection.events.findLast(e => ['turn/start', 'turn/end'].includes(e.type));
     const queued = coldPending(inspection.events);
     return last?.type === 'turn/end' && queued !== null && queued.length === 0;
