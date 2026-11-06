@@ -54,9 +54,17 @@ export function inspectOutcome(summary, { previous = [], required = false } = {}
   if (result.status === 'continue' && (!result.next.trim() || !result.remaining.length)) return invalid('Continue requires remaining work and a concrete next step.');
   // A blocked next step describes what follows the dependency; it is not a command to execute.
   if (['blocked', 'decision'].includes(result.status) && (!result.blockers.length || !result.remaining.length)) return invalid('Blocked/decision requires remaining work and named blockers.');
+  // A "decision" stage that waits on another party (not a local permission) is an external block.
+  // Classify it as blocked instead of rejecting the round: no permission is inferred or granted.
+  let reclassified = false;
+  for (const item of result.workItems || []) if (item.status === 'decision' && item.blocker && item.blocker.kind !== 'permission') {
+    item.status = 'blocked'; reclassified = true;
+  }
+  if (reclassified && result.status === 'decision' && !result.wait && !(result.workItems || []).some(i => i.status === 'decision')) result.status = 'blocked';
   const flowError = workflowError(result, previous, required);
   if (flowError) return invalid(flowError);
-  return { outcome: result, error: null, ...(missingClose ? { framingRecovery: 'missing-close-tag' } : {}) };
+  const recovery = [missingClose && 'missing-close-tag', reclassified && 'external-decision-as-blocked'].filter(Boolean).join(',');
+  return { outcome: result, error: null, ...(recovery ? { framingRecovery: recovery } : {}) };
 }
 export const parseOutcome = summary => inspectOutcome(summary).outcome;
 

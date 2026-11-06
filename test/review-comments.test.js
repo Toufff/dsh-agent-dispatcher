@@ -5,6 +5,7 @@ import { MemoryStore } from '../src/dispatcher.js';
 import { initialState, settingsSchema } from '../src/config.js';
 import { Runtime } from '../src/runtime.js';
 import { workItems } from './workflow-fixtures.js';
+import { inspectOutcome } from '../src/outcome.js';
 
 const done = `<dispatch-result>${JSON.stringify({ status: 'complete', workItems: workItems('complete'), evidence: ['ok'], remaining: [], next: '', progress: 'done', blockers: [] })}</dispatch-result>`;
 
@@ -76,6 +77,34 @@ test('no continuation for old comments, untrusted authors, closed issues, disabl
   await runtime.reviewComments();
   assert.equal(calls.activity, 0);
   assert.equal((await runtime.snapshot()).tasks.length, 1);
+});
+
+test('an external "decision" stage is classified as blocked, a permission decision is not', () => {
+  const contract = (kind) => `<dispatch-result>${JSON.stringify({ status: 'decision', evidence: ['ok'], remaining: ['pick a path'], next: '', progress: 'x',
+    blockers: [{ owner: 'owner', reason: 'choose', resumeWhen: 'reply' }],
+    workItems: [{ id: 'a', title: 'done', status: 'done', dependsOn: [], action: '', evidence: ['e'] },
+      { id: 'b', title: 'next', status: 'decision', dependsOn: ['a'], action: '', evidence: [],
+        blocker: { kind, owner: 'owner', reason: 'choose', resumeWhen: 'reply' } }] })}</dispatch-result>`;
+  const external = inspectOutcome(contract('external'), { required: true });
+  assert.equal(external.error, null);
+  assert.equal(external.outcome.status, 'blocked');
+  assert.equal(external.outcome.workItems[1].status, 'blocked');
+  assert.equal(external.framingRecovery, 'external-decision-as-blocked');
+  const permission = inspectOutcome(contract('permission'), { required: true });
+  assert.equal(permission.outcome.status, 'decision');
+  assert.equal(permission.framingRecovery, undefined);
+});
+
+test('blocked and unclassified rounds continue on trusted comments; live waits are left to the monitor', async () => {
+  const at = later();
+  const list = () => [{ id: 'c1', body: 'pick (a)', createdAt: at, updatedAt: at, user: { id: 'peer' } }];
+  for (const [status, wait, expected] of [['blocked', undefined, 2], ['needs_result', undefined, 2], ['decision', undefined, 2],
+    ['blocked', { status: 'watching' }, 1]]) {
+    const { runtime } = await fixture({ comments: list });
+    await runtime.dispatcher.update(s => { s.tasks[0].status = status; if (wait) s.tasks[0].wait = wait; });
+    await runtime.reviewComments();
+    assert.equal((await runtime.snapshot()).tasks.length, expected, `${status} ${wait?.status || ''}`);
+  }
 });
 
 test('checks are throttled and stop at the wake-up limit', async () => {

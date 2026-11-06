@@ -79,6 +79,7 @@ function monitorRecovered(task) {
 }
 
 const reviewCommentInterval = 120000;
+const reviewStatuses = ['review', 'blocked', 'decision', 'needs_result'];
 
 /** First-round prompt for a Linear issue. The identifier leads so the agent never has to guess it from the title. */
 export function issuePrompt(issue) {
@@ -597,8 +598,9 @@ export class Runtime {
     const own = new Set(state.outbox.map(i => i.id));
     this.reviewCheckedAt ||= new Map();
     for (const task of state.tasks) {
-      if (!currentTask(task, state) || task.status !== 'review' || !task.assessed || task.owner === 'human' ||
-          task.pendingStop || !task.issue?.id) continue;
+      // Rounds that ended waiting on people. Live structured waits stay with monitor().
+      if (!currentTask(task, state) || !reviewStatuses.includes(task.status) || !task.assessed || task.owner === 'human' ||
+          task.pendingStop || !task.issue?.id || ['watching', 'validating', 'expired'].includes(task.wait?.status)) continue;
       const project = state.settings.projects.find(p => p.id === task.projectId);
       const policy = project?.followup;
       if (!policy?.enabled || !policy.reviewComments || !project.linear?.enabled) continue;
