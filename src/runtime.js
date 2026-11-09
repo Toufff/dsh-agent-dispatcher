@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { stat } from 'node:fs/promises';
+import { stat, readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { Dispatcher, terminal } from './dispatcher.js';
 import { outcomeProtocol, parseOutcome, inspectOutcome, outcomeReports } from './outcome.js';
@@ -80,6 +80,16 @@ function monitorRecovered(task) {
 
 const reviewCommentInterval = 120000;
 const reviewStatuses = ['review', 'blocked', 'decision', 'needs_result'];
+// A finished (review) round is not waiting for data; only rounds that stopped short are woken.
+const dataWakeStatuses = ['blocked', 'decision', 'needs_result'];
+const dataWords = /数据|快照|回补|补齐|到位|缺口|snapshot|data|backfill/i;
+/** True when an unfinished stage or a reported blocker is about missing data. */
+export function waitsForData(task) {
+  const text = [...(task.workItems || []).filter(i => i.status !== 'done' && i.blocker)
+      .map(i => `${i.title} ${i.blocker.reason} ${i.blocker.resumeWhen}`),
+    ...(task.outcome?.blockers || []).map(b => `${b.reason} ${b.resumeWhen}`)].join('\n');
+  return dataWords.test(text);
+}
 
 /** First-round prompt for a Linear issue. The identifier leads so the agent never has to guess it from the title. */
 export function issuePrompt(issue) {
@@ -625,7 +635,11 @@ export class Runtime {
       // Only when the audits are used up too is the comment announced once (Linear + panel) and held.
       const atLimit = (task.reviewWakeups || 0) >= (policy.maxWakeups || 8);
       const audits = task.reviewAudits || 0, canAudit = audits < (policy.maxAudits ?? 3);
-      if (!allowed.length || atLimit && !canAudit && task.reviewLimitNotified) continue;
+      // trustReceiverComments: the owner may share the receiver's Linear account (e.g. another device of
+      // the same person). Such a comment counts only when it is not this host's own report (outbox id),
+      // not an agent writeback (selfCommentPrefix) and was posted after the round settled.
+      const receiver = policy.trustReceiverComments ? project.linear.assigneeId : null;
+      if (!allowed.length && !receiver || atLimit && !canAudit && task.reviewLimitNotified) continue;
       const [source] = JSON.parse(task.key);
       if (state.tasks.some(t => t.key === JSON.stringify([source, `continue:${task.id}`]))) continue;
       if (Date.now() < (this.reviewCheckedAt.get(task.id) || 0)) continue;
@@ -635,7 +649,11 @@ export class Runtime {
       try { activity = await this.client(project.linear).activity(project.linear, task.issue.id, task.issue.id); }
       catch { continue; }
       const since = Date.parse(task.createdAt || 0), seen = new Set(task.followupSeen || []);
-      const comments = (activity.comments || []).filter(c => allowed.includes(c.user?.id) && !own.has(c.id) &&
+      const settled = Date.parse(task.events.findLast(e => e.action === task.status)?.at || task.createdAt || 0);
+      const prefix = (policy.selfCommentPrefix ?? 'ZRSTUDIO').trim();
+      const fromReceiver = c => receiver && c.user?.id === receiver && Date.parse(c.createdAt) > settled &&
+        !(prefix && String(c.body || '').trimStart().startsWith(prefix));
+      const comments = (activity.comments || []).filter(c => (allowed.includes(c.user?.id) || fromReceiver(c)) && !own.has(c.id) &&
         !seen.has(c.id) && Date.parse(c.createdAt) > since).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       if (!comments.length) continue;
       if (atLimit && !canAudit) {
@@ -661,6 +679,51 @@ export class Runtime {
       });
     }
   }
+  /**
+   * Data wake: when the project's data version file (followup.dataVersionFile) names a new version,
+   * a round that settled waiting for data (blocked/decision/needs_result with an unfinished stage or
+   * blocker about data) gets one continuation to check whether that data has arrived. Each version
+   * wakes a chain at most once and counts toward maxWakeups. Pending decisions stay unapproved.
+   */
+  async dataWakes() {
+    const state = await this.store.load();
+    if (state.paused) return;
+    for (const project of state.settings.projects) {
+      const policy = project.followup;
+      if (!policy?.enabled || !policy.dataVersionFile || !project.linear?.enabled) continue;
+      let version;
+      try { version = (await readFile(policy.dataVersionFile, 'utf8')).trim(); } catch { continue; }
+      if (!/^[0-9A-Za-z._-]{1,80}$/.test(version)) continue;
+      for (const task of state.tasks) {
+        if (task.projectId !== project.id || !currentTask(task, state) || !dataWakeStatuses.includes(task.status) ||
+            !task.assessed || task.owner === 'human' || task.pendingStop || !task.issue?.id ||
+            ['watching', 'validating', 'expired'].includes(task.wait?.status)) continue;
+        const [source] = JSON.parse(task.key);
+        if (state.tasks.some(t => t.key === JSON.stringify([source, `continue:${task.id}`]))) continue;
+        // First sight records the version the round already saw; only a later version wakes it.
+        if (!task.dataVersion || task.dataVersion === version || !waitsForData(task) ||
+            (task.reviewWakeups || 0) >= (policy.maxWakeups || 8)) {
+          if (task.dataVersion !== version) await this.dispatcher.update(s => {
+            const live = s.tasks.find(t => t.id === task.id);
+            if (live && currentTask(live, s) && live.status === task.status) live.dataVersion = version;
+          });
+          continue;
+        }
+        try { await this.client(project.linear).eligible(project.linear, task.issue.id); } catch { continue; }
+        const issue = task.issue.identifier || 'this issue';
+        await this.command({ action: 'continue', id: task.id, trimHistory: true, prompt: `DATA UPDATE for ${issue}: a new data version ${version} is now available (the previous round saw ${task.dataVersion}). The previous round stopped waiting for data. First check whether the data it was waiting for is now present and usable (table coverage, date ranges, fields, availability times). If it is, continue the stages that were blocked on it. If it is still missing or incomplete, do not redo finished work: return blocked again and list exactly what is still missing. Pending owner decisions and approvals remain unapproved; this update does not grant them.` });
+        await this.dispatcher.update(s => {
+          const next = s.tasks.find(t => t.key === JSON.stringify([source, `continue:${task.id}`]));
+          if (!next || next.reviewWakeups !== undefined) return;
+          next.reviewWakeups = (task.reviewWakeups || 0) + 1;
+          next.reviewAudits = task.reviewAudits || 0;
+          next.followupSeen = [...(task.followupSeen || [])];
+          next.dataVersion = version;
+          next.events.push({ action: 'data-wake', at: new Date().toISOString(), version });
+        });
+      }
+    }
+  }
   async cycle() {
     if (this.cycling) return;
     this.cycling = true;
@@ -671,6 +734,7 @@ export class Runtime {
       await phase('Local timers', () => this.monitor({ localOnly: true }));
       await phase('Linear sync', () => this.sync.run());
       await phase('Review comments', () => this.reviewComments());
+      await phase('Data wakes', () => this.dataWakes());
       await phase('Execution', async () => { await this.dispatcher.tick(); await this.assess(); });
       await phase('Linear reporting', () => this.report());
       // Independent single-flight delivery. Slow notification I/O does not hold

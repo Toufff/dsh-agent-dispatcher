@@ -103,6 +103,10 @@ Set `followup.reviewComments: true` (panel: **本轮已结束（待验收、受�
 
 The dispatcher owns the full workItems ledger. Each round's prompt lists unfinished items in full and only an index (ID and title, latest 40) of completed ones; a result may omit completed items, which are restored from the stored ledger in their original order, and dependsOn may reference them. Unfinished items must still be reported, and a completed item cannot be reopened. So the per-round result stays small however long a follow-up chain grows; the 200-item schema cap applies to one round's report only.
 
+When the owner uses the same Linear account as the receiver (for example from another device), set `followup.trustReceiverComments: true`: a comment from the receiver account then also continues a settled round, but only when it is not one of this host's reports (outbox id), does not start with `followup.selfCommentPrefix` (default `ZRSTUDIO`; agents must start their own writebacks with it) and was posted after the round settled, so a round's own comments never wake it.
+
+Set `followup.dataVersionFile` to an absolute file holding the current data version (for example a snapshot id). When it changes, a current round that settled as blocked, decision or needs_result with an unfinished stage or blocker about data gets one continuation (`data-wake` event) to check whether the data arrived; each version wakes a chain once, counts toward `maxWakeups`, and finished (review) rounds are never woken.
+
 A workItem marked `decision` whose blocker kind is not `permission` (for example an external owner choosing between two paths) is classified as `blocked` instead of failing result validation; the task event records `external-decision-as-blocked`. Only `permission` blockers stay local decisions.
 
 For maintenance startup, `DISPATCH_START_PAUSED=1` persists a paused queue before the host begins cycling. The panel can explicitly resume after configuration is verified.

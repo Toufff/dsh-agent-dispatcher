@@ -20,6 +20,11 @@ export const projectSchema = z.object({
     reviewComments: z.boolean().optional(),
     // Audit rounds (fresh session, new wake-up count) allowed after maxWakeups; then comments are held.
     maxAudits: z.number().int().min(0).max(20).optional(),
+    // Owner shares the receiver's Linear account: its comments after a settled round also continue.
+    trustReceiverComments: z.boolean().optional(),
+    selfCommentPrefix: z.string().max(40).optional(),
+    // File holding the current data version (one id). A new version wakes rounds waiting for data.
+    dataVersionFile: z.string().refine(path.isAbsolute, 'Use an absolute local file').optional(),
     maxWakeups: z.number().int().min(1).max(50).default(8) }).strict().optional(),
   linear: z.object({ workspaceId: id, projectId: id, assigneeId: id, readyStateId: id,
     reviewStateId: id, activeStateId: id.optional(), blockedStateId: id.optional(), tokenEnv: z.string().regex(/^[A-Z][A-Z0-9_]+$/),

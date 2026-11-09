@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
+import path from 'node:path';
 import { MemoryStore } from '../src/dispatcher.js';
 import { initialState, settingsSchema } from '../src/config.js';
 import { Runtime } from '../src/runtime.js';
@@ -212,6 +213,52 @@ test('automatic follow-ups trim the oldest instructions instead of failing on a 
   assert.match(next.ownerInstructions[0], /trimmed/);
   assert.ok(next.ownerInstructions.join('\n').length <= 100000);
   assert.match(next.ownerInstructions.at(-1), /x{100}/);
+});
+
+test('owner comments from the receiver account continue only when trusted, settled and not self-written', async () => {
+  const settledAt = new Date(Date.now() - 10000).toISOString(), during = new Date(Date.now() - 20000).toISOString(), at = later();
+  const cases = [
+    [{ trustReceiverComments: true }, [{ id: 'o1', body: 'owner 决定：两个都要', createdAt: at, updatedAt: at, user: { id: 'me' } }], 2],
+    [{ trustReceiverComments: true }, [{ id: 'o2', body: 'ZRSTUDIO：第 74 轮结论', createdAt: at, updatedAt: at, user: { id: 'me' } }], 1],
+    [{ trustReceiverComments: true }, [{ id: 'o3', body: 'owner 中途说明', createdAt: during, updatedAt: during, user: { id: 'me' } }], 1],
+    [{}, [{ id: 'o4', body: 'owner 决定', createdAt: at, updatedAt: at, user: { id: 'me' } }], 1]];
+  for (const [followup, list, expected] of cases) {
+    const { runtime } = await fixture({ followup, comments: () => list });
+    await runtime.dispatcher.update(s => { const t = s.tasks[0]; t.createdAt = new Date(Date.now() - 60000).toISOString(); t.status = 'decision'; t.events.push({ action: 'decision', at: settledAt }); });
+    await runtime.reviewComments();
+    assert.equal((await runtime.snapshot()).tasks.length, expected, JSON.stringify(list[0].body));
+  }
+});
+
+test('a new data version wakes a round waiting for data once; others are left alone', async () => {
+  const { mkdtemp, writeFile } = await import('node:fs/promises');
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'qm-ver-')), file = path.join(dir, 'current.txt');
+  await writeFile(file, 'v1');
+  const blockedOn = reason => s => { const t = s.tasks[0]; t.status = 'blocked';
+    t.workItems = [{ id: 'need', title: 'next stage', status: 'blocked', dependsOn: [], action: '', evidence: [], blocker: { kind: 'external', owner: 'touf', reason, resumeWhen: 'touf 告知' } }];
+    t.outcome = { blockers: [{ owner: 'touf', reason, resumeWhen: 'touf 告知' }] }; };
+  const { runtime } = await fixture({ followup: { dataVersionFile: file } });
+  await runtime.dispatcher.update(blockedOn('6 类数据未到位（分钟线、逐笔委托）'));
+  await runtime.dataWakes();                                  // first sight: baseline only
+  assert.equal((await runtime.snapshot()).tasks.length, 1);
+  assert.equal((await runtime.store.load()).tasks[0].dataVersion, 'v1');
+  await writeFile(file, 'v2');
+  await runtime.dataWakes();
+  let state = await runtime.snapshot();
+  assert.equal(state.tasks.length, 2);
+  assert.match(state.tasks[1].prompt, /DATA UPDATE/);
+  assert.equal(state.tasks[1].dataVersion, 'v2');
+  assert.equal(state.tasks[1].events.at(-1).action, 'data-wake');
+  await runtime.dataWakes();                                  // same version: no second wake
+  assert.equal((await runtime.snapshot()).tasks.length, 2);
+
+  for (const setup of [blockedOn('等 owner 决定交付模式'), s => { s.tasks[0].status = 'review'; }]) {
+    await writeFile(file, 'v1');
+    const r = (await fixture({ followup: { dataVersionFile: file } })).runtime;
+    await r.dispatcher.update(setup);
+    await r.dataWakes(); await writeFile(file, 'v2'); await r.dataWakes();
+    assert.equal((await r.snapshot()).tasks.length, 1);
+  }
 });
 
 test('checks are throttled and stop at the wake-up limit', async () => {
