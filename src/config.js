@@ -18,6 +18,8 @@ export const projectSchema = z.object({
     observeAfterExpiry: z.boolean().optional(),
     // New trusted comments on a finished (review) issue start a continuation in the original session.
     reviewComments: z.boolean().optional(),
+    // Audit rounds (fresh session, new wake-up count) allowed after maxWakeups; then comments are held.
+    maxAudits: z.number().int().min(0).max(20).optional(),
     maxWakeups: z.number().int().min(1).max(50).default(8) }).strict().optional(),
   linear: z.object({ workspaceId: id, projectId: id, assigneeId: id, readyStateId: id,
     reviewStateId: id, activeStateId: id.optional(), blockedStateId: id.optional(), tokenEnv: z.string().regex(/^[A-Z][A-Z0-9_]+$/),

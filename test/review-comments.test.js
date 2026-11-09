@@ -177,9 +177,46 @@ test('state-only reports never create a Linear comment', async () => {
   assert.ok(calls.some(q => q.includes('commentCreate')));
 });
 
+test('at the wake-up limit a comment starts an audit round in a fresh session with a new count', async () => {
+  let n = 0;
+  const { runtime } = await fixture({ followup: { maxWakeups: 1, maxAudits: 1 },
+    comments: () => { const at = later(); return [{ id: `c${n++}`, body: `request ${n}`, createdAt: at, updatedAt: at, user: { id: 'peer' } }]; } });
+  await runtime.reviewComments();                       // wake 1, original session
+  await runtime.dispatcher.tick(); await runtime.assess();
+  runtime.reviewCheckedAt.clear();
+  await runtime.reviewComments();                       // limit reached: audit round
+  let state = await runtime.snapshot();
+  const audit = state.tasks[2];
+  assert.equal(audit.session, undefined);
+  assert.equal(audit.reviewWakeups, 0);
+  assert.equal(audit.reviewAudits, 1);
+  assert.match(audit.prompt, /AUDIT ROUND/);
+  assert.equal(audit.events.at(-1).action, 'review-audit');
+  // Audit used up and its own count used up: the next comment is only announced.
+  await runtime.dispatcher.tick(); await runtime.assess();
+  await runtime.dispatcher.update(s => { s.tasks[2].reviewWakeups = 1; });
+  runtime.reviewCheckedAt.clear();
+  await runtime.reviewComments();
+  state = await runtime.snapshot();
+  assert.equal(state.tasks.length, 3);
+  assert.equal(state.tasks[2].reviewLimitNotified, true);
+});
+
+test('automatic follow-ups trim the oldest instructions instead of failing on a long history', async () => {
+  let n = 0;
+  const { runtime } = await fixture({ comments: () => { const at = later(); return [{ id: `c${n++}`, body: 'x'.repeat(7900), createdAt: at, updatedAt: at, user: { id: 'peer' } }]; } });
+  await runtime.dispatcher.update(s => { s.tasks[0].ownerInstructions = Array.from({ length: 14 }, (_, i) => `old ${i} ${'y'.repeat(7900)}`); });
+  await runtime.reviewComments();
+  const next = (await runtime.snapshot()).tasks[1];
+  assert.ok(next, 'continuation created');
+  assert.match(next.ownerInstructions[0], /trimmed/);
+  assert.ok(next.ownerInstructions.join('\n').length <= 100000);
+  assert.match(next.ownerInstructions.at(-1), /x{100}/);
+});
+
 test('checks are throttled and stop at the wake-up limit', async () => {
   let n = 0;
-  const { runtime, calls } = await fixture({ followup: { maxWakeups: 1 },
+  const { runtime, calls } = await fixture({ followup: { maxWakeups: 1, maxAudits: 0 },
     comments: () => { const at = later(); return [{ id: `c${n++}`, body: 'more', createdAt: at, updatedAt: at, user: { id: 'peer' } }]; } });
   await runtime.reviewComments();
   await runtime.dispatcher.tick(); await runtime.assess();

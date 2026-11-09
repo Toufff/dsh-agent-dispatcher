@@ -13,7 +13,7 @@ export function reportBody(task, mapping, secrets) {
   const attention = attentionFor(task, { tasks: [task], settings: { projects: [] } });
   if (attention) body += `\n\n下一责任：${attention.owner}。${attention.reason}。${attention.action}`;
   if (task.workItems) body += `\n阶段进度（执行者报告，非独立验收）：${task.workItems.filter(i => i.status === 'done').length}/${task.workItems.length} 完成。`;
-  if (task.reviewLimitNotified) body += `\n\n评论自动续办已达上限（本单已自动续办 ${task.reviewWakeups || 0} 次）：之后的新评论不会再自动执行。需要接收方本地负责人在派发面板手动继续，或调高唤醒上限。`;
+  if (task.reviewLimitNotified) body += `\n\n评论自动续办已达上限，自动审核轮次（${task.reviewAudits || 0} 次）也已用完：之后的新评论不会再自动执行。需要接收方本地负责人在派发面板手动继续，或调高唤醒上限 / 审核次数。`;
   if (mapping?.shareProgress && shareable(task.outcome?.publicSummary, secrets))
     body += `\n\n${task.outcome.publicSummary}`;
   if (task.wait) {
