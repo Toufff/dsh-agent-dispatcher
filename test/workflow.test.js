@@ -30,7 +30,8 @@ test('ledger rejects partial completion, lost stages, ready-work blocking and de
   assert.match(inspectOutcome(envelope('blocked', items)).error, /ready/);
   assert.match(inspectOutcome(envelope('complete', items)).error, /ready/);
   assert.equal(inspectOutcome(envelope('continue', items)).error, null);
-  assert.match(inspectOutcome(envelope('complete', [done('code')]), { previous: items }).error, /drop/);
+  // Omitting open stages cannot fake completion: they are restored and still block "complete".
+  assert.match(inspectOutcome(envelope('complete', [done('code')]), { previous: items }).error, /ready/);
   assert.match(inspectOutcome(envelope('continue', [ready('a', ['b']), ready('b', ['a'])])).error, /cycles/);
   assert.match(inspectOutcome(envelope('complete', [{ ...done('code'), evidence: [] }])).error, /evidence/);
   assert.match(inspectOutcome(envelope('blocked', [blocked('deploy')]), { previous: [done('deploy')] }).error, /replay/);

@@ -130,9 +130,10 @@ test('the dispatcher keeps completed stages; a round reports only open and new i
   assert.equal(result.error, null);
   assert.equal(result.outcome.workItems.length, 152);
   assert.deepEqual(result.outcome.workItems.slice(-2).map(i => [i.id, i.status]), [['open', 'done'], ['new', 'ready']]);
-  // Dropping an unfinished stage is still rejected.
-  const dropped = inspectOutcome(round([{ id: 'new', title: 'new stage', status: 'ready', dependsOn: [], action: 'next step', evidence: [] }]), { previous, required: true });
-  assert.match(dropped.error, /unfinished/);
+  // An omitted unfinished stage is kept open with its stored state, not dropped and not a rejection.
+  const omitted = inspectOutcome(round([{ id: 'new', title: 'new stage', status: 'ready', dependsOn: [], action: 'next step', evidence: [] }]), { previous, required: true });
+  assert.equal(omitted.error, null);
+  assert.equal(omitted.outcome.workItems.find(i => i.id === 'open').status, 'ready');
   // Reopening a completed stage is still rejected.
   const replay = inspectOutcome(round([{ id: 's1', title: 'stage 1', status: 'ready', dependsOn: [], action: 'redo', evidence: [] },
     { id: 'open', title: 'open stage', status: 'ready', dependsOn: ['s3'], action: 'do it', evidence: [] }]), { previous, required: true });

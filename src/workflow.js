@@ -20,7 +20,9 @@ export const workItemsSchema = z.array(z.object({
 export function mergeLedger(items, previous = []) {
   if (!items || !previous.length) return items;
   const reported = new Map(items.map(item => [item.id, item]));
-  const merged = previous.map(old => reported.get(old.id) || (old.status === 'done' ? old : null)).filter(Boolean);
+  // An omitted item keeps its stored state: done stays done, an unfinished one stays open (it is never
+  // silently dropped, and the round is not rejected for leaving it out).
+  const merged = previous.map(old => reported.get(old.id) || old);
   const known = new Set(previous.map(old => old.id));
   return [...merged, ...items.filter(item => !known.has(item.id))];
 }
