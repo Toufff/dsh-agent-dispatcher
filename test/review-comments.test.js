@@ -220,7 +220,8 @@ test('owner comments from the receiver account continue only when trusted, settl
   const cases = [
     [{ trustReceiverComments: true }, [{ id: 'o1', body: 'owner 决定：两个都要', createdAt: at, updatedAt: at, user: { id: 'me' } }], 2],
     [{ trustReceiverComments: true }, [{ id: 'o2', body: 'ZRSTUDIO：第 74 轮结论', createdAt: at, updatedAt: at, user: { id: 'me' } }], 1],
-    [{ trustReceiverComments: true }, [{ id: 'o3', body: 'owner 中途说明', createdAt: during, updatedAt: during, user: { id: 'me' } }], 1],
+    [{ trustReceiverComments: true }, [{ id: 'o3', body: '中途说明', createdAt: during, updatedAt: during, user: { id: 'me' } }], 1],
+    [{ trustReceiverComments: true }, [{ id: 'o5', body: 'owner 追加要求（轮次中发）', createdAt: during, updatedAt: during, user: { id: 'me' } }], 2],
     [{}, [{ id: 'o4', body: 'owner 决定', createdAt: at, updatedAt: at, user: { id: 'me' } }], 1]];
   for (const [followup, list, expected] of cases) {
     const { runtime } = await fixture({ followup, comments: () => list });

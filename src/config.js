@@ -23,6 +23,7 @@ export const projectSchema = z.object({
     // Owner shares the receiver's Linear account: its comments after a settled round also continue.
     trustReceiverComments: z.boolean().optional(),
     selfCommentPrefix: z.string().max(40).optional(),
+    ownerCommentPrefix: z.string().max(40).optional(),
     // File holding the current data version (one id). A new version wakes rounds waiting for data.
     dataVersionFile: z.string().refine(path.isAbsolute, 'Use an absolute local file').optional(),
     maxWakeups: z.number().int().min(1).max(50).default(8) }).strict().optional(),
