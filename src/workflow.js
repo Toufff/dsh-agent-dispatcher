@@ -8,8 +8,31 @@ export const workItemsSchema = z.array(z.object({
   action: z.string().max(2000), evidence: z.array(text).max(20),
   blocker: z.object({ kind: z.enum(['external', 'task', 'permission', 'time']),
     owner: text, reason: text, resumeWhen: text }).strict().optional()
-// The ledger only grows (old items are never dropped), so long follow-up chains need room.
+// Bounds one round's reported items. The dispatcher keeps completed items itself (mergeLedger),
+// so this limit no longer grows with the length of a follow-up chain.
 }).strict()).min(1).max(200);
+
+/**
+ * The dispatcher owns the full ledger. A round may omit previously completed (done) items;
+ * they are restored from the stored ledger in their original order. Unfinished items must
+ * still be reported, so open work can never silently disappear.
+ */
+export function mergeLedger(items, previous = []) {
+  if (!items || !previous.length) return items;
+  const reported = new Map(items.map(item => [item.id, item]));
+  const merged = previous.map(old => reported.get(old.id) || (old.status === 'done' ? old : null)).filter(Boolean);
+  const known = new Set(previous.map(old => old.id));
+  return [...merged, ...items.filter(item => !known.has(item.id))];
+}
+
+/** Prompt view of the stored ledger: unfinished items in full, completed items as a compact index. */
+export function ledgerPrompt(items = [], recentDone = 40) {
+  const open = items.filter(i => i.status !== 'done'), done = items.filter(i => i.status === 'done');
+  const shown = done.slice(-recentDone), hidden = done.length - shown.length;
+  return `Unfinished workItems (report every one of these, with its current status):\n${JSON.stringify(open)}\n` +
+    `Completed workItems retained by the dispatcher (${done.length}; do NOT repeat them in your result, reference their IDs in dependsOn when needed${hidden ? `; ${hidden} older ones omitted here are retained too` : ''}):\n` +
+    (shown.map(i => `- ${i.id}: ${i.title}`).join('\n') || '- none');
+}
 
 export const decisionItems = task => (task.workItems || []).filter(i =>
   i.status !== 'done' && (i.status === 'decision' || i.blocker?.kind === 'permission'));
@@ -42,7 +65,7 @@ export function workflowError(outcome, previous = [], required = false) {
   if (byId.size !== items.length) return 'workItems IDs must be unique.';
   for (const old of previous) {
     const item = byId.get(old.id);
-    if (!item) return 'Do not drop previously recorded workItems; retain completed and blocked stages.';
+    if (!item) return 'Do not drop previously recorded unfinished workItems; report every ready, blocked and decision stage.';
     if (old.status === 'done' && item.status !== 'done') return 'Do not replay completed workItems; add a new verification or correction item.';
   }
   const visiting = new Set(), visited = new Set();
@@ -80,7 +103,7 @@ export function workflowError(outcome, previous = [], required = false) {
 
 export const workflowProtocol = `
 Independent waiting stages MUST retain a structured wait even when a different stage requires permission. For mixed permission/wait results, bind wait.workItemIds to the stable IDs of independent blocked stages with completed dependencies; never include a permission stage. A time wait requires a time blocker; Linear waits bind external blockers (or time blockers with recheckAt). Do not put dates only in prose. Use decision plus a scoped wait when human attention and independent monitoring coexist. On wake perform ONLY scoped already-authorized work, retain every pending decision and never interpret a timer/reply as approval.
-REQUIRED workItems ledger: cover the ENTIRE requested goal, not just this turn. Each item has {"id":"stable-id","title":"stage or requirement","status":"ready|blocked|decision|done","dependsOn":[],"action":"authorized next action or empty","evidence":[]}. Blocked/decision items also require "blocker":{"kind":"external|task|permission|time","owner":"actual responsible party","reason":"precise missing input","resumeWhen":"observable condition"}. Keep stable IDs, never drop old items, never replay done items. Done requires actual evidence; evidence is a claim pending independent verification/human acceptance. Record code, merge, deployment and acceptance as separate items WHEN requested; do not invent extra scope. A production permission blocker must not stop independent local development. Only mark ready actions already permitted by current local instructions. If any ready item remains, return continue even if another item is blocked. The ledger never grants permission or changes local policy. If all items are blocked, declare a real wait or a concrete local decision; do not call an unknown dependency an external blocker without checking its applicability.
+REQUIRED workItems ledger: cover the ENTIRE requested goal, not just this turn. Each item has {"id":"stable-id","title":"stage or requirement","status":"ready|blocked|decision|done","dependsOn":[],"action":"authorized next action or empty","evidence":[]}. Blocked/decision items also require "blocker":{"kind":"external|task|permission|time","owner":"actual responsible party","reason":"precise missing input","resumeWhen":"observable condition"}. Keep stable IDs, never drop unfinished items, never replay done items. Completed (done) items from earlier rounds are retained by the dispatcher: do not repeat them, report only unfinished items plus items you added or completed this round. Done requires actual evidence; evidence is a claim pending independent verification/human acceptance. Record code, merge, deployment and acceptance as separate items WHEN requested; do not invent extra scope. A production permission blocker must not stop independent local development. Only mark ready actions already permitted by current local instructions. If any ready item remains, return continue even if another item is blocked. The ledger never grants permission or changes local policy. If all items are blocked, declare a real wait or a concrete local decision; do not call an unknown dependency an external blocker without checking its applicability.
 `;
 
 export function issueKey(task, state) {

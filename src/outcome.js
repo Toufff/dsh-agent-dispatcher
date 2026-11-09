@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { waitSchema } from './followup.js';
-import { workItemsSchema, workflowError, workflowProtocol } from './workflow.js';
+import { workItemsSchema, workflowError, workflowProtocol, mergeLedger } from './workflow.js';
 
 const text = z.string().trim().min(1).max(2000);
 const schema = z.object({
@@ -54,6 +54,8 @@ export function inspectOutcome(summary, { previous = [], required = false } = {}
   if (result.status === 'continue' && (!result.next.trim() || !result.remaining.length)) return invalid('Continue requires remaining work and a concrete next step.');
   // A blocked next step describes what follows the dependency; it is not a command to execute.
   if (['blocked', 'decision'].includes(result.status) && (!result.blockers.length || !result.remaining.length)) return invalid('Blocked/decision requires remaining work and named blockers.');
+  // Restore completed stages the round omitted; the stored ledger is authoritative.
+  if (result.workItems) result.workItems = mergeLedger(result.workItems, previous);
   // A "decision" stage that waits on another party (not a local permission) is an external block.
   // Classify it as blocked instead of rejecting the round: no permission is inferred or granted.
   let reclassified = false;
