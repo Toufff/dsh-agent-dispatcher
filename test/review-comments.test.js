@@ -156,7 +156,16 @@ test('checks are throttled and stop at the wake-up limit', async () => {
   await runtime.dispatcher.tick(); await runtime.assess();
   runtime.reviewCheckedAt.clear();
   await runtime.reviewComments();
-  const state = await runtime.snapshot();
+  let state = await runtime.snapshot();
+  // At the limit the new comment is announced once, never executed.
   assert.equal(state.tasks.length, 2);
-  assert.equal(calls.activity, 1);
+  assert.equal(calls.activity, 2);
+  assert.equal(state.tasks[1].reviewLimitNotified, true);
+  assert.equal(state.tasks[1].report, 'pending');
+  assert.ok(state.errors.some(e => /已达上限/.test(e)));
+  runtime.reviewCheckedAt.clear();
+  await runtime.reviewComments();
+  state = await runtime.snapshot();
+  assert.equal(calls.activity, 2);
+  assert.equal(state.tasks.length, 2);
 });
