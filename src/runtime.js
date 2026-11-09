@@ -653,12 +653,13 @@ export class Runtime {
       const prefix = (policy.selfCommentPrefix ?? 'ZRSTUDIO').trim();
       // An explicitly marked owner comment (ownerCommentPrefix, default "owner") counts even when it was
       // posted while the round was still running; unmarked ones only after the round settled.
-      const ownerMark = (policy.ownerCommentPrefix ?? 'owner').trim();
+      // ownerCommentPrefix may list several marks separated by "|" (e.g. "owner|ULTRATOUF").
+      const ownerMarks = String(policy.ownerCommentPrefix ?? 'owner').split('|').map(s => s.trim()).filter(Boolean);
       const fromReceiver = c => {
         if (!receiver || c.user?.id !== receiver) return false;
         const body = String(c.body || '').trimStart();
         if (prefix && body.startsWith(prefix)) return false;
-        return (ownerMark && body.startsWith(ownerMark)) || Date.parse(c.createdAt) > settled;
+        return ownerMarks.some(m => body.startsWith(m)) || Date.parse(c.createdAt) > settled;
       };
       const comments = (activity.comments || []).filter(c => (allowed.includes(c.user?.id) || fromReceiver(c)) && !own.has(c.id) &&
         !seen.has(c.id) && Date.parse(c.createdAt) > since).sort((a, b) => a.createdAt.localeCompare(b.createdAt));

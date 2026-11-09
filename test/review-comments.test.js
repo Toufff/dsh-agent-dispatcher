@@ -223,6 +223,8 @@ test('owner comments from the receiver account continue only when trusted, settl
     [{ trustReceiverComments: true }, [{ id: 'o2', body: 'ZRSTUDIO：第 74 轮结论', createdAt: at, updatedAt: at, user: { id: 'me' } }], 1],
     [{ trustReceiverComments: true }, [{ id: 'o3', body: '中途说明', createdAt: during, updatedAt: during, user: { id: 'me' } }], 1],
     [{ trustReceiverComments: true }, [{ id: 'o5', body: 'owner 追加要求（轮次中发）', createdAt: during, updatedAt: during, user: { id: 'me' } }], 2],
+    [{ trustReceiverComments: true, ownerCommentPrefix: 'owner|ULTRATOUF' }, [{ id: 'o6', body: 'ULTRATOUF：请改用新视图', createdAt: during, updatedAt: during, user: { id: 'me' } }], 2],
+    [{ trustReceiverComments: true }, [{ id: 'o7', body: 'ULTRATOUF：请改用新视图', createdAt: during, updatedAt: during, user: { id: 'me' } }], 1],
     [{}, [{ id: 'o4', body: 'owner 决定', createdAt: at, updatedAt: at, user: { id: 'me' } }], 1]];
   for (const [followup, list, expected] of cases) {
     const { runtime } = await fixture({ followup, comments: () => list });
