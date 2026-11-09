@@ -160,8 +160,10 @@ export class LinearClient {
       if (identity.organization.id !== mapping.workspaceId) throw new Error('Linear token belongs to another workspace');
     }
     // Client-chosen comment identity makes timeout retries idempotent.
-    let cursor = null, found = false, currentState;
-    do {
+    // An empty body is a state-only report: no comment is created.
+    let cursor = null, found = !item.body, currentState;
+    if (!item.body) currentState = (await this.query('query($id:String!) { issue(id:$id) { state { type } } }', { id: item.issueId })).issue.state.type;
+    else do {
       const existing = await this.query('query($id:String!, $after:String) { issue(id:$id) { state { type } comments(first:100, after:$after) { nodes { id } pageInfo { hasNextPage endCursor } } } }', { id: item.issueId, after: cursor });
       currentState = existing.issue.state.type;
       found = existing.issue.comments.nodes.some(c => c.id === item.id);

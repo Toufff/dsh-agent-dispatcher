@@ -373,11 +373,14 @@ export class Runtime {
           (t.assessed || t.resumeNotice || t.executionNotice && (['running', 'failed', 'exhausted'].includes(t.status) ||
             t.status === 'unknown' && Date.now() - Date.parse(t.events.at(-1)?.at || t.createdAt) >= 60000)))) {
         const mapping = state.settings.projects.find(p => p.id === task.projectId)?.linear;
+        // A continuation round starting only moves the issue back to the active state; the round's
+        // result report follows, so a "started" comment per round would just bury the discussion.
+        const quiet = task.status === 'running' && Boolean(task.continuationOf);
         task.reportVersion = (task.reportVersion || 0) + 1;
         state.outbox.push({ id: randomUUID(), taskId: task.id, projectId: task.projectId,
           reportVersion: task.reportVersion, taskStatus: task.status,
           issueId: task.issue.id, stateId: ['review', 'accepted'].includes(task.status) ? mapping?.reviewStateId : task.resumeNotice || task.status === 'running' ? mapping?.activeStateId : mapping?.blockedStateId || mapping?.activeStateId,
-          body: reportBody(task, mapping, Object.values(this.env).filter(v => typeof v === 'string' && v.length > 12)),
+          body: quiet ? '' : reportBody(task, mapping, Object.values(this.env).filter(v => typeof v === 'string' && v.length > 12)),
           status: 'pending', tries: 0 });
         task.report = 'queued'; task.resumeNotice = false;
       }

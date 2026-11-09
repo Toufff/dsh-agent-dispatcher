@@ -7,6 +7,7 @@ import { Runtime } from '../src/runtime.js';
 import { workItems } from './workflow-fixtures.js';
 import { inspectOutcome } from '../src/outcome.js';
 import { ledgerPrompt } from '../src/workflow.js';
+import { LinearClient } from '../src/linear.js';
 
 const done = `<dispatch-result>${JSON.stringify({ status: 'complete', workItems: workItems('complete'), evidence: ['ok'], remaining: [], next: '', progress: 'done', blockers: [] })}</dispatch-result>`;
 
@@ -146,6 +147,34 @@ test('prompt ledger shows open items in full and completed items as a bounded in
   assert.doesNotMatch(text, /- s0: /);
   assert.match(text, /60 older ones/);
   assert.doesNotMatch(text, /long evidence/);
+});
+
+test('a continuation round starting moves the issue state without posting a comment', async () => {
+  const at = later();
+  const { runtime } = await fixture({ comments: () => [{ id: 'c1', body: 'more', createdAt: at, updatedAt: at, user: { id: 'peer' } }] });
+  await runtime.reviewComments();
+  await runtime.dispatcher.update(s => { const t = s.tasks[1]; t.status = 'running'; t.executionNotice = true; t.report = 'pending'; t.events.push({ action: 'running', at: new Date().toISOString() }); });
+  await runtime.report();
+  const item = (await runtime.store.load()).outbox.find(i => i.taskStatus === 'running');
+  assert.equal(item.body, '');
+});
+
+test('state-only reports never create a Linear comment', async () => {
+  const calls = [];
+  const client = new LinearClient('t', async (url, request) => {
+    const { query } = JSON.parse(request.body); calls.push(query);
+    const data = query.includes('organization') ? { organization: { id: 'w' } }
+      : query.includes('issueUpdate') ? { issueUpdate: { success: true } }
+      : query.includes('commentCreate') ? { commentCreate: { success: true } }
+      : { issue: { state: { type: 'started' }, comments: { nodes: [], pageInfo: { hasNextPage: false } } } };
+    return { status: 200, ok: true, headers: { get: () => null }, json: async () => ({ data }) };
+  });
+  await client.report({ id: 'r', issueId: 'i', body: '', stateId: 's' }, { workspaceId: 'w' });
+  assert.ok(!calls.some(q => q.includes('commentCreate')));
+  assert.ok(calls.some(q => q.includes('issueUpdate')));
+  calls.length = 0;
+  await client.report({ id: 'r2', issueId: 'i', body: 'result', stateId: 's' }, { workspaceId: 'w' });
+  assert.ok(calls.some(q => q.includes('commentCreate')));
 });
 
 test('checks are throttled and stop at the wake-up limit', async () => {
