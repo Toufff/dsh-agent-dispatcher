@@ -8,7 +8,8 @@ export const workItemsSchema = z.array(z.object({
   action: z.string().max(2000), evidence: z.array(text).max(20),
   blocker: z.object({ kind: z.enum(['external', 'task', 'permission', 'time']),
     owner: text, reason: text, resumeWhen: text }).strict().optional()
-}).strict()).min(1).max(40);
+// The ledger only grows (old items are never dropped), so long follow-up chains need room.
+}).strict()).min(1).max(200);
 
 export const decisionItems = task => (task.workItems || []).filter(i =>
   i.status !== 'done' && (i.status === 'decision' || i.blocker?.kind === 'permission'));

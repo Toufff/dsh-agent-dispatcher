@@ -107,6 +107,14 @@ test('blocked and unclassified rounds continue on trusted comments; live waits a
   }
 });
 
+test('a long follow-up ledger beyond 40 stages still validates', () => {
+  const items = Array.from({ length: 120 }, (_, i) => ({ id: `s${i}`, title: `stage ${i}`, status: 'done', dependsOn: [], action: '', evidence: ['e'] }));
+  items.push({ id: 'next', title: 'next', status: 'ready', dependsOn: [], action: 'do it', evidence: [] });
+  const result = inspectOutcome(`<dispatch-result>${JSON.stringify({ status: 'continue', evidence: ['ok'], remaining: ['next'], next: 'do it', progress: 'x', blockers: [], workItems: items })}</dispatch-result>`, { required: true });
+  assert.equal(result.error, null);
+  assert.equal(result.outcome.status, 'continue');
+});
+
 test('checks are throttled and stop at the wake-up limit', async () => {
   let n = 0;
   const { runtime, calls } = await fixture({ followup: { maxWakeups: 1 },
