@@ -263,6 +263,18 @@ test('a new data version wakes a round waiting for data once; others are left al
   }
 });
 
+test('an unscoped reply wait on a permission decision is dropped, not a rejected round', () => {
+  const r = inspectOutcome(`<dispatch-result>${JSON.stringify({ status: 'decision', evidence: ['ok'], remaining: ['owner picks A-D'], next: '', progress: 'x',
+    blockers: [{ owner: 'owner', reason: 'pick', resumeWhen: 'reply' }],
+    wait: { kind: 'linear', condition: 'owner replies A/B/C/D', expectedAuthorIds: ['peer'] },
+    workItems: [{ id: 'a', title: 'done', status: 'done', dependsOn: [], action: '', evidence: ['e'] },
+      { id: 'tag2', title: 'second tag', status: 'decision', dependsOn: ['a'], action: '', evidence: [],
+        blocker: { kind: 'permission', owner: 'owner', reason: 'pick', resumeWhen: 'reply' } }] })}</dispatch-result>`, { required: true });
+  assert.equal(r.error, null);
+  assert.equal(r.outcome.wait, undefined);
+  assert.match(r.framingRecovery, /unscoped-wait-dropped/);
+});
+
 test('checks are throttled and stop at the wake-up limit', async () => {
   let n = 0;
   const { runtime, calls } = await fixture({ followup: { maxWakeups: 1, maxAudits: 0 },

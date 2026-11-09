@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { waitSchema } from './followup.js';
-import { workItemsSchema, workflowError, workflowProtocol, mergeLedger } from './workflow.js';
+import { workItemsSchema, workflowError, workflowProtocol, mergeLedger, waitScopeError } from './workflow.js';
 
 const text = z.string().trim().min(1).max(2000);
 const schema = z.object({
@@ -56,6 +56,14 @@ export function inspectOutcome(summary, { previous = [], required = false } = {}
   if (['blocked', 'decision'].includes(result.status) && (!result.blockers.length || !result.remaining.length)) return invalid('Blocked/decision requires remaining work and named blockers.');
   // Restore completed stages the round omitted; the stored ledger is authoritative.
   if (result.workItems) result.workItems = mergeLedger(result.workItems, previous);
+  // A wait whose scope is invalid (e.g. a reply wait on a permission decision without workItemIds) is
+  // dropped instead of rejecting the whole round: settled decision/blocked rounds are still woken by
+  // trusted comments, and an unscoped wait must never wake gated work.
+  let waitDropped = false;
+  // Only reply waits: comment wakes cover exactly what they would watch. Timer/task waits stay strict.
+  if (result.wait?.kind === 'linear' && waitScopeError(result.wait, result.workItems, result.status === 'decision')) {
+    delete result.wait; waitDropped = true;
+  }
   // A "decision" stage that waits on another party (not a local permission) is an external block.
   // Classify it as blocked instead of rejecting the round: no permission is inferred or granted.
   let reclassified = false;
@@ -65,7 +73,7 @@ export function inspectOutcome(summary, { previous = [], required = false } = {}
   if (reclassified && result.status === 'decision' && !result.wait && !(result.workItems || []).some(i => i.status === 'decision')) result.status = 'blocked';
   const flowError = workflowError(result, previous, required);
   if (flowError) return invalid(flowError);
-  const recovery = [missingClose && 'missing-close-tag', reclassified && 'external-decision-as-blocked'].filter(Boolean).join(',');
+  const recovery = [missingClose && 'missing-close-tag', reclassified && 'external-decision-as-blocked', waitDropped && 'unscoped-wait-dropped'].filter(Boolean).join(',');
   return { outcome: result, error: null, ...(recovery ? { framingRecovery: recovery } : {}) };
 }
 export const parseOutcome = summary => inspectOutcome(summary).outcome;
