@@ -110,6 +110,32 @@ test('blocked and unclassified rounds continue on trusted comments; live waits a
   }
 });
 
+test('with trustReceiverComments an owner comment from the receiver account ends a live wait and drops its window', async () => {
+  const settledAt = new Date(Date.now() - 10000).toISOString(), at = later();
+  const wait = () => ({ id: 'w1', kind: 'time', status: 'watching', condition: '等今晚数据', notBefore: new Date(Date.now() + 3600e3).toISOString(), armedAt: settledAt });
+  const cases = [
+    [{ trustReceiverComments: true }, { id: 'o1', body: 'owner：别等了，先做别的', user: { id: 'me' } }, 2],
+    [{ trustReceiverComments: true }, { id: 'o2', body: '不带标记但在本轮结束后', user: { id: 'me' } }, 2],
+    [{ trustReceiverComments: true }, { id: 'o3', body: 'ZRSTUDIO：本机回写', user: { id: 'me' } }, 1],
+    [{ trustReceiverComments: true }, { id: 'p1', body: 'peer reply is the monitor\'s job', user: { id: 'peer' } }, 1],
+    [{}, { id: 'o4', body: 'owner：别等了', user: { id: 'me' } }, 1]];
+  for (const [followup, comment, expected] of cases) {
+    const { runtime } = await fixture({ followup, comments: () => [{ ...comment, createdAt: at, updatedAt: at }] });
+    await runtime.dispatcher.update(s => { const t = s.tasks[0]; t.createdAt = new Date(Date.now() - 60000).toISOString();
+      t.status = 'blocked'; t.wait = wait(); t.events.push({ action: 'blocked', at: settledAt }); });
+    await runtime.reviewComments();
+    const state = await runtime.snapshot();
+    assert.equal(state.tasks.length, expected, comment.body);
+    if (expected === 2) {
+      const next = state.tasks[1];
+      assert.equal(next.resumeWindow, undefined);
+      assert.equal(next.timingRevision.mode, 'recheck');
+      assert.match(next.prompt, /ends that wait/);
+      assert.equal(state.tasks[0].wait.status, 'superseded');
+    }
+  }
+});
+
 test('a long follow-up ledger beyond 40 stages still validates', () => {
   const items = Array.from({ length: 120 }, (_, i) => ({ id: `s${i}`, title: `stage ${i}`, status: 'done', dependsOn: [], action: '', evidence: ['e'] }));
   items.push({ id: 'next', title: 'next', status: 'ready', dependsOn: [], action: 'do it', evidence: [] });
