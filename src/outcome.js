@@ -49,6 +49,10 @@ export function inspectOutcome(summary, { previous = [], required = false } = {}
   result = parsed.data;
   if (missingClose && !['blocked', 'decision'].includes(result.status))
     return invalid('Missing closing tag can only recover a blocked or decision result; return a complete framed contract.');
+  // A continue round that also declares a wait (e.g. "recheck on tomorrow's snapshot") keeps going now;
+  // the wait has nothing to gate, so drop it instead of rejecting the round. Complete + wait stays invalid.
+  let continueWaitDropped = false;
+  if (result.wait && result.status === 'continue') { delete result.wait; continueWaitDropped = true; }
   if (result.wait && !['blocked', 'decision'].includes(result.status)) return invalid('Only blocked or scoped decision results may include wait.');
   if (result.status === 'complete' && (!result.evidence.length || result.remaining.length || result.blockers.length || result.next.trim())) return invalid('Complete requires evidence and empty remaining, blockers and next.');
   if (result.status === 'continue' && (!result.next.trim() || !result.remaining.length)) return invalid('Continue requires remaining work and a concrete next step.');
@@ -85,7 +89,7 @@ export function inspectOutcome(summary, { previous = [], required = false } = {}
   if (reclassified && result.status === 'decision' && !result.wait && !(result.workItems || []).some(i => i.status === 'decision')) result.status = 'blocked';
   const flowError = workflowError(result, previous, required, reportedIds);
   if (flowError) return invalid(flowError);
-  const recovery = [missingClose && 'missing-close-tag', reclassified && 'external-decision-as-blocked', waitDropped && 'unscoped-wait-dropped', depsDropped && 'unknown-dependencies-dropped'].filter(Boolean).join(',');
+  const recovery = [missingClose && 'missing-close-tag', reclassified && 'external-decision-as-blocked', waitDropped && 'unscoped-wait-dropped', depsDropped && 'unknown-dependencies-dropped', continueWaitDropped && 'continue-wait-dropped'].filter(Boolean).join(',');
   return { outcome: result, error: null, ...(recovery ? { framingRecovery: recovery } : {}) };
 }
 export const parseOutcome = summary => inspectOutcome(summary).outcome;

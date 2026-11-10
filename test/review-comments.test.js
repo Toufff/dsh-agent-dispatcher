@@ -150,6 +150,18 @@ test('a dependency on a never-recorded stage is dropped; a real cycle is still r
   assert.match(cyclic.error, /cycles/);
 });
 
+test('a continue round with a wait keeps going and drops the wait; complete with a wait is still rejected', () => {
+  const item = status => ({ id: 'x', title: 'x', status, dependsOn: [], action: status === 'ready' ? 'do it' : '', evidence: status === 'done' ? ['e'] : [] });
+  const wait = { kind: 'time', condition: 'tomorrow snapshot', notBefore: new Date(Date.now() + 864e5).toISOString() };
+  const frame = body => `<dispatch-result>${JSON.stringify(body)}</dispatch-result>`;
+  const kept = inspectOutcome(frame({ status: 'continue', evidence: ['ok'], remaining: ['more'], next: 'next', progress: 'x', blockers: [], workItems: [item('ready')], wait }), { required: true });
+  assert.equal(kept.error, null);
+  assert.equal(kept.outcome.wait, undefined);
+  assert.match(kept.framingRecovery, /continue-wait-dropped/);
+  const done = inspectOutcome(frame({ status: 'complete', evidence: ['ok'], remaining: [], next: '', progress: 'x', blockers: [], workItems: [item('done')], wait }), { required: true });
+  assert.match(done.error, /may include wait/);
+});
+
 test('a long follow-up ledger beyond 40 stages still validates', () => {
   const items = Array.from({ length: 120 }, (_, i) => ({ id: `s${i}`, title: `stage ${i}`, status: 'done', dependsOn: [], action: '', evidence: ['e'] }));
   items.push({ id: 'next', title: 'next', status: 'ready', dependsOn: [], action: 'do it', evidence: [] });
