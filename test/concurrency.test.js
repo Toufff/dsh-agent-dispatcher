@@ -46,6 +46,23 @@ test('a project without maxConcurrent stays serial under a higher global limit',
   assert.deepEqual((await store.load()).tasks.map(t => t.status), ['running', 'queued', 'running']);
 });
 
+test('a queued task waiting for its window does not block the tasks behind it', async () => {
+  const store = await setup({ concurrency: 3, executors: [], projects: [{ id: 'p', maxConcurrent: 3 }] });
+  const r = running();
+  const dispatcher = new Dispatcher({ store, adapters: { first: r.adapter } });
+  for (const n of [1, 2]) await enqueue(dispatcher, n, { cwd: '/work/p', projectId: 'p' });
+  const state = await store.load();
+  state.tasks[0].resumeWindow = { notBefore: new Date(Date.now() + 3600e3).toISOString() };
+  await store.save(state);
+  await tickTimes(dispatcher, 3);
+  assert.deepEqual((await store.load()).tasks.map(t => t.status), ['queued', 'running']);
+  const later = await store.load();
+  later.tasks[0].resumeWindow.notBefore = new Date(Date.now() - 1000).toISOString();
+  await store.save(later);
+  await tickTimes(dispatcher, 2);
+  assert.deepEqual((await store.load()).tasks.map(t => t.status), ['running', 'running']);
+});
+
 test('different projects sharing one directory never run together', async () => {
   const store = await setup({ concurrency: 3, executors: [], projects: [{ id: 'a', maxConcurrent: 2 }, { id: 'b', maxConcurrent: 2 }] });
   const r = running();

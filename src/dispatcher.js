@@ -97,7 +97,9 @@ export class Dispatcher {
       const active = state.tasks.filter(t => !terminal.has(t.status) && t.owner !== 'human');
       const occupied = active.filter(t => t.status !== 'queued');
       if (occupied.length >= globalLimit(state)) return;
-      const task = active.find(t => t.status === 'queued' && hasSlot(t, occupied, state) &&
+      // A queued task whose inherited window has not opened yet must not hold up the tasks behind it.
+      const notYet = t => t.resumeWindow?.notBefore && Date.now() < Date.parse(t.resumeWindow.notBefore);
+      const task = active.find(t => t.status === 'queued' && !notYet(t) && hasSlot(t, occupied, state) &&
         (!t.admissionRetryAt || Date.now() >= t.admissionRetryAt) && !state.tasks.some(other => other.owner === 'human' && other.cwd === t.cwd));
       if (!task || task.status !== 'queued' || task.owner === 'human') return;
       if (task.resumeWindow?.expiresAt && Date.now() >= Date.parse(task.resumeWindow.expiresAt)) {
