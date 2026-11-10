@@ -55,6 +55,7 @@ export function inspectOutcome(summary, { previous = [], required = false } = {}
   // A blocked next step describes what follows the dependency; it is not a command to execute.
   if (['blocked', 'decision'].includes(result.status) && (!result.blockers.length || !result.remaining.length)) return invalid('Blocked/decision requires remaining work and named blockers.');
   // Restore completed stages the round omitted; the stored ledger is authoritative.
+  const reportedIds = result.workItems ? new Set(result.workItems.map(item => item.id)) : null;
   if (result.workItems) result.workItems = mergeLedger(result.workItems, previous);
   // A wait whose scope is invalid (e.g. a reply wait on a permission decision without workItemIds) is
   // dropped instead of rejecting the whole round: settled decision/blocked rounds are still woken by
@@ -71,7 +72,7 @@ export function inspectOutcome(summary, { previous = [], required = false } = {}
     item.status = 'blocked'; reclassified = true;
   }
   if (reclassified && result.status === 'decision' && !result.wait && !(result.workItems || []).some(i => i.status === 'decision')) result.status = 'blocked';
-  const flowError = workflowError(result, previous, required);
+  const flowError = workflowError(result, previous, required, reportedIds);
   if (flowError) return invalid(flowError);
   const recovery = [missingClose && 'missing-close-tag', reclassified && 'external-decision-as-blocked', waitDropped && 'unscoped-wait-dropped'].filter(Boolean).join(',');
   return { outcome: result, error: null, ...(recovery ? { framingRecovery: recovery } : {}) };

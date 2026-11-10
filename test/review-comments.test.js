@@ -277,6 +277,31 @@ test('an unscoped reply wait on a permission decision is dropped, not a rejected
   assert.match(r.framingRecovery, /unscoped-wait-dropped/);
 });
 
+test('restored ready stages do not force continue; reported ones still do', () => {
+  const previous = [{ id: 'a', title: 'a', status: 'done', dependsOn: [], action: '', evidence: ['e'] },
+    { id: 'old', title: 'old check', status: 'ready', dependsOn: [], action: 'check tonight', evidence: [] }];
+  const result = items => `<dispatch-result>${JSON.stringify({ status: 'blocked', evidence: ['ok'], remaining: ['wait'], next: '', progress: 'x',
+    blockers: [{ owner: 'touf', reason: 'data', resumeWhen: 'data arrives' }], workItems: items })}</dispatch-result>`;
+  const blockedItem = { id: 'b', title: 'b', status: 'blocked', dependsOn: [], action: '', evidence: [], blocker: { kind: 'external', owner: 'touf', reason: 'data', resumeWhen: 'data arrives' } };
+  const r = inspectOutcome(result([blockedItem]), { previous, required: true });
+  assert.equal(r.error, null);
+  assert.equal(r.outcome.workItems.find(i => i.id === 'old').status, 'ready');
+  const reported = inspectOutcome(result([blockedItem, { ...previous[1] }]), { previous, required: true });
+  assert.match(reported.error, /ready/);
+});
+
+test('an output-limit failure is retried once in the same session', async () => {
+  const { runtime } = await fixture({ comments: () => [] });
+  await runtime.dispatcher.update(s => { const t = s.tasks[0]; t.status = 'failed'; t.attempts.at(-1).reason = 'max-tokens'; t.attempts.at(-1).status = 'failed'; });
+  await runtime.retryOutputLimit();
+  let t = (await runtime.store.load()).tasks[0];
+  assert.equal(t.status, 'queued'); assert.equal(t.outputLimitRetried, true); assert.match(t.prompt, /output limit/);
+  await runtime.dispatcher.update(s => { const x = s.tasks[0]; x.status = 'failed'; x.attempts = [{ ...x.previousAttempts.at(-1), reason: 'max-tokens', status: 'failed' }]; });
+  await runtime.retryOutputLimit();
+  t = (await runtime.store.load()).tasks[0];
+  assert.equal(t.status, 'failed');                      // only once
+});
+
 test('checks are throttled and stop at the wake-up limit', async () => {
   let n = 0;
   const { runtime, calls } = await fixture({ followup: { maxWakeups: 1, maxAudits: 0 },

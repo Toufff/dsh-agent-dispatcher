@@ -732,6 +732,28 @@ export class Runtime {
       }
     }
   }
+  /**
+   * A round that failed only because one model response hit the output-token limit is retried once in
+   * the same session, told to keep replies short and put long tables in files. A second failure stays
+   * failed for a person to look at.
+   */
+  async retryOutputLimit() {
+    const state = await this.store.load();
+    if (state.paused) return;
+    for (const task of state.tasks) {
+      const attempt = task.attempts.at(-1);
+      if (!currentTask(task, state) || task.status !== 'failed' || task.owner === 'human' || task.outputLimitRetried ||
+          attempt?.reason !== 'max-tokens') continue;
+      await this.dispatcher.update(s => {
+        const live = s.tasks.find(t => t.id === task.id);
+        if (!live || live.status !== 'failed' || live.outputLimitRetried) return;
+        live.outputLimitRetried = true;
+        live.prompt = `${live.prompt}\n\nNOTE: the previous attempt of this round stopped because one reply exceeded the model's output limit. Continue from the current state in the session and repository without redoing finished work. Keep every reply short: write long tables, code and reports to files and only summarize them; produce the final dispatch-result as soon as the work allows.`;
+        live.events.push({ action: 'retry-output-limit', at: new Date().toISOString() });
+      });
+      await this.dispatcher.action(task.id, 'retry');
+    }
+  }
   async cycle() {
     if (this.cycling) return;
     this.cycling = true;
@@ -743,6 +765,7 @@ export class Runtime {
       await phase('Linear sync', () => this.sync.run());
       await phase('Review comments', () => this.reviewComments());
       await phase('Data wakes', () => this.dataWakes());
+      await phase('Output-limit retry', () => this.retryOutputLimit());
       await phase('Execution', async () => { await this.dispatcher.tick(); await this.assess(); });
       await phase('Linear reporting', () => this.report());
       // Independent single-flight delivery. Slow notification I/O does not hold

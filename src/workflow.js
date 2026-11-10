@@ -58,7 +58,7 @@ export function waitScopeError(wait, items = [], decision = false) {
 }
 
 // Claims are checked for consistency, never promoted to verified production facts.
-export function workflowError(outcome, previous = [], required = false) {
+export function workflowError(outcome, previous = [], required = false, reportedIds = null) {
   const items = outcome.workItems;
   const scopeError = waitScopeError(outcome.wait, items, outcome.status === 'decision');
   if (scopeError) return scopeError;
@@ -92,7 +92,9 @@ export function workflowError(outcome, previous = [], required = false) {
     if (item.status === 'decision' && item.blocker.kind !== 'permission')
       return 'Decision workItems must identify the concrete local decision/permission.';
   }
-  const ready = items.some(item => item.status === 'ready');
+  // Ready stages the round itself reported decide continue vs. stop; stages restored from the stored
+  // ledger keep their old state and are reported again next round.
+  const ready = items.some(item => item.status === 'ready' && (!reportedIds || reportedIds.has(item.id)));
   const done = items.every(item => item.status === 'done');
   if (ready && outcome.status !== 'continue') return 'Authorized ready workItems remain: return continue, not whole-task blocked/complete/decision.';
   if (outcome.status === 'continue' && !ready) return 'Continue requires at least one ready authorized workItem.';
