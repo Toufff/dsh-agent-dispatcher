@@ -259,4 +259,8 @@ test('checkpoint policy rejects cycling evidence, invented stages and endless fr
   assert.equal(continuationPolicy(t, outcome([prior, done('invented')])).repeat, false);
   assert.equal(continuationPolicy(t, outcome([{ ...prior, evidence: ['artifact C'] }])).repeat, true);
   assert.equal(continuationPolicy({ ...t, autoRounds: 40 }, outcome([done('goal')])).repeat, false);
+  // A project may raise the automatic round budget (followup.maxAutoRounds); the idle rule is unchanged.
+  assert.equal(continuationPolicy({ ...t, autoRounds: 40 }, outcome([done('goal')]), 200).repeat, true);
+  assert.equal(continuationPolicy({ ...t, autoRounds: 200 }, outcome([done('goal')]), 200).repeat, false);
+  assert.equal(continuationPolicy(t, outcome([{ ...prior, evidence: [' artifact   B '] }]), 200).repeat, false);
 });

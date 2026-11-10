@@ -452,7 +452,9 @@ export class Runtime {
         const { outcome, error, framingRecovery } = inspectOutcome(task.summary, { previous: task.workItems, required: task.workflowVersion === 2 });
         if (framingRecovery) task.events.push({ action: 'recover-result-framing', reason: framingRecovery, at: new Date().toISOString() });
         if (error) task.resultError = error; else delete task.resultError;
-        const continuation = outcome?.status === 'continue' ? continuationPolicy(task, outcome) : null;
+        const autoRoundLimit = state.settings.projects.find(p => p.id === task.projectId)?.followup?.maxAutoRounds || 40;
+        task.autoRoundLimit = autoRoundLimit;
+        const continuation = outcome?.status === 'continue' ? continuationPolicy(task, outcome, autoRoundLimit) : null;
         task.outcome = outcome; task.assessed = true;
         if (outcome?.workItems) task.workItems = structuredClone(outcome.workItems);
         task.report = 'pending'; task.resumeNotice = false;

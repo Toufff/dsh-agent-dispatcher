@@ -26,6 +26,8 @@ export const projectSchema = z.object({
     ownerCommentPrefix: z.string().max(40).optional(),
     // File holding the current data version (one id). A new version wakes rounds waiting for data.
     dataVersionFile: z.string().refine(path.isAbsolute, 'Use an absolute local file').optional(),
+    // Automatic continue rounds a task may run before it stalls for review (default 40).
+    maxAutoRounds: z.number().int().min(1).max(500).optional(),
     maxWakeups: z.number().int().min(1).max(50).default(8) }).strict().optional(),
   linear: z.object({ workspaceId: id, projectId: id, assigneeId: id, readyStateId: id,
     reviewStateId: id, activeStateId: id.optional(), blockedStateId: id.optional(), tokenEnv: z.string().regex(/^[A-Z][A-Z0-9_]+$/),
