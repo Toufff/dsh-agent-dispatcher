@@ -57,6 +57,17 @@ export function inspectOutcome(summary, { previous = [], required = false } = {}
   // Restore completed stages the round omitted; the stored ledger is authoritative.
   const reportedIds = result.workItems ? new Set(result.workItems.map(item => item.id)) : null;
   if (result.workItems) result.workItems = mergeLedger(result.workItems, previous);
+  // A dependency on an ID that was never recorded (e.g. a stage renamed between rounds) cannot be
+  // checked either way; drop the dangling reference instead of rejecting the whole round. Cycles
+  // among recorded stages are still rejected below.
+  let depsDropped = false;
+  if (result.workItems) {
+    const known = new Set(result.workItems.map(item => item.id));
+    for (const item of result.workItems) {
+      const kept = (item.dependsOn || []).filter(id => known.has(id));
+      if (kept.length !== (item.dependsOn || []).length) { item.dependsOn = kept; depsDropped = true; }
+    }
+  }
   // A wait whose scope is invalid (e.g. a reply wait on a permission decision without workItemIds) is
   // dropped instead of rejecting the whole round: settled decision/blocked rounds are still woken by
   // trusted comments, and an unscoped wait must never wake gated work.
@@ -74,7 +85,7 @@ export function inspectOutcome(summary, { previous = [], required = false } = {}
   if (reclassified && result.status === 'decision' && !result.wait && !(result.workItems || []).some(i => i.status === 'decision')) result.status = 'blocked';
   const flowError = workflowError(result, previous, required, reportedIds);
   if (flowError) return invalid(flowError);
-  const recovery = [missingClose && 'missing-close-tag', reclassified && 'external-decision-as-blocked', waitDropped && 'unscoped-wait-dropped'].filter(Boolean).join(',');
+  const recovery = [missingClose && 'missing-close-tag', reclassified && 'external-decision-as-blocked', waitDropped && 'unscoped-wait-dropped', depsDropped && 'unknown-dependencies-dropped'].filter(Boolean).join(',');
   return { outcome: result, error: null, ...(recovery ? { framingRecovery: recovery } : {}) };
 }
 export const parseOutcome = summary => inspectOutcome(summary).outcome;

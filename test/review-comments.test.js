@@ -136,6 +136,20 @@ test('with trustReceiverComments an owner comment from the receiver account ends
   }
 });
 
+test('a dependency on a never-recorded stage is dropped; a real cycle is still rejected', () => {
+  const previous = [{ id: 'old', title: 'old stage', status: 'done', dependsOn: [], action: '', evidence: ['e'] }];
+  const round = items => `<dispatch-result>${JSON.stringify({ status: 'continue', evidence: ['ok'], remaining: ['more'], next: 'next step', progress: 'x', blockers: [], workItems: items })}</dispatch-result>`;
+  const result = inspectOutcome(round([
+    { id: 'next', title: 'next', status: 'ready', dependsOn: ['old', 'renamed-away'], action: 'do it', evidence: [] }]), { previous, required: true });
+  assert.equal(result.error, null);
+  assert.deepEqual(result.outcome.workItems.find(i => i.id === 'next').dependsOn, ['old']);
+  assert.match(result.framingRecovery, /unknown-dependencies-dropped/);
+  const cyclic = inspectOutcome(round([
+    { id: 'a', title: 'a', status: 'ready', dependsOn: ['b'], action: 'x', evidence: [] },
+    { id: 'b', title: 'b', status: 'ready', dependsOn: ['a'], action: 'y', evidence: [] }]), { previous, required: true });
+  assert.match(cyclic.error, /cycles/);
+});
+
 test('a long follow-up ledger beyond 40 stages still validates', () => {
   const items = Array.from({ length: 120 }, (_, i) => ({ id: `s${i}`, title: `stage ${i}`, status: 'done', dependsOn: [], action: '', evidence: ['e'] }));
   items.push({ id: 'next', title: 'next', status: 'ready', dependsOn: [], action: 'do it', evidence: [] });
