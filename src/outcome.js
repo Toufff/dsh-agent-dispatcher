@@ -61,6 +61,10 @@ export function inspectOutcome(summary, { previous = [], required = false } = {}
   // Restore completed stages the round omitted; the stored ledger is authoritative.
   const reportedIds = result.workItems ? new Set(result.workItems.map(item => item.id)) : null;
   if (result.workItems) result.workItems = mergeLedger(result.workItems, previous);
+  // A round that left out workItems entirely (seen on format-repair rounds) changed no stage: keep the stored
+  // ledger instead of rejecting the round. Its stages are not counted as progress (see continuationPolicy).
+  let ledgerReused = false;
+  if (!result.workItems && previous?.length) { result.workItems = structuredClone(previous); ledgerReused = true; }
   // A dependency on an ID that was never recorded (e.g. a stage renamed between rounds) cannot be
   // checked either way; drop the dangling reference instead of rejecting the whole round. Cycles
   // among recorded stages are still rejected below.
@@ -89,7 +93,7 @@ export function inspectOutcome(summary, { previous = [], required = false } = {}
   if (reclassified && result.status === 'decision' && !result.wait && !(result.workItems || []).some(i => i.status === 'decision')) result.status = 'blocked';
   const flowError = workflowError(result, previous, required, reportedIds);
   if (flowError) return invalid(flowError);
-  const recovery = [missingClose && 'missing-close-tag', reclassified && 'external-decision-as-blocked', waitDropped && 'unscoped-wait-dropped', depsDropped && 'unknown-dependencies-dropped', continueWaitDropped && 'continue-wait-dropped'].filter(Boolean).join(',');
+  const recovery = [missingClose && 'missing-close-tag', reclassified && 'external-decision-as-blocked', waitDropped && 'unscoped-wait-dropped', depsDropped && 'unknown-dependencies-dropped', continueWaitDropped && 'continue-wait-dropped', ledgerReused && 'ledger-reused'].filter(Boolean).join(',');
   return { outcome: result, error: null, ...(recovery ? { framingRecovery: recovery } : {}) };
 }
 export const parseOutcome = summary => inspectOutcome(summary).outcome;

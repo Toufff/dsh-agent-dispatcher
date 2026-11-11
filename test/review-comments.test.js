@@ -162,6 +162,18 @@ test('a continue round with a wait keeps going and drops the wait; complete with
   assert.match(done.error, /may include wait/);
 });
 
+test('a result that omits workItems keeps the stored ledger instead of being rejected', () => {
+  const previous = [{ id: 'done1', title: 'd', status: 'done', dependsOn: [], action: '', evidence: ['e'] },
+    { id: 'next', title: 'n', status: 'ready', dependsOn: ['done1'], action: 'do it', evidence: [] }];
+  const frame = body => `<dispatch-result>${JSON.stringify(body)}</dispatch-result>`;
+  const r = inspectOutcome(frame({ status: 'continue', evidence: ['ok'], remaining: ['next'], next: 'do it', progress: 'x', blockers: [] }), { previous, required: true });
+  assert.equal(r.error, null);
+  assert.deepEqual(r.outcome.workItems.map(i => i.id), ['done1', 'next']);
+  assert.match(r.framingRecovery, /ledger-reused/);
+  const none = inspectOutcome(frame({ status: 'continue', evidence: ['ok'], remaining: ['next'], next: 'do it', progress: 'x', blockers: [] }), { previous: [], required: true });
+  assert.match(none.error, /workItems/);
+});
+
 test('a long follow-up ledger beyond 40 stages still validates', () => {
   const items = Array.from({ length: 120 }, (_, i) => ({ id: `s${i}`, title: `stage ${i}`, status: 'done', dependsOn: [], action: '', evidence: ['e'] }));
   items.push({ id: 'next', title: 'next', status: 'ready', dependsOn: [], action: 'do it', evidence: [] });
