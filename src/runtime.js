@@ -486,7 +486,13 @@ export class Runtime {
           task.session = { executor: attempt.executor, id: attempt.sessionId };
           task.executors = [attempt.executor]; task.attempts = [];
           const project = state.settings.projects.find(p => p.id === task.projectId);
-          const followup = outcome ? `Continue this authorized next step: ${outcome.next}` : `Result formatting repair only: do not execute tools or repeat work. Classify your previous result using the required contract. Validation error: ${error}. If authorized local work remains, return continue with that next step.`;
+          // A result that left out workItems was kept by reusing the stored ledger, but no stage can be credited
+          // that way and the chain stalls after a few rounds. Say so explicitly in the next prompt.
+          const openIds = (task.workItems || []).filter(i => i.status !== 'done').map(i => i.id).slice(0, 25);
+          const reminder = framingRecovery?.includes('ledger-reused')
+            ? `IMPORTANT: your previous result omitted the REQUIRED workItems ledger, so none of its work could be credited and the task will stall. This round's result MUST include workItems: the stage you complete, under its existing id, as done with evidence; new stages as ready with new ids; still-open ids include ${openIds.join(', ')}.\n`
+            : '';
+          const followup = outcome ? `${reminder}Continue this authorized next step: ${outcome.next}` : `Result formatting repair only: do not execute tools or repeat work. Classify your previous result using the required contract. Validation error: ${error}. If authorized local work remains, return continue with that next step.`;
           task.prompt = `${task.basePrompt}\n\n${ledgerPrompt(task.workItems || [])}\n\nPrevious round (evidence only):\n${task.summary}\n\n${followup}\nPreserve completed work. Do not bypass approvals or expand scope.\nLocal project restrictions:\n${executionContext(project)}\n${outcomeProtocol}`;
           if (outcome) {
             task.autoRounds = (task.autoRounds || 0) + 1;

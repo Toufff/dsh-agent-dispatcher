@@ -174,6 +174,20 @@ test('a result that omits workItems keeps the stored ledger instead of being rej
   assert.match(none.error, /workItems/);
 });
 
+test('after a result without workItems the next round is told to report the ledger', async () => {
+  const { runtime, starts } = await fixture();
+  const ledger = [{ id: 'a', title: 'a', status: 'done', dependsOn: [], action: '', evidence: ['e'] },
+    { id: 'b', title: 'b', status: 'ready', dependsOn: ['a'], action: 'do b', evidence: [] }];
+  const noLedger = `<dispatch-result>${JSON.stringify({ status: 'continue', evidence: ['ok'], remaining: ['b'], next: 'do b', progress: 'new progress', blockers: [] })}</dispatch-result>`;
+  await runtime.dispatcher.update(s => { const t = s.tasks[0]; t.workItems = ledger; t.status = 'review'; t.assessed = false; t.summary = noLedger; t.workflowVersion = 2; });
+  await runtime.assess();
+  const t = (await runtime.snapshot()).tasks[0];
+  assert.equal(t.status, 'queued');
+  assert.match(t.prompt, /omitted the REQUIRED workItems ledger/);
+  assert.match(t.prompt, /still-open ids include b/);
+  assert.ok(starts.length >= 1);
+});
+
 test('a long follow-up ledger beyond 40 stages still validates', () => {
   const items = Array.from({ length: 120 }, (_, i) => ({ id: `s${i}`, title: `stage ${i}`, status: 'done', dependsOn: [], action: '', evidence: ['e'] }));
   items.push({ id: 'next', title: 'next', status: 'ready', dependsOn: [], action: 'do it', evidence: [] });
