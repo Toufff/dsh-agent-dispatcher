@@ -28,6 +28,10 @@ export const projectSchema = z.object({
     dataVersionFile: z.string().refine(path.isAbsolute, 'Use an absolute local file').optional(),
     // Automatic continue rounds a task may run before it stalls for review (default 40).
     maxAutoRounds: z.number().int().min(1).max(500).optional(),
+    // Hand a stuck task to a fresh session (failed format repair, idle rounds, ledger left out twice); once per episode.
+    freshRescue: z.boolean().optional(),
+    // Rotate to a fresh session after this many automatic rounds in one session.
+    maxSessionRounds: z.number().int().min(5).max(500).optional(),
     maxWakeups: z.number().int().min(1).max(50).default(8) }).strict().optional(),
   linear: z.object({ workspaceId: id, projectId: id, assigneeId: id, readyStateId: id,
     reviewStateId: id, activeStateId: id.optional(), blockedStateId: id.optional(), tokenEnv: z.string().regex(/^[A-Z][A-Z0-9_]+$/),

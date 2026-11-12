@@ -459,12 +459,24 @@ export class Runtime {
         if (outcome?.workItems) task.workItems = structuredClone(outcome.workItems);
         task.report = 'pending'; task.resumeNotice = false;
         const attempt = task.attempts.at(-1);
-        let repeat = false;
+        const followupPolicy = state.settings.projects.find(p => p.id === task.projectId)?.followup || {};
+        // Long sessions get stuck on their own mistakes (LON-35: the same rejected stage reported twice after
+        // explicit correction, workItems left out round after round). Instead of a human noticing it, the
+        // dispatcher hands the task to a fresh session that rebuilds context from the repository and the ledger:
+        // when a format repair fails, when progress cannot be credited for idle rounds, when workItems are left
+        // out twice in a row, and when one session has run maxSessionRounds rounds. One rescue per stuck episode.
+        if (continuation?.checkpoint) task.freshRescued = false;
+        task.recoveryStreak = framingRecovery?.includes('ledger-reused') ? (task.recoveryStreak || 0) + 1 : 0;
+        let repeat = false, fresh = null;
         if (!outcome) {
-          repeat = !task.formatRepair;
+          if (!task.formatRepair) repeat = true;
+          else if (followupPolicy.freshRescue && !task.freshRescued) { repeat = true; fresh = `the previous session's result was rejected twice (${error})`; }
           task.formatRepair = true; task.status = 'needs_result';
         } else if (outcome.status === 'continue') {
           repeat = continuation.repeat;
+          if (followupPolicy.freshRescue && !repeat && continuation.idle >= 3 && (task.autoRounds || 0) < autoRoundLimit && !task.freshRescued) {
+            repeat = true; fresh = 'no stage progress could be credited for 3 rounds';
+          }
           task.status = 'stalled';
           task.continuationStop = continuation.stop;
         } else task.status = outcome.status === 'decision' && outcome.wait ? 'blocked'
@@ -478,12 +490,22 @@ export class Runtime {
           try { task.wait = validateLocalWait(task.wait, task, state); }
           catch (error) { task.wait.lastCheckedAt = new Date().toISOString(); monitorFailure(task, error.message, error.code); }
         } else if (task.wait) task.wait.status = 'resolved';
+        if (followupPolicy.freshRescue && repeat && !fresh && task.recoveryStreak >= 2) fresh = 'the result left out the workItems ledger two rounds in a row';
+        if (followupPolicy.maxSessionRounds && repeat && !fresh && (task.sessionRounds || 0) >= followupPolicy.maxSessionRounds)
+          fresh = `one session has run ${task.sessionRounds} automatic rounds`;
         if (repeat && attempt?.sessionId && this.adapters[attempt.executor]) {
           // No executor fallback once work has started. Persist requeue and history atomically.
           task.rounds ||= [];
           task.rounds.push({ summary: task.summary, outcome, attempts: task.attempts, at: new Date().toISOString() });
           task.previousAttempts = [...(task.previousAttempts || []), ...task.attempts];
-          task.session = { executor: attempt.executor, id: attempt.sessionId };
+          if (fresh) {
+            delete task.session;
+            task.sessionRounds = 0; task.recoveryStreak = 0; task.continuationIdleRounds = 0;
+            if (!fresh.startsWith('one session')) task.freshRescued = true;
+          } else {
+            task.session = { executor: attempt.executor, id: attempt.sessionId };
+            task.sessionRounds = (task.sessionRounds || 0) + 1;
+          }
           task.executors = [attempt.executor]; task.attempts = [];
           const project = state.settings.projects.find(p => p.id === task.projectId);
           // A result that left out workItems was kept by reusing the stored ledger, but no stage can be credited
@@ -492,16 +514,22 @@ export class Runtime {
           const reminder = framingRecovery?.includes('ledger-reused')
             ? `IMPORTANT: your previous result omitted the REQUIRED workItems ledger, so none of its work could be credited and the task will stall. This round's result MUST include workItems: the stage you complete, under its existing id, as done with evidence; new stages as ready with new ids; still-open ids include ${openIds.join(', ')}.\n`
             : '';
-          const followup = outcome ? `${reminder}Continue this authorized next step: ${outcome.next}` : `Result formatting repair only: do not execute tools or repeat work. Classify your previous result using the required contract. Validation error: ${error}. If authorized local work remains, return continue with that next step.`;
+          const handover = fresh
+            ? `FRESH SESSION: you are taking over this task from a previous session because ${fresh}. You do not have its conversation. Rebuild context from the repository (the task's strategies/<issue>-*/ report, README and logs, and AGENTS.md) and from the stage ledger below; do not redo completed stages and do not report a done stage as open again (add a new verification stage instead).${error ? ` The rejected result failed validation with: ${error}` : ''}\n`
+            : '';
+          const followup = fresh
+            ? `${handover}Continue with the ready stages of the ledger${outcome?.next ? `; the previous session's next step was: ${outcome.next}` : ''}.`
+            : outcome ? `${reminder}Continue this authorized next step: ${outcome.next}` : `Result formatting repair only: do not execute tools or repeat work. Classify your previous result using the required contract. Validation error: ${error}. If authorized local work remains, return continue with that next step.`;
           task.prompt = `${task.basePrompt}\n\n${ledgerPrompt(task.workItems || [])}\n\nPrevious round (evidence only):\n${task.summary}\n\n${followup}\nPreserve completed work. Do not bypass approvals or expand scope.\nLocal project restrictions:\n${executionContext(project)}\n${outcomeProtocol}`;
           if (outcome) {
             task.autoRounds = (task.autoRounds || 0) + 1;
             task.continuationIdleRounds = continuation.idle;
             task.lastProgress = outcome.progress; task.formatRepair = false;
           }
+          if (fresh) { task.continuationIdleRounds = 0; task.formatRepair = false; }
           task.summary = ''; task.outcome = null; task.assessed = false; task.status = 'queued';
           delete task.continuationStop;
-          task.events.push({ action: outcome ? 'auto-continue' : 'repair-result', at: new Date().toISOString() });
+          task.events.push({ action: fresh ? 'fresh-session' : outcome ? 'auto-continue' : 'repair-result', ...(fresh ? { reason: fresh } : {}), at: new Date().toISOString() });
         } else task.events.push({ action: task.status, at: new Date().toISOString() });
       }
     });

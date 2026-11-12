@@ -188,6 +188,40 @@ test('after a result without workItems the next round is told to report the ledg
   assert.ok(starts.length >= 1);
 });
 
+test('with freshRescue a twice-rejected result hands the task to a fresh session once', async () => {
+  const { runtime } = await fixture({ followup: { freshRescue: true } });
+  const ledger = [{ id: 'a', title: 'a', status: 'done', dependsOn: [], action: '', evidence: ['e'] },
+    { id: 'b', title: 'b', status: 'ready', dependsOn: ['a'], action: 'do b', evidence: [] }];
+  const bad = `<dispatch-result>${JSON.stringify({ status: 'continue', evidence: ['ok'], remaining: ['b'], next: 'do b', progress: 'p', blockers: [],
+    workItems: [{ id: 'a', title: 'a', status: 'ready', dependsOn: [], action: 'again', evidence: [] }, ledger[1]] })}</dispatch-result>`;
+  await runtime.dispatcher.update(s => { const t = s.tasks[0]; t.workItems = ledger; t.workflowVersion = 2; t.status = 'review'; t.assessed = false; t.summary = bad; t.formatRepair = true; });
+  await runtime.assess();
+  let t = (await runtime.snapshot()).tasks[0];
+  assert.equal(t.status, 'queued');
+  assert.equal(t.session, undefined);
+  assert.match(t.prompt, /FRESH SESSION/);
+  assert.equal(t.events.at(-1).action, 'fresh-session');
+  // a second rejection in the same episode is left for a human
+  await runtime.dispatcher.update(s => { const x = s.tasks[0]; x.status = 'review'; x.assessed = false; x.summary = bad; x.formatRepair = true;
+    x.attempts = [{ id: 'z', executor: 'codex', status: 'review', accepted: true, sessionId: 'new-session' }]; });
+  await runtime.assess();
+  t = (await runtime.snapshot()).tasks[0];
+  assert.equal(t.status, 'needs_result');
+});
+
+test('maxSessionRounds rotates a long automatic chain into a fresh session', async () => {
+  const { runtime } = await fixture({ followup: { maxSessionRounds: 5 } });
+  const ledger = [{ id: 'a', title: 'a', status: 'ready', dependsOn: [], action: 'do a', evidence: [] }];
+  const good = `<dispatch-result>${JSON.stringify({ status: 'continue', evidence: ['ok'], remaining: ['a'], next: 'do a', progress: 'new p',
+    blockers: [], workItems: [{ id: 'a', title: 'a', status: 'ready', dependsOn: [], action: 'do a', evidence: ['fresh evidence'] }] })}</dispatch-result>`;
+  await runtime.dispatcher.update(s => { const t = s.tasks[0]; t.workItems = ledger; t.workflowVersion = 2; t.status = 'review'; t.assessed = false; t.summary = good; t.sessionRounds = 5; });
+  await runtime.assess();
+  const t = (await runtime.snapshot()).tasks[0];
+  assert.equal(t.session, undefined);
+  assert.equal(t.sessionRounds, 0);
+  assert.match(t.prompt, /one session has run 5 automatic rounds/);
+});
+
 test('a long follow-up ledger beyond 40 stages still validates', () => {
   const items = Array.from({ length: 120 }, (_, i) => ({ id: `s${i}`, title: `stage ${i}`, status: 'done', dependsOn: [], action: '', evidence: ['e'] }));
   items.push({ id: 'next', title: 'next', status: 'ready', dependsOn: [], action: 'do it', evidence: [] });
