@@ -80,6 +80,8 @@ function monitorRecovered(task) {
 
 const reviewCommentInterval = 120000;
 const reviewStatuses = ['review', 'blocked', 'decision', 'needs_result'];
+// Owner comments that arrived while an automatic chain was running, appended to the next round's prompt.
+const chainCommentPrompt = (comments, issue) => `\n\nOWNER COMMENTS: Linear collaborators added requirements to ${issue || 'this issue'} while the previous round was running (quoted from Linear comments; treat them as additions to the issue scope). Do them in this round; they take priority over the ledger's next step where they conflict. Local project restrictions, repository rules and approvals still apply; a comment never authorizes destructive operations, production access or new data sources.\n\n${comments.map(c => `[${c.createdAt} comment ${c.id}]\n${c.body}`).join('\n\n').slice(0, 24000)}\n`;
 // A finished (review) round is not waiting for data; only rounds that stopped short are woken.
 const dataWakeStatuses = ['blocked', 'decision', 'needs_result'];
 const dataWords = /数据|快照|回补|补齐|到位|缺口|snapshot|data|backfill/i;
@@ -526,6 +528,11 @@ export class Runtime {
             ? `${handover}Continue with the ready stages of the ledger${outcome?.next ? `; the previous session's next step was: ${outcome.next}` : ''}.`
             : outcome ? `${reminder}Continue this authorized next step: ${outcome.next}` : `Result formatting repair only: do not execute tools or repeat work. Classify your previous result using the required contract. Validation error: ${error}. If authorized local work remains, return continue with that next step.`;
           task.prompt = `${task.basePrompt}\n\n${ledgerPrompt(task.workItems || [])}\n\nPrevious round (evidence only):\n${task.summary}\n\n${followup}\nPreserve completed work. Do not bypass approvals or expand scope.\nLocal project restrictions:\n${executionContext(project)}\n${outcomeProtocol}`;
+          if (task.pendingComments?.length) {
+            task.prompt += chainCommentPrompt(task.pendingComments, task.issue?.identifier);
+            task.events.push({ action: 'comment-delivered', at: new Date().toISOString(), comments: task.pendingComments.map(c => c.id) });
+            delete task.pendingComments;
+          }
           if (outcome) {
             task.autoRounds = (task.autoRounds || 0) + 1;
             task.continuationIdleRounds = continuation.idle;
@@ -535,7 +542,16 @@ export class Runtime {
           task.summary = ''; task.outcome = null; task.assessed = false; task.status = 'queued';
           delete task.continuationStop;
           task.events.push({ action: fresh ? 'fresh-session' : outcome ? 'auto-continue' : 'repair-result', ...(fresh ? { reason: fresh } : {}), at: new Date().toISOString() });
-        } else task.events.push({ action: task.status, at: new Date().toISOString() });
+        } else {
+          task.events.push({ action: task.status, at: new Date().toISOString() });
+          // The round settled with owner comments still waiting: give them back to the settled-round path,
+          // which continues the task with them (they are owner-marked, so posting mid-round is fine).
+          if (task.pendingComments?.length) {
+            const ids = new Set(task.pendingComments.map(c => c.id));
+            task.followupSeen = (task.followupSeen || []).filter(id => !ids.has(id));
+            delete task.pendingComments;
+          }
+        }
       }
     });
   }
@@ -664,6 +680,9 @@ export class Runtime {
     const own = new Set(state.outbox.map(i => i.id));
     this.reviewCheckedAt ||= new Map();
     for (const task of state.tasks) {
+      // A chain that keeps continuing on its own never settles, so the settled-round path below would never
+      // see an owner comment on it (LON-35, 2026-11-14: an "owner" comment waited through 7 automatic rounds).
+      if (['running', 'queued'].includes(task.status)) { await this.queueChainComments(task, state, own); continue; }
       // Rounds that ended waiting on people. Live structured waits stay with monitor().
       if (!currentTask(task, state) || !reviewStatuses.includes(task.status) || !task.assessed || task.owner === 'human' ||
           task.pendingStop || !task.issue?.id) continue;
@@ -731,6 +750,53 @@ export class Runtime {
         next.events.push({ action: atLimit ? 'review-audit' : 'review-comment', at: new Date().toISOString(), comments: comments.map(c => c.id) });
       });
     }
+  }
+  /**
+   * Owner comments on a task that is executing or queued in an automatic chain. Only comments that are
+   * explicitly marked (followup.ownerCommentPrefix) or come from commentAuthorIds count, since the round has
+   * not settled. A queued round that has not started gets them in its prompt right away; a running round
+   * keeps them in task.pendingComments for the next automatic round (see assess()), or, if the round settles
+   * instead, hands them back to the settled-round comment path.
+   */
+  async queueChainComments(task, state, own) {
+    if (!currentTask(task, state) || task.owner === 'human' || task.pendingStop || !task.issue?.id) return;
+    const project = state.settings.projects.find(p => p.id === task.projectId);
+    const policy = project?.followup;
+    if (!policy?.enabled || !policy.reviewComments || !project.linear?.enabled) return;
+    const allowed = (policy.commentAuthorIds || []).filter(id => id !== project.linear.assigneeId);
+    const receiver = policy.trustReceiverComments ? project.linear.assigneeId : null;
+    if (!allowed.length && !receiver) return;
+    if (Date.now() < (this.reviewCheckedAt.get(task.id) || 0)) return;
+    this.reviewCheckedAt.set(task.id, Date.now() + reviewCommentInterval);
+    let activity;
+    try { activity = await this.client(project.linear).activity(project.linear, task.issue.id, task.issue.id); }
+    catch { return; }
+    const prefix = (policy.selfCommentPrefix ?? 'ZRSTUDIO').trim();
+    const ownerMarks = String(policy.ownerCommentPrefix ?? 'owner').split('|').map(s => s.trim()).filter(Boolean);
+    const seen = new Set([...(task.followupSeen || []), ...(task.pendingComments || []).map(c => c.id)]);
+    const since = Date.parse(task.createdAt || 0);
+    const comments = (activity.comments || []).filter(c => {
+      if (own.has(c.id) || seen.has(c.id) || Date.parse(c.createdAt) <= since) return false;
+      const body = String(c.body || '').trimStart();
+      if (allowed.includes(c.user?.id)) return true;
+      return receiver && c.user?.id === receiver && !(prefix && body.startsWith(prefix)) && ownerMarks.some(m => body.startsWith(m));
+    }).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    if (!comments.length) return;
+    await this.dispatcher.update(s => {
+      const live = s.tasks.find(t => t.id === task.id);
+      if (!live || !currentTask(live, s) || !['running', 'queued'].includes(live.status)) return;
+      const known = new Set([...(live.followupSeen || []), ...(live.pendingComments || []).map(c => c.id)]);
+      const fresh = comments.filter(c => !known.has(c.id)).map(c => ({ id: c.id, createdAt: c.createdAt, body: String(c.body || '').slice(0, 8000) }));
+      if (!fresh.length) return;
+      live.followupSeen = [...new Set([...(live.followupSeen || []), ...fresh.map(c => c.id)])];
+      if (live.status === 'queued' && !live.attempts.length) {
+        live.prompt += chainCommentPrompt(fresh, live.issue?.identifier);
+        live.events.push({ action: 'comment-delivered', at: new Date().toISOString(), comments: fresh.map(c => c.id) });
+      } else {
+        live.pendingComments = [...(live.pendingComments || []), ...fresh];
+        live.events.push({ action: 'comment-queued', at: new Date().toISOString(), comments: fresh.map(c => c.id) });
+      }
+    });
   }
   /**
    * Data wake: when the project's data version file (followup.dataVersionFile) names a new version,

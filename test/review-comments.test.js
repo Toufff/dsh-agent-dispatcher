@@ -346,6 +346,55 @@ test('owner comments from the receiver account continue only when trusted, settl
   }
 });
 
+test('owner comments reach an automatic chain that never settles: queued now, running next round, settled via the normal path', async () => {
+  const at = later();
+  const list = [{ id: 'k1', body: 'owner：先重算主口径', createdAt: at, updatedAt: at, user: { id: 'me' } },
+    { id: 'k2', body: '没有前缀的中途说明', createdAt: at, updatedAt: at, user: { id: 'me' } },
+    { id: 'k3', body: 'ZRSTUDIO：本机回写', createdAt: at, updatedAt: at, user: { id: 'me' } }];
+  const ledger = [{ id: 'a', title: 'a', status: 'ready', dependsOn: [], action: 'do a', evidence: [] }];
+  const cont = ev => `<dispatch-result>${JSON.stringify({ status: 'continue', evidence: ['ok'], remaining: ['a'], next: 'do a', progress: `p ${ev}`,
+    blockers: [], workItems: [{ id: 'a', title: 'a', status: 'ready', dependsOn: [], action: 'do a', evidence: [ev] }] })}</dispatch-result>`;
+  const follow = { trustReceiverComments: true, maxAutoRounds: 50 };
+
+  // 1. running round: the comment waits in pendingComments and is added to the next automatic round's prompt
+  let { runtime } = await fixture({ followup: follow, comments: () => list });
+  await runtime.dispatcher.update(s => { const t = s.tasks[0]; t.status = 'running'; t.createdAt = new Date(Date.now() - 60000).toISOString();
+    t.workItems = ledger; t.workflowVersion = 2; t.attempts = [{ id: 'r', executor: 'codex', status: 'running', accepted: true, sessionId: 'original-session' }]; });
+  await runtime.reviewComments();
+  let t = (await runtime.snapshot()).tasks[0];
+  assert.deepEqual(t.pendingComments.map(c => c.id), ['k1']);
+  assert.equal(t.events.at(-1).action, 'comment-queued');
+  await runtime.dispatcher.update(s => { const x = s.tasks[0]; x.status = 'review'; x.assessed = false; x.summary = cont('e1'); x.attempts[0].status = 'review'; });
+  await runtime.assess();
+  t = (await runtime.snapshot()).tasks[0];
+  assert.equal(t.status, 'queued');
+  assert.match(t.prompt, /OWNER COMMENTS/); assert.match(t.prompt, /先重算主口径/);
+  assert.doesNotMatch(t.prompt, /没有前缀|本机回写/);
+  assert.equal(t.pendingComments, undefined);
+  runtime.reviewCheckedAt.clear(); await runtime.reviewComments();          // never delivered twice
+  assert.equal((await runtime.snapshot()).tasks[0].events.filter(e => e.action.startsWith('comment-')).length, 2);
+
+  // 2. queued round that has not started: the comment goes straight into its prompt
+  ({ runtime } = await fixture({ followup: follow, comments: () => list }));
+  await runtime.dispatcher.update(s => { const x = s.tasks[0]; x.status = 'queued'; x.attempts = []; x.prompt = 'base'; x.createdAt = new Date(Date.now() - 60000).toISOString(); });
+  await runtime.reviewComments();
+  t = (await runtime.snapshot()).tasks[0];
+  assert.match(t.prompt, /^base[\s\S]*先重算主口径/); assert.equal(t.events.at(-1).action, 'comment-delivered');
+
+  // 3. the round settles instead: the pending comment goes back to the settled-round path and continues the task
+  ({ runtime } = await fixture({ followup: follow, comments: () => list }));
+  await runtime.dispatcher.update(s => { const t = s.tasks[0]; t.status = 'running'; t.createdAt = new Date(Date.now() - 60000).toISOString();
+    t.attempts = [{ id: 'r', executor: 'codex', status: 'running', accepted: true, sessionId: 'original-session' }]; });
+  await runtime.reviewComments();
+  await runtime.dispatcher.update(s => { const x = s.tasks[0]; x.status = 'review'; x.assessed = false; x.summary = done; x.attempts[0].status = 'review'; });
+  await runtime.assess();
+  t = (await runtime.snapshot()).tasks[0];
+  assert.equal(t.status, 'review'); assert.equal(t.pendingComments, undefined); assert.ok(!(t.followupSeen || []).includes('k1'));
+  runtime.reviewCheckedAt.clear(); await runtime.reviewComments();
+  const s = await runtime.snapshot();
+  assert.equal(s.tasks.length, 2); assert.match(s.tasks[1].prompt, /先重算主口径/);
+});
+
 test('a new data version wakes a round waiting for data once; others are left alone', async () => {
   const { mkdtemp, writeFile } = await import('node:fs/promises');
   const dir = await mkdtemp(path.join(os.tmpdir(), 'qm-ver-')), file = path.join(dir, 'current.txt');
