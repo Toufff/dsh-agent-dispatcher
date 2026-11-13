@@ -121,6 +121,28 @@ export function currentTask(task, state) {
   return !key || state.tasks.findLast(t => issueKey(t, state) === key)?.id === task.id;
 }
 
+// Round history grows with every automatic round. A long task re-reports its whole ledger each round
+// (hundreds of items), so keeping every copy makes the stored state grow quadratically and slows every
+// dispatcher action that loads and saves it. Only the latest round keeps its full outcome; once a newer
+// round arrives, the older one keeps just {id, status, evidence} for items whose status or evidence
+// changed since earlier rounds. That preserves what continuationPolicy reads: whether an item was ever
+// done and every distinct evidence list it has had.
+const roundItemKey = item => JSON.stringify([item.status, item.evidence || []]);
+export function compactRound(earlier, round) {
+  if (round.compacted || !Array.isArray(round.outcome?.workItems)) return round;
+  const last = new Map();
+  for (const r of earlier) for (const item of r.outcome?.workItems || []) last.set(item.id, roundItemKey(item));
+  const workItems = round.outcome.workItems.filter(item => last.get(item.id) !== roundItemKey(item))
+    .map(item => ({ id: item.id, status: item.status, evidence: item.evidence || [] }));
+  return { ...round, outcome: { ...round.outcome, workItems }, compacted: true };
+}
+export function archiveRound(task, round) {
+  task.rounds ||= [];
+  const k = task.rounds.length - 1;
+  if (k >= 0) task.rounds[k] = compactRound(task.rounds.slice(0, k), task.rounds[k]);
+  task.rounds.push(round);
+}
+
 // Evidence remains an executor claim. Changing prose alone cannot renew a budget.
 export function continuationPolicy(task, outcome, maxAutoRounds = 40) {
   const normalize = value => value.trim().replace(/\s+/g, ' ');

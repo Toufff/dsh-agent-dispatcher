@@ -13,7 +13,7 @@ import { wakeEvent, waitSchema, validateLocalWait, dependencyEvent, waitFault, w
 import { reportBody } from './reporting.js';
 import { LinearSync } from './linear-sync.js';
 import { Notifications } from './notifications.js';
-import { currentTask, attentionFor, continuationPolicy, ledgerPrompt } from './workflow.js';
+import { currentTask, attentionFor, continuationPolicy, ledgerPrompt, archiveRound, compactRound } from './workflow.js';
 
 // A queued continuation may expire before creating its next attempt. Reuse
 // only the latest confirmed historical attempt matching the durable session.
@@ -133,6 +133,9 @@ export class Runtime {
         for (const item of legacy) { item.reportVersion = task.reportVersion; item.taskStatus = task.status;
           if (item !== legacy.at(-1)) item.status = 'superseded'; }
       }
+      // State written before round compaction keeps a full ledger copy in every round.
+      const rounds = task.rounds || [];
+      for (let k = 0; k < rounds.length - 1; k++) rounds[k] = compactRound(rounds.slice(0, k), rounds[k]);
     }
     await this.store.save(state);
     if (this.env.DISPATCH_START_PAUSED === '1') { state.paused = true; await this.store.save(state); }
@@ -495,8 +498,7 @@ export class Runtime {
           fresh = `one session has run ${task.sessionRounds} automatic rounds`;
         if (repeat && attempt?.sessionId && this.adapters[attempt.executor]) {
           // No executor fallback once work has started. Persist requeue and history atomically.
-          task.rounds ||= [];
-          task.rounds.push({ summary: task.summary, outcome, attempts: task.attempts, at: new Date().toISOString() });
+          archiveRound(task, { summary: task.summary, outcome, attempts: task.attempts, at: new Date().toISOString() });
           task.previousAttempts = [...(task.previousAttempts || []), ...task.attempts];
           if (fresh) {
             delete task.session;
@@ -620,8 +622,7 @@ export class Runtime {
             monitorFailure(task, 'Original registered executor/session unavailable'); return;
           }
           monitorRecovered(task);
-          task.rounds ||= [];
-          task.rounds.push({ summary: task.summary, outcome: task.outcome, attempts: task.attempts, wait: task.wait, at: new Date().toISOString() });
+          archiveRound(task, { summary: task.summary, outcome: task.outcome, attempts: task.attempts, wait: task.wait, at: new Date().toISOString() });
           task.previousAttempts = [...(task.previousAttempts || []), ...task.attempts];
           task.session = { executor: attempt.executor, id: attempt.sessionId }; task.executors = [attempt.executor];
           const scopedWork = task.wait.workItemIds ? `\nIndependent wake scope: ${JSON.stringify(task.wait.workItemIds)}. Perform ONLY these already-authorized stages. All pending decisions remain unapproved; do not upload, deploy or perform other gated operations.\n${ledgerPrompt(task.workItems || [])}\n` : '';

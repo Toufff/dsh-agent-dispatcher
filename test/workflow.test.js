@@ -7,7 +7,7 @@ import { initialState } from '../src/config.js';
 import { inspectOutcome } from '../src/outcome.js';
 import { attention } from '../src/notifications.js';
 import { waitView } from '../src/ui/wait-view.js';
-import { continuationPolicy, attentionFor } from '../src/workflow.js';
+import { continuationPolicy, attentionFor, archiveRound, compactRound } from '../src/workflow.js';
 
 const done = id => ({ id, title: id, status: 'done', dependsOn: [], action: '', evidence: ['isolated verification'] });
 const ready = (id, dependsOn = []) => ({ id, title: id, status: 'ready', dependsOn, action: `Verify ${id} locally`, evidence: [] });
@@ -263,4 +263,27 @@ test('checkpoint policy rejects cycling evidence, invented stages and endless fr
   assert.equal(continuationPolicy({ ...t, autoRounds: 40 }, outcome([done('goal')]), 200).repeat, true);
   assert.equal(continuationPolicy({ ...t, autoRounds: 200 }, outcome([done('goal')]), 200).repeat, false);
   assert.equal(continuationPolicy(t, outcome([{ ...prior, evidence: [' artifact   B '] }]), 200).repeat, false);
+});
+
+test('archived rounds keep only ledger changes, and the budget decisions stay the same', () => {
+  const ledger = n => Array.from({ length: 50 }, (_, i) => ({ ...ready(`s${i}`), title: 'long title '.repeat(20),
+    evidence: i === 0 ? [`artifact ${n}`] : [] }));
+  const full = { autoRounds: 3, continuationIdleRounds: 0, workItems: [], rounds: [] };
+  const compact = structuredClone(full);
+  for (let n = 0; n < 5; n++) {
+    const round = { summary: `round ${n}`, outcome: { workItems: n === 3 ? [...ledger(n).slice(1), done('s0')] : ledger(n) } };
+    full.rounds.push(structuredClone(round)); archiveRound(compact, structuredClone(round));
+  }
+  // The newest round stays complete; older ones keep only what changed, without titles.
+  assert.deepEqual(compact.rounds.at(-1), full.rounds.at(-1));
+  assert.equal(compact.rounds[0].outcome.workItems.length, 50);
+  assert.deepEqual(compact.rounds[1].outcome.workItems, [{ id: 's0', status: 'ready', evidence: ['artifact 1'] }]);
+  assert.deepEqual(compact.rounds[3].outcome.workItems.map(i => i.status), ['done']);
+  assert.ok(JSON.stringify(compact).length < JSON.stringify(full).length / 2);
+  const outcome = items => ({ workItems: items, progress: 'same' });
+  for (const items of [[{ ...ready('s0'), evidence: ['artifact 2'] }], [{ ...ready('s0'), evidence: ['artifact 9'] }],
+    [{ ...ready('s1'), evidence: ['new'] }], [done('s1')], [done('s0')], [{ ...ready('s5') }]])
+    assert.deepEqual(continuationPolicy(compact, outcome(items)), continuationPolicy(full, outcome(items)));
+  // Compaction is idempotent, so a restart migration can run it over state that is already compact.
+  assert.deepEqual(compactRound(compact.rounds.slice(0, 1), compact.rounds[1]), compact.rounds[1]);
 });
