@@ -381,6 +381,19 @@ test('owner comments reach an automatic chain that never settles: queued now, ru
   t = (await runtime.snapshot()).tasks[0];
   assert.match(t.prompt, /^base[\s\S]*先重算主口径/); assert.equal(t.events.at(-1).action, 'comment-delivered');
 
+  // 2b. a queued format-repair round never takes the comment; the next working round (here a fresh session) does
+  ({ runtime } = await fixture({ followup: { ...follow, freshRescue: true }, comments: () => list }));
+  await runtime.dispatcher.update(s => { const x = s.tasks[0]; x.status = 'queued'; x.attempts = []; x.prompt = 'repair only'; x.formatRepair = true;
+    x.workItems = ledger; x.workflowVersion = 2; x.createdAt = new Date(Date.now() - 60000).toISOString(); x.events.push({ action: 'repair-result', at: new Date().toISOString() }); });
+  await runtime.reviewComments();
+  t = (await runtime.snapshot()).tasks[0];
+  assert.equal(t.prompt, 'repair only'); assert.deepEqual(t.pendingComments.map(c => c.id), ['k1']);
+  await runtime.dispatcher.update(s => { const x = s.tasks[0]; x.status = 'review'; x.assessed = false; x.summary = 'still not a result';
+    x.attempts = [{ id: 'r2', executor: 'codex', status: 'review', accepted: true, sessionId: 'original-session' }]; });
+  await runtime.assess();
+  t = (await runtime.snapshot()).tasks[0];
+  assert.match(t.prompt, /FRESH SESSION/); assert.match(t.prompt, /先重算主口径/); assert.equal(t.pendingComments, undefined);
+
   // 3. the round settles instead: the pending comment goes back to the settled-round path and continues the task
   ({ runtime } = await fixture({ followup: follow, comments: () => list }));
   await runtime.dispatcher.update(s => { const t = s.tasks[0]; t.status = 'running'; t.createdAt = new Date(Date.now() - 60000).toISOString();

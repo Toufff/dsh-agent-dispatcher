@@ -528,7 +528,7 @@ export class Runtime {
             ? `${handover}Continue with the ready stages of the ledger${outcome?.next ? `; the previous session's next step was: ${outcome.next}` : ''}.`
             : outcome ? `${reminder}Continue this authorized next step: ${outcome.next}` : `Result formatting repair only: do not execute tools or repeat work. Classify your previous result using the required contract. Validation error: ${error}. If authorized local work remains, return continue with that next step.`;
           task.prompt = `${task.basePrompt}\n\n${ledgerPrompt(task.workItems || [])}\n\nPrevious round (evidence only):\n${task.summary}\n\n${followup}\nPreserve completed work. Do not bypass approvals or expand scope.\nLocal project restrictions:\n${executionContext(project)}\n${outcomeProtocol}`;
-          if (task.pendingComments?.length) {
+          if (task.pendingComments?.length && (outcome || fresh)) {          // never into a format-repair-only round
             task.prompt += chainCommentPrompt(task.pendingComments, task.issue?.identifier);
             task.events.push({ action: 'comment-delivered', at: new Date().toISOString(), comments: task.pendingComments.map(c => c.id) });
             delete task.pendingComments;
@@ -789,7 +789,10 @@ export class Runtime {
       const fresh = comments.filter(c => !known.has(c.id)).map(c => ({ id: c.id, createdAt: c.createdAt, body: String(c.body || '').slice(0, 8000) }));
       if (!fresh.length) return;
       live.followupSeen = [...new Set([...(live.followupSeen || []), ...fresh.map(c => c.id)])];
-      if (live.status === 'queued' && !live.attempts.length) {
+      // A format-repair round only rewrites the previous result and its prompt is replaced afterwards, so a
+      // comment given to it would be lost (LON-35, 2026-11-14 01:44): keep it for the next working round.
+      const repairOnly = live.formatRepair || live.events.at(-1)?.action === 'repair-result';
+      if (live.status === 'queued' && !live.attempts.length && !repairOnly) {
         live.prompt += chainCommentPrompt(fresh, live.issue?.identifier);
         live.events.push({ action: 'comment-delivered', at: new Date().toISOString(), comments: fresh.map(c => c.id) });
       } else {
