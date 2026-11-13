@@ -87,6 +87,20 @@ test('active task permits priority changes despite JSON object property order', 
   await runtime.configure(settings, snapshot.revision);
   assert.deepEqual((await runtime.snapshot()).settings.executors.map(e => e.id), settings.executors.map(e => e.id));
 });
+test('the parallel limit can change while tasks run; other mapping changes still need a stop', async () => {
+  const runtime = await fixture();
+  await runtime.submit({ projectId: 'p', prompt: 'Synthetic task' });
+  let snapshot = await runtime.snapshot();
+  const settings = structuredClone(snapshot.settings);
+  settings.concurrency = 6; settings.projects[0].maxConcurrent = 6;
+  await runtime.configure(settings, snapshot.revision);
+  snapshot = await runtime.snapshot();
+  assert.equal(snapshot.settings.projects[0].maxConcurrent, 6);
+  assert.equal(snapshot.settings.concurrency, 6);
+  const moved = structuredClone(snapshot.settings);
+  moved.projects[0].cwd = os.tmpdir();
+  await assert.rejects(runtime.configure(moved, snapshot.revision), /Stop affected tasks/);
+});
 test('outbox retry does not reexecute coding; repeated intake is deduplicated', async () => {
   let starts = 0, reports = 0;
   const runtime = await fixture({ env: { TEST_TOKEN: 'synthetic' }, linearFactory: () => ({

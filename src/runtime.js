@@ -190,9 +190,12 @@ export class Runtime {
     await this.dispatcher.update(state => {
       if (revision !== state.revision) throw new Error('Settings changed in another window; refresh first');
       const active = state.tasks.filter(t => !terminal.has(t.status));
+      // The parallel limit only decides how many tasks start; it never changes what a running task does,
+      // so it can be raised or lowered while tasks run (running ones finish; the next tick uses the new limit).
+      const mapping = project => { if (!project) return project; const { maxConcurrent, ...rest } = project; return rest; };
       for (const task of active) {
-        if (!isDeepStrictEqual(settings.projects.find(p => p.id === task.projectId),
-            state.settings.projects.find(p => p.id === task.projectId)))
+        if (!isDeepStrictEqual(mapping(settings.projects.find(p => p.id === task.projectId)),
+            mapping(state.settings.projects.find(p => p.id === task.projectId))))
           throw new Error('Stop affected tasks before changing project mappings');
         for (const id of task.executors) {
           const before = state.settings.executors.find(e => e.id === id), after = settings.executors.find(e => e.id === id);
