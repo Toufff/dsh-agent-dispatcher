@@ -91,9 +91,31 @@ export function inspectOutcome(summary, { previous = [], required = false } = {}
     item.status = 'blocked'; reclassified = true;
   }
   if (reclassified && result.status === 'decision' && !result.wait && !(result.workItems || []).some(i => i.status === 'decision')) result.status = 'blocked';
+  // A completed stage reported as open again (e.g. "recompute the main figure" after a tool fix). The ledger
+  // keeps it done and the reopened work becomes a new correction stage `<id>-redo` - exactly what the old
+  // rejection told the executor to do - instead of rejecting the round. LON-35 lost a round to this four
+  // times in one night. A completed stage is still never undone.
+  let replaySplit = false;
+  if (result.workItems && previous?.length) {
+    const prevById = new Map(previous.map(i => [i.id, i]));
+    const reported = new Set(reportedIds || []);
+    const created = new Map();                         // correction id -> the new correction item
+    const split = result.workItems.flatMap(item => {
+      const old = prevById.get(item.id);
+      if (!old || old.status !== 'done' || item.status === 'done') return [item];
+      let k = 1, id;
+      do { id = `${item.id}-redo${k > 1 ? k : ''}`; k++; }
+      while (prevById.get(id)?.status === 'done' || reported.has(id) || created.has(id));
+      const correction = { ...item, id, dependsOn: (item.dependsOn || []).filter(dep => dep !== id && dep !== item.id) };
+      created.set(id, correction); replaySplit = true;
+      return [structuredClone(old), correction];
+    });
+    // An earlier round's open correction stage restored by mergeLedger is replaced by this round's version.
+    if (replaySplit) result.workItems = split.filter(i => !created.has(i.id) || created.get(i.id) === i);
+  }
   const flowError = workflowError(result, previous, required, reportedIds);
   if (flowError) return invalid(flowError);
-  const recovery = [missingClose && 'missing-close-tag', reclassified && 'external-decision-as-blocked', waitDropped && 'unscoped-wait-dropped', depsDropped && 'unknown-dependencies-dropped', continueWaitDropped && 'continue-wait-dropped', ledgerReused && 'ledger-reused'].filter(Boolean).join(',');
+  const recovery = [missingClose && 'missing-close-tag', reclassified && 'external-decision-as-blocked', waitDropped && 'unscoped-wait-dropped', depsDropped && 'unknown-dependencies-dropped', continueWaitDropped && 'continue-wait-dropped', ledgerReused && 'ledger-reused', replaySplit && 'done-replay-split'].filter(Boolean).join(',');
   return { outcome: result, error: null, ...(recovery ? { framingRecovery: recovery } : {}) };
 }
 export const parseOutcome = summary => inspectOutcome(summary).outcome;

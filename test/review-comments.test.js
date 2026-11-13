@@ -193,7 +193,7 @@ test('with freshRescue a twice-rejected result hands the task to a fresh session
   const ledger = [{ id: 'a', title: 'a', status: 'done', dependsOn: [], action: '', evidence: ['e'] },
     { id: 'b', title: 'b', status: 'ready', dependsOn: ['a'], action: 'do b', evidence: [] }];
   const bad = `<dispatch-result>${JSON.stringify({ status: 'continue', evidence: ['ok'], remaining: ['b'], next: 'do b', progress: 'p', blockers: [],
-    workItems: [{ id: 'a', title: 'a', status: 'ready', dependsOn: [], action: 'again', evidence: [] }, ledger[1]] })}</dispatch-result>`;
+    workItems: [{ id: 'c', title: 'c', status: 'ready', dependsOn: ['b'], action: 'c', evidence: [] }, { ...ledger[1], dependsOn: ['c'] }] })}</dispatch-result>`;
   await runtime.dispatcher.update(s => { const t = s.tasks[0]; t.workItems = ledger; t.workflowVersion = 2; t.status = 'review'; t.assessed = false; t.summary = bad; t.formatRepair = true; });
   await runtime.assess();
   let t = (await runtime.snapshot()).tasks[0];
@@ -246,10 +246,18 @@ test('the dispatcher keeps completed stages; a round reports only open and new i
   const omitted = inspectOutcome(round([{ id: 'new', title: 'new stage', status: 'ready', dependsOn: [], action: 'next step', evidence: [] }]), { previous, required: true });
   assert.equal(omitted.error, null);
   assert.equal(omitted.outcome.workItems.find(i => i.id === 'open').status, 'ready');
-  // Reopening a completed stage is still rejected.
+  // Reopening a completed stage never undoes it: the stage stays done and the reopened work becomes s1-redo.
   const replay = inspectOutcome(round([{ id: 's1', title: 'stage 1', status: 'ready', dependsOn: [], action: 'redo', evidence: [] },
     { id: 'open', title: 'open stage', status: 'ready', dependsOn: ['s3'], action: 'do it', evidence: [] }]), { previous, required: true });
-  assert.match(replay.error, /replay/);
+  assert.equal(replay.error, null);
+  assert.match(replay.framingRecovery, /done-replay-split/);
+  assert.equal(replay.outcome.workItems.find(i => i.id === 's1').status, 'done');
+  assert.equal(replay.outcome.workItems.find(i => i.id === 's1-redo').status, 'ready');
+  // a later round reopening s1 again updates the same correction stage instead of adding another
+  const again = inspectOutcome(round([{ id: 's1', title: 'stage 1', status: 'ready', dependsOn: [], action: 'redo more', evidence: ['x'] },
+    { id: 'open', title: 'open stage', status: 'ready', dependsOn: ['s3'], action: 'do it', evidence: [] }]), { previous: replay.outcome.workItems, required: true });
+  assert.equal(again.error, null);
+  assert.deepEqual(again.outcome.workItems.filter(i => i.id === 's1' || i.id.startsWith('s1-')).map(i => `${i.id}:${i.status}`), ['s1:done', 's1-redo:ready']);
 });
 
 test('prompt ledger shows open items in full and completed items as a bounded index', () => {

@@ -34,7 +34,9 @@ test('ledger rejects partial completion, lost stages, ready-work blocking and de
   assert.match(inspectOutcome(envelope('complete', [done('code')]), { previous: items }).error, /Complete requires every recorded stage/);
   assert.match(inspectOutcome(envelope('continue', [ready('a', ['b']), ready('b', ['a'])])).error, /cycles/);
   assert.match(inspectOutcome(envelope('complete', [{ ...done('code'), evidence: [] }])).error, /evidence/);
-  assert.match(inspectOutcome(envelope('blocked', [blocked('deploy')]), { previous: [done('deploy')] }).error, /replay/);
+  // a completed stage is never undone: reporting it blocked again opens a separate correction stage
+  const reopened = inspectOutcome(envelope('blocked', [blocked('deploy')]), { previous: [done('deploy')] });
+  assert.deepEqual(reopened.outcome.workItems.map(i => `${i.id}:${i.status}`), ['deploy:done', 'deploy-redo:blocked']);
 });
 
 test('new tasks require a stage ledger; legacy parsing remains compatible without replay', async () => {
