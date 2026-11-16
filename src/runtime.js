@@ -674,15 +674,61 @@ export class Runtime {
    * the original session. Comments are requirements evidence, not new permissions;
    * closed/reassigned issues and the receiver's own comments never trigger it.
    */
+  /**
+   * Which issues need a full comment read this pass. A full read (activity) costs 3+ Linear requests per issue;
+   * reading every waiting issue every two minutes (~35 in review) alone passed Linear's 2,500 requests/hour
+   * (2026-11-16). So each pass first asks Linear once, project-wide, which issues got a new or edited comment
+   * since the previous pass; only those are read in full. An issue stays dirty until a full read succeeds, so a
+   * comment is never lost to a task that was not due yet. The first pass after a restart reads everything once.
+   * Returns project => 'all' | 'dirty' | 'skip'.
+   */
+  async commentSweep(state) {
+    this.commentDirty ||= new Set(); this.commentSweptAt ||= new Map();
+    const modes = new Map(), keyOf = linear => JSON.stringify([linear.workspaceId, linear.tokenEnv, linear.projectId]);
+    for (const project of state.settings.projects) {
+      if (!project.followup?.enabled || !project.followup.reviewComments || !project.linear?.enabled) continue;
+      const key = keyOf(project.linear);
+      if (modes.has(key)) continue;
+      let client;
+      try { client = this.client(project.linear); } catch { modes.set(key, 'skip'); continue; }
+      // Clients without the batched query (and mappings without a project) keep the per-issue reads.
+      if (typeof client.commentedIssues !== 'function' || !project.linear.projectId) { modes.set(key, 'all'); continue; }
+      const last = this.commentSweptAt.get(key), started = Date.now();
+      if (last === undefined) { this.commentSweptAt.set(key, started); modes.set(key, 'all'); continue; }
+      try {
+        // One minute of overlap covers clock skew and comments written while the previous pass ran.
+        for (const id of await client.commentedIssues(project.linear, new Date(last - 60000).toISOString())) this.commentDirty.add(id);
+        this.commentSweptAt.set(key, started); modes.set(key, 'dirty'); this.commentSweepError = null;
+      } catch (error) {
+        // The cursor stays put, so nothing is missed; a rate limit also pauses the per-issue reads.
+        this.commentSweepError = error.message;
+        if (error.code === 'RATE_LIMITED') this.commentPauseUntil = Date.now() + (error.retryAfterMs || 60000);
+        modes.set(key, 'skip');
+      }
+    }
+    return project => project.linear ? modes.get(keyOf(project.linear)) || 'skip' : 'skip';
+  }
+  /** Whether this task's issue needs a full comment read now (see commentSweep). */
+  commentDue(task, mode) {
+    if (mode === 'skip' || Date.now() < (this.commentPauseUntil || 0)) return false;
+    return mode === 'all' || this.commentDirty.has(task.issue.id);
+  }
+  /** A rate-limited full read pauses the remaining reads of this pass and the next ones until Linear allows. */
+  commentReadFailed(error) {
+    if (error?.code === 'RATE_LIMITED') this.commentPauseUntil = Date.now() + (error.retryAfterMs || 60000);
+  }
   async reviewComments() {
     const state = await this.store.load();
     if (state.paused) return;
+    if (Date.now() < (this.commentPauseUntil || 0)) return;
     const own = new Set(state.outbox.map(i => i.id));
     this.reviewCheckedAt ||= new Map();
+    const modeOf = await this.commentSweep(state);
     for (const task of state.tasks) {
+      if (Date.now() < (this.commentPauseUntil || 0)) return;
       // A chain that keeps continuing on its own never settles, so the settled-round path below would never
       // see an owner comment on it (LON-35, 2026-11-14: an "owner" comment waited through 7 automatic rounds).
-      if (['running', 'queued'].includes(task.status)) { await this.queueChainComments(task, state, own); continue; }
+      if (['running', 'queued'].includes(task.status)) { await this.queueChainComments(task, state, own, modeOf); continue; }
       // Rounds that ended waiting on people. Live structured waits stay with monitor().
       if (!currentTask(task, state) || !reviewStatuses.includes(task.status) || !task.assessed || task.owner === 'human' ||
           task.pendingStop || !task.issue?.id) continue;
@@ -706,12 +752,14 @@ export class Runtime {
       if (!allowed.length && !receiver || atLimit && !canAudit && task.reviewLimitNotified) continue;
       const [source] = JSON.parse(task.key);
       if (state.tasks.some(t => t.key === JSON.stringify([source, `continue:${task.id}`]))) continue;
+      if (!this.commentDue(task, modeOf(project))) continue;
       if (Date.now() < (this.reviewCheckedAt.get(task.id) || 0)) continue;
       this.reviewCheckedAt.set(task.id, Date.now() + reviewCommentInterval);
       let activity;
       // Closed, reassigned or moved issues are rejected by eligibility: nothing to continue.
       try { activity = await this.client(project.linear).activity(project.linear, task.issue.id, task.issue.id); }
-      catch { continue; }
+      catch (error) { this.commentReadFailed(error); continue; }
+      this.commentDirty.delete(task.issue.id);
       const since = Date.parse(task.createdAt || 0), seen = new Set(task.followupSeen || []);
       const settled = Date.parse(task.events.findLast(e => e.action === task.status)?.at || task.createdAt || 0);
       const prefix = (policy.selfCommentPrefix ?? 'ZRSTUDIO').trim();
@@ -758,7 +806,7 @@ export class Runtime {
    * keeps them in task.pendingComments for the next automatic round (see assess()), or, if the round settles
    * instead, hands them back to the settled-round comment path.
    */
-  async queueChainComments(task, state, own) {
+  async queueChainComments(task, state, own, modeOf = () => 'all') {
     if (!currentTask(task, state) || task.owner === 'human' || task.pendingStop || !task.issue?.id) return;
     const project = state.settings.projects.find(p => p.id === task.projectId);
     const policy = project?.followup;
@@ -766,11 +814,14 @@ export class Runtime {
     const allowed = (policy.commentAuthorIds || []).filter(id => id !== project.linear.assigneeId);
     const receiver = policy.trustReceiverComments ? project.linear.assigneeId : null;
     if (!allowed.length && !receiver) return;
+    this.commentDirty ||= new Set();
+    if (!this.commentDue(task, modeOf(project))) return;
     if (Date.now() < (this.reviewCheckedAt.get(task.id) || 0)) return;
     this.reviewCheckedAt.set(task.id, Date.now() + reviewCommentInterval);
     let activity;
     try { activity = await this.client(project.linear).activity(project.linear, task.issue.id, task.issue.id); }
-    catch { return; }
+    catch (error) { this.commentReadFailed(error); return; }
+    this.commentDirty.delete(task.issue.id);
     const prefix = (policy.selfCommentPrefix ?? 'ZRSTUDIO').trim();
     const ownerMarks = String(policy.ownerCommentPrefix ?? 'owner').split('|').map(s => s.trim()).filter(Boolean);
     const seen = new Set([...(task.followupSeen || []), ...(task.pendingComments || []).map(c => c.id)]);

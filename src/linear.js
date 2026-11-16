@@ -136,6 +136,11 @@ export class LinearClient {
     // Display-only data. It never changes assignees, admission rules, trusted IDs or wait cursors.
     return { source: data.source, target: data.target, replyUsers: data.users.nodes.filter(u => authorIds.includes(u.id)), checkedAt: new Date().toISOString() };
   }
+  /** Issue ids in the mapped project with a comment created or edited since `since`: one paged query for all issues. */
+  async commentedIssues(mapping, since) {
+    const nodes = await this.collection('comments', { issue: { project: { id: { eq: mapping.projectId } } }, updatedAt: { gte: since } }, 'id issue { id }');
+    return new Set(nodes.map(c => c.issue?.id).filter(Boolean));
+  }
   async activity(mapping, issueId, parentId) {
     const parent = await this.eligible(mapping, parentId);
     let cursor = null, comments = [], issue;

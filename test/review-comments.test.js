@@ -505,3 +505,85 @@ test('checks are throttled and stop at the wake-up limit', async () => {
   assert.equal(calls.activity, 2);
   assert.equal(state.tasks.length, 2);
 });
+
+// 2026-11-16: reading every waiting issue every two minutes (~35 issues x 3+ requests) passed Linear's
+// 2,500 requests/hour. One project-wide query per pass now picks the issues that need a full read.
+async function sweepFixture({ commented, comments = () => [] }) {
+  const store = new MemoryStore(), state = initialState();
+  state.paused = false;
+  state.settings.projects = [{ id: 'p', label: 'Example', cwd: process.cwd(),
+    linear: { enabled: true, tokenEnv: 'TEST_TOKEN', workspaceId: 'w', projectId: 'proj', assigneeId: 'me', round: '1', reviewStateId: 'review' },
+    followup: { enabled: true, commentAuthorIds: ['peer', 'me'], maxWakeups: 8, reviewComments: true } }];
+  await store.save(state);
+  const calls = { activity: 0, sweep: 0, since: [] };
+  const runtime = await new Runtime({ store, directory: os.tmpdir(), env: { TEST_TOKEN: 'synthetic' }, linearFactory: () => ({
+    eligible: async () => ({}),
+    commentedIssues: async (mapping, since) => { calls.sweep++; calls.since.push(since); assert.equal(mapping.projectId, 'proj'); return commented(); },
+    activity: async () => { calls.activity++; return { comments: comments() }; }
+  }) }).init();
+  runtime.adapters.codex = { start: async () => ({ status: 'review', summary: done, sessionId: 's' }) };
+  await runtime.submit({ projectId: 'p', prompt: 'Work', issue: { id: 'issue', identifier: 'EX-1' }, source: 'w/issue' });
+  await runtime.dispatcher.tick(); await runtime.assess();
+  return { runtime, calls };
+}
+
+test('review comment checks read only issues the project-wide sweep reports', async () => {
+  let flagged = [];
+  const { runtime, calls } = await sweepFixture({ commented: () => new Set(flagged) });
+  await runtime.reviewComments();                     // first pass after start: one full read of every issue
+  assert.equal(calls.sweep, 0); assert.equal(calls.activity, 1);
+  runtime.reviewCheckedAt.clear();
+  await runtime.reviewComments();                     // nothing new: one cheap query, no per-issue read
+  assert.equal(calls.sweep, 1); assert.equal(calls.activity, 1);
+  flagged = ['other-issue'];
+  runtime.reviewCheckedAt.clear();
+  await runtime.reviewComments();                     // a comment elsewhere in the project does not read this issue
+  assert.equal(calls.activity, 1);
+  flagged = ['issue'];
+  runtime.reviewCheckedAt.set((await runtime.snapshot()).tasks[0].id, Date.now() + 60000);
+  await runtime.reviewComments();                     // flagged but not due yet: stays dirty
+  assert.equal(calls.activity, 1);
+  flagged = [];
+  runtime.reviewCheckedAt.clear();
+  await runtime.reviewComments();                     // still read once it is due, though the sweep moved on
+  assert.equal(calls.activity, 2);
+  runtime.reviewCheckedAt.clear();
+  await runtime.reviewComments();                     // read clears the flag
+  assert.equal(calls.activity, 2);
+  assert.ok(calls.since.every(s => !Number.isNaN(Date.parse(s))));
+});
+
+test('a rate-limited sweep reads no issue and pauses until Linear allows again', async () => {
+  let limited = false;
+  const { runtime, calls } = await sweepFixture({ commented: () => {
+    if (limited) { const e = new Error('limited'); e.code = 'RATE_LIMITED'; e.retryAfterMs = 600000; throw e; }
+    return new Set(['issue']);
+  } });
+  await runtime.reviewComments();
+  assert.equal(calls.activity, 1);
+  limited = true; runtime.reviewCheckedAt.clear();
+  await runtime.reviewComments();
+  assert.equal(calls.activity, 1);
+  assert.ok(runtime.commentPauseUntil > Date.now() + 500000);
+  limited = false; runtime.reviewCheckedAt.clear();
+  await runtime.reviewComments();                     // still paused: not even the sweep runs
+  assert.equal(calls.sweep, 1); assert.equal(calls.activity, 1);
+  runtime.commentPauseUntil = 0;
+  await runtime.reviewComments();                     // the cursor did not move past the limited pass
+  assert.equal(calls.activity, 2);
+  assert.equal(calls.since[1], calls.since[0]);
+});
+
+test('LinearClient.commentedIssues asks once for the whole project', async () => {
+  const bodies = [];
+  const client = new LinearClient('t', async (_url, init) => {
+    bodies.push(JSON.parse(init.body));
+    return { ok: true, status: 200, headers: { get: () => null },
+      json: async () => ({ data: { comments: { nodes: [{ id: 'c1', issue: { id: 'i1' } }, { id: 'c2', issue: { id: 'i1' } }, { id: 'c3', issue: { id: 'i2' } }],
+        pageInfo: { hasNextPage: false, endCursor: null } } } }) };
+  });
+  const ids = await client.commentedIssues({ projectId: 'proj' }, '2026-11-16T00:00:00.000Z');
+  assert.deepEqual([...ids].sort(), ['i1', 'i2']);
+  assert.equal(bodies.length, 1);
+  assert.deepEqual(bodies[0].variables.filter, { issue: { project: { id: { eq: 'proj' } } }, updatedAt: { gte: '2026-11-16T00:00:00.000Z' } });
+});
