@@ -276,6 +276,13 @@ test('manual wait validation rejects invalid target without replacing evidence a
   assert.deepEqual(after.waitHistory.at(-1), before.wait); assert.deepEqual(after.attempts, before.attempts); assert.equal(f.starts, 1);
 });
 
+test('a wait naming its own issue by identifier is stored with the issue id (LON-35, 2026-11-17)', async () => {
+  const f = await fixture(), before = (await f.runtime.snapshot()).tasks[0];
+  await f.runtime.dispatcher.update(s => { s.tasks.find(t => t.id === before.id).issue.identifier = 'EX-1'; });
+  await f.runtime.command({ action: 'arm-wait', id: before.id, wait: { kind: 'linear', expectedAuthorIds: ['peer'], issueId: 'ex-1', condition: 'reply on this issue' } });
+  assert.equal((await f.runtime.snapshot()).tasks[0].wait.issueId, 'parent');
+});
+
 test('changing a mapping during target validation cannot overwrite the existing wait', async () => {
   const f = await fixture(), before = (await f.runtime.snapshot()).tasks[0];
   let enter, release; const entered = new Promise(resolve => { enter = resolve; });
