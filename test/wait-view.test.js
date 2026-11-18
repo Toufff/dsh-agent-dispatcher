@@ -90,3 +90,12 @@ test('legacy waits never infer a reply person from the trusted allowlist',()=>{
  const v=waitView(legacy,{...data,issueContexts:{legacy:{status:'ready',replyUsers:[{id:'peer',name:'Trusted Person'}]}}},now);
  assert.equal(v.owners,'Linear 回复者待核对');assert.doesNotMatch(v.title,/Trusted Person/);
 });
+
+test('a finished round always tells collaborators where its conclusion is', () => {
+  const done = { status: 'review', projectId: 'p', issue: { id: 'i' }, workItems: [] };
+  assert.match(reportBody({ ...done, outcome: { publicSummary: 'ZRSTUDIO：结论 X，提交 https://github.com/o/r/commit/abc' } }, { shareProgress: true }, []), /结论 X.*commit\/abc/s);
+  assert.match(reportBody({ ...done, outcome: {} }, { shareProgress: true }, []), /没有附结论摘要.*report\.md/);
+  const hidden = reportBody({ ...done, outcome: { publicSummary: '写在 D:/quant-mining/x' } }, { shareProgress: true }, []);
+  assert.match(hidden, /未公开/); assert.doesNotMatch(hidden, /D:\/quant-mining/);
+  assert.doesNotMatch(reportBody({ ...done, outcome: {} }, { shareProgress: false }, []), /report\.md/);
+});

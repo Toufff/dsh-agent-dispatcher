@@ -5,7 +5,9 @@ import { attentionFor } from './workflow.js';
 // Conservative accidental-disclosure guard, not a general-purpose DLP system.
 export function shareable(text, secrets = []) {
   if (!text || secrets.some(s => s && text.includes(s))) return false;
-  return !/(?:[A-Za-z]:[\\/]|\\\\|\/(?:Users|home|tmp|var|etc|mnt)\/|(?:lin_api_|sk-|ghp_|github_pat_|Bearer\s)[\w-]+|-----BEGIN .*PRIVATE KEY|(?:password|api[_ -]?key|token|secret)\s*[:=]\s*\S+)/i.test(text);
+  // A drive letter must not follow another letter: "https://" contains "s:/" and is not a local path
+  // (that false positive silently dropped every summary carrying a commit link, LON-33..64, 2026-11-18).
+  return !/(?:(?<![A-Za-z])[A-Za-z]:[\\/]|\\\\|\/(?:Users|home|tmp|var|etc|mnt)\/|(?:lin_api_|sk-|ghp_|github_pat_|Bearer\s)[\w-]+|-----BEGIN .*PRIVATE KEY|(?:password|api[_ -]?key|token|secret)\s*[:=]\s*\S+)/i.test(text);
 }
 
 export function reportBody(task, mapping, secrets) {
@@ -16,6 +18,10 @@ export function reportBody(task, mapping, secrets) {
   if (task.reviewLimitNotified) body += `\n\n评论自动续办已达上限，自动审核轮次（${task.reviewAudits || 0} 次）也已用完：之后的新评论不会再自动执行。需要接收方本地负责人在派发面板手动继续，或调高唤醒上限 / 审核次数。`;
   if (mapping?.shareProgress && shareable(task.outcome?.publicSummary, secrets))
     body += `\n\n${task.outcome.publicSummary}`;
+  // Never leave collaborators with a bare "done": say why the conclusion is not here and where it is.
+  else if (mapping?.shareProgress && task.status === 'review')
+    body += task.outcome?.publicSummary ? '\n\n结论摘要含疑似本地路径或凭据，未公开；结论见仓库本单目录的 report.md。'
+      : '\n\n执行者本轮没有附结论摘要；结论见仓库本单目录的 report.md。';
   if (task.wait) {
     const wait = task.wait;
     if (wait.workItemIds?.length) body += '\n独立阶段单独监控；待审批阶段仍未授权，回复或到点不会解除审批。';

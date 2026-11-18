@@ -426,6 +426,10 @@ test('reporting includes opted-in blockers, retries independently, supersedes st
 test('shareable summary rejects credentials and local paths; malformed time is not accepted', () => {
   for (const text of ['C:/private/a', '/home/me/a', 'token=abc', 'lin_api_example', 'Bearer example', 'my secret-value'])
     assert.equal(shareable(text, ['secret-value']), false);
+  // Links are not local paths ("https://" contains "s:/"), but a drive path inside a sentence still is.
+  for (const text of ['提交 https://github.com/o/r/commit/abc', 'see http://example.com/x', 'strategies/LON-1-x/report.md'])
+    assert.equal(shareable(text, []), true);
+  for (const text of ['写在 D:/quant-mining/a', '路径(C:\\x)']) assert.equal(shareable(text, []), false);
   assert.equal(parseOutcome(contract('blocked', { wait: { kind: 'time', condition: 'later', notBefore: '15:20' } })), null);
   assert.equal(parseOutcome(contract('complete', { wait: { kind: 'linear', expectedAuthorIds: ['peer'], condition: 'reply' } })), null);
 });
