@@ -13,7 +13,7 @@ export const projectSchema = z.object({
   category: z.enum(['business', 'test', 'archive']).optional(),
   executionInstructions: z.string().max(6000).optional(),
   // Parallel tasks of one project share its cwd; raise above 1 only when each task isolates its own writes.
-  maxConcurrent: z.number().int().min(1).max(32).optional(),
+  maxConcurrent: z.number().int().min(1).max(64).optional(),
   followup: z.object({ enabled: z.boolean(), commentAuthorIds: z.array(id).max(30),
     observeAfterExpiry: z.boolean().optional(),
     // New trusted comments on a finished (review) issue start a continuation in the original session.
@@ -46,7 +46,7 @@ export const notificationChannelSchema = z.object({
 }).strict();
 export const settingsSchema = z.object({ executors: z.array(executorSchema), projects: z.array(projectSchema),
   // Global cap on simultaneously running automatic tasks (default 1).
-  concurrency: z.number().int().min(1).max(32).optional(),
+  concurrency: z.number().int().min(1).max(64).optional(),
   notifications: z.object({ channels: z.array(notificationChannelSchema).max(10) }).strict().optional() })
   .strict().superRefine((value, ctx) => {
     for (const key of ['executors', 'projects']) {
