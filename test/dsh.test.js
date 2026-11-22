@@ -139,3 +139,13 @@ test('DSH receipt uses its first completed turn, not a later unrelated session r
  const result=await adapter.reconcile({attempt:{id:'attempt',sessionId:'session'}});
  assert.equal(result.status,'review');assert.equal(result.summary,'Owned result');
 });
+
+test('DSH busy wait ignores stray non-user context and detached agents', async () => {
+  const notice = { id: 'n', source: { kind: 'system' }, content: [] };
+  const idle = { status: 'idle', inbox: { nextTurn: [], nextStep: [notice] } };
+  const adapter = new DshAdapter({ agents: { get: () => idle } });
+  assert.equal((await adapter.reconcile({ attempt: { status: 'busy', sessionId: 'session' } })).status, 'ready');
+  const steering = { status: 'idle', inbox: { nextTurn: [], nextStep: [{ id: 's', source: { kind: 'user' }, content: [] }] } };
+  assert.equal((await new DshAdapter({ agents: { get: () => steering } }).reconcile({ attempt: { status: 'busy', sessionId: 'session' } })).status, 'busy');
+  assert.equal((await new DshAdapter({ agents: { get: () => undefined } }).reconcile({ attempt: { status: 'busy', sessionId: 'session' } })).status, 'ready');
+});

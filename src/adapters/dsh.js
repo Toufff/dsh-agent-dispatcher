@@ -3,6 +3,9 @@ import { captureResultText } from '../result-text.js';
 
 const belongs = (message, attempt) => message?.source?.rpcId === attempt.id;
 const pending = agent => [...agent.inbox.nextTurn, ...agent.inbox.nextStep];
+// Work that keeps a Session from accepting a new round. Non-user next-step context (for example a
+// background-subagent failure notice) never starts a turn on an idle Agent, so it must not block.
+const blocking = agent => [...agent.inbox.nextTurn, ...agent.inbox.nextStep.filter(m => m.source?.kind === 'user')];
 function coldPending(events) {
   const queues = new Map();
   for (const event of events) if (event.type === 'agent/inbox/spliced') {
@@ -81,7 +84,7 @@ export class DshAdapter {
         return { status: 'rejected', reason: 'Session directory differs from project' };
       const resolved = await controller.resolveAgent(attempt.sessionId);
       if (resolved.error) return { status: 'busy', reason: 'Session writer unavailable' };
-      if (resolved.agent.status !== 'idle' || pending(resolved.agent).length)
+      if (resolved.agent.status !== 'idle' || blocking(resolved.agent).length)
         return { status: 'busy', reason: 'Session already has active or queued work' };
       // Sessions created before Workspace attachment existed are attached on their next round.
       if (typeof workspace?.attachSession === 'function') await workspace.attachSession(attempt.sessionId).catch(() => {});
@@ -99,7 +102,8 @@ export class DshAdapter {
   }
   async reconcile({ attempt }) {
     const agent = this.ctx.agents?.get(attempt.sessionId);
-    if (attempt.status === 'busy') return { status: agent?.status === 'idle' && !pending(agent).length ? 'ready' : 'busy' };
+    // A detached Agent is not in memory; let start() re-resolve it instead of waiting forever.
+    if (attempt.status === 'busy') return { status: !agent || (agent.status === 'idle' && !blocking(agent).length) ? 'ready' : 'busy' };
     const inspection = await this.inspect(attempt.sessionId);
     const events = inspection.events;
     const index = events.findIndex(event => event.type === 'agent/inbox/spliced'
@@ -119,7 +123,7 @@ export class DshAdapter {
   }
   async idle({ attempt }) {
     const agent = this.ctx.agents?.get(attempt.sessionId);
-    if (agent) return agent.status === 'idle' && pending(agent).length === 0;
+    if (agent) return agent.status === 'idle' && blocking(agent).length === 0;
     const inspection = await this.inspect(attempt.sessionId);
     const last = inspection.events.findLast(e => ['turn/start', 'turn/end'].includes(e.type));
     const queued = coldPending(inspection.events);
