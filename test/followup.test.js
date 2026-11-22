@@ -786,3 +786,26 @@ test('disabled historical mappings are not validated or advertised as active mon
  await f.runtime.dispatcher.update(s=>{Object.assign(s.tasks[0].wait,{status:'invalid',failureNotified:true,error:'historical fault'});});
  assert.equal((await f.runtime.snapshot()).errors.some(e=>e.includes('historical fault')),false);
 });
+
+test('round reports carry the result and the repository location of the full report', async () => {
+  const { roundReportBody, reportBody, repoPointer } = await import('../src/reporting.js');
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs');
+  const { execFileSync } = await import('node:child_process');
+  const os = await import('node:os'), path = await import('node:path');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'rr-'));
+  const git = (...a) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8' });
+  git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't');
+  git('remote', 'add', 'origin', 'git@github.com:o/r.git');
+  mkdirSync(path.join(dir, 'strategies', 'LON-9-x'), { recursive: true });
+  writeFileSync(path.join(dir, 'strategies', 'LON-9-x', 'report.md'), '# r');
+  git('add', '.'); git('commit', '-qm', 'r');
+  const hash = git('log', '-1', '--format=%h').trim();
+  const task = { cwd: dir, issue: { identifier: 'LON-9' } };
+  assert.match(repoPointer(task), new RegExp(`https://github.com/o/r/blob/${hash}/strategies/LON-9-x/report.md`));
+  const long = 'x'.repeat(7000);
+  const body = roundReportBody(task, { publicSummary: long, workItems: [{ status: 'done' }, { status: 'ready' }], next: 'step 2' }, 3, { shareProgress: true }, []);
+  assert.match(body, /自动续办第 3 轮/); assert.match(body, /1\/2/); assert.match(body, /已截断/); assert.match(body, /提交/); assert.match(body, /下一轮：step 2/);
+  assert.ok(body.length < 7000);
+  const blocked = reportBody({ ...task, status: 'blocked', outcome: { publicSummary: '' } }, { shareProgress: true }, []);
+  assert.match(blocked, /没有附结论摘要。\n完整结论在 Git 仓库/);
+});

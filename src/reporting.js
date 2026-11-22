@@ -1,6 +1,44 @@
 import { outcomeReports } from './outcome.js';
 import { waitFaults } from './followup.js';
 import { attentionFor } from './workflow.js';
+import { execFileSync } from 'node:child_process';
+import { readdirSync, existsSync } from 'node:fs';
+import path from 'node:path';
+
+const SUMMARY_LIMIT = 6000;
+// Where the full conclusion lives in the task's repository: Linear comments stay short, the repo does not.
+// Returns '' when the task has no issue directory or the repository cannot be read.
+export function repoPointer(task) {
+  try {
+    const id = task.issue?.identifier, cwd = task.cwd;
+    if (!id || !cwd) return '';
+    const dir = readdirSync(path.join(cwd, 'strategies'), { withFileTypes: true })
+      .find(d => d.isDirectory() && (d.name === id || d.name.startsWith(id + '-')))?.name;
+    if (!dir) return '';
+    const rel = `strategies/${dir}/` + (existsSync(path.join(cwd, 'strategies', dir, 'report.md')) ? 'report.md' : '');
+    const git = args => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 10000, windowsHide: true }).trim();
+    const hash = git(['log', '-1', '--format=%h', '--', `strategies/${dir}`]);
+    const remote = git(['remote', 'get-url', 'origin']).replace(/^git@([^:]+):/, 'https://$1/').replace(/\.git$/, '');
+    const url = remote.startsWith('https://') && hash ? `${remote}/blob/${hash}/${rel}` : '';
+    return `完整结论在 Git 仓库：${url || rel}${hash ? `（提交 ${hash}，路径 \`${rel}\`）` : ''}`;
+  } catch { return ''; }
+}
+export function summaryText(text) {
+  return text.length > SUMMARY_LIMIT ? `${text.slice(0, SUMMARY_LIMIT)}\n\n……（摘要过长已截断，全文见下方仓库链接）` : text;
+}
+
+// One settled round of an automatically continued task. The next round starts at once, so this is the only
+// place its result reaches Linear (before 2026-11-22 these were dropped: LON-160 showed round 1 of 17 only).
+export function roundReportBody(task, outcome, round, mapping, secrets) {
+  let body = `自动续办第 ${round} 轮已结束，下一轮已自动开始；以下是本轮结果（执行者报告，非独立验收）。`;
+  if (outcome.workItems) body += `\n阶段进度：${outcome.workItems.filter(i => i.status === 'done').length}/${outcome.workItems.length} 完成。`;
+  if (shareable(outcome.publicSummary, secrets)) body += `\n\n${summaryText(outcome.publicSummary)}`;
+  else body += outcome.publicSummary ? '\n\n结论摘要含疑似本地路径或凭据，未公开。' : '\n\n执行者本轮没有附结论摘要。';
+  const pointer = repoPointer(task);
+  if (pointer) body += `\n${pointer}`;
+  if (shareable(outcome.next, secrets)) body += `\n\n下一轮：${outcome.next.slice(0, 600)}`;
+  return body;
+}
 
 // Conservative accidental-disclosure guard, not a general-purpose DLP system.
 export function shareable(text, secrets = []) {
@@ -16,12 +54,14 @@ export function reportBody(task, mapping, secrets) {
   if (attention) body += `\n\n下一责任：${attention.owner}。${attention.reason}。${attention.action}`;
   if (task.workItems) body += `\n阶段进度（执行者报告，非独立验收）：${task.workItems.filter(i => i.status === 'done').length}/${task.workItems.length} 完成。`;
   if (task.reviewLimitNotified) body += `\n\n评论自动续办已达上限，自动审核轮次（${task.reviewAudits || 0} 次）也已用完：之后的新评论不会再自动执行。需要接收方本地负责人在派发面板手动继续，或调高唤醒上限 / 审核次数。`;
+  const pointer = mapping?.shareProgress && task.outcome ? repoPointer(task) : '';
   if (mapping?.shareProgress && shareable(task.outcome?.publicSummary, secrets))
-    body += `\n\n${task.outcome.publicSummary}`;
-  // Never leave collaborators with a bare "done": say why the conclusion is not here and where it is.
-  else if (mapping?.shareProgress && task.status === 'review')
-    body += task.outcome?.publicSummary ? '\n\n结论摘要含疑似本地路径或凭据，未公开；结论见仓库本单目录的 report.md。'
-      : '\n\n执行者本轮没有附结论摘要；结论见仓库本单目录的 report.md。';
+    body += `\n\n${summaryText(task.outcome.publicSummary)}`;
+  // Never leave collaborators with a bare "done" or "blocked": say why the conclusion is not here and where it is.
+  else if (mapping?.shareProgress && task.outcome)
+    body += (task.outcome.publicSummary ? '\n\n结论摘要含疑似本地路径或凭据，未公开' : '\n\n执行者本轮没有附结论摘要')
+      + (pointer ? '。' : '；结论见仓库本单目录的 report.md。');
+  if (pointer) body += `\n${pointer}`;
   if (task.wait) {
     const wait = task.wait;
     if (wait.workItemIds?.length) body += '\n独立阶段单独监控；待审批阶段仍未授权，回复或到点不会解除审批。';

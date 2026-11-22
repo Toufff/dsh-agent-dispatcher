@@ -10,7 +10,7 @@ import { LinearClient } from './linear.js';
 import { AdapterRegistry } from './adapters/registry.js';
 import { isDeepStrictEqual } from 'node:util';
 import { wakeEvent, waitSchema, validateLocalWait, dependencyEvent, waitFault, waitFaults } from './followup.js';
-import { reportBody } from './reporting.js';
+import { reportBody, roundReportBody } from './reporting.js';
 import { LinearSync } from './linear-sync.js';
 import { Notifications } from './notifications.js';
 import { currentTask, attentionFor, continuationPolicy, ledgerPrompt, archiveRound, compactRound } from './workflow.js';
@@ -423,13 +423,15 @@ export class Runtime {
       // Supersede obsolete retries immediately, not only when their backoff expires.
       for (const item of state.outbox.filter(i => i.status === 'pending')) {
         const task = state.tasks.find(t => t.id === item.taskId);
+        // A round report belongs to a finished round, not to the task's current status.
+        if (item.roundReport) { if (!task) item.status = 'superseded'; continue; }
         if (!task || !currentTask(task, state) || task.reportVersion !== item.reportVersion || task.status !== item.taskStatus) item.status = 'superseded';
       }
     });
     const state = await this.store.load();
     for (const item of state.outbox.filter(i => i.status === 'pending' && (!i.nextAt || i.nextAt <= Date.now()))) {
       const live = await this.store.load(), latest = live.tasks.find(t => t.id === item.taskId);
-      if (!latest || !currentTask(latest, live) || latest.reportVersion !== item.reportVersion || latest.status !== item.taskStatus) {
+      if (!latest || !item.roundReport && (!currentTask(latest, live) || latest.reportVersion !== item.reportVersion || latest.status !== item.taskStatus)) {
         await this.dispatcher.update(s => { s.outbox.find(i => i.id === item.id).status = 'superseded'; });
         continue;
       }
@@ -440,7 +442,7 @@ export class Runtime {
           s.outbox.find(i => i.id === item.id).status = 'sent';
           delete s.outbox.find(i => i.id === item.id).lastError;
           const task = s.tasks.find(t => t.id === item.taskId);
-          if (task.reportVersion === item.reportVersion && task.status === item.taskStatus) task.report = 'sent';
+          if (!item.roundReport && task.reportVersion === item.reportVersion && task.status === item.taskStatus) task.report = 'sent';
         });
       } catch (error) {
         await this.dispatcher.update(s => {
@@ -522,6 +524,14 @@ export class Runtime {
           }
           task.executors = [attempt.executor]; task.attempts = [];
           const project = state.settings.projects.find(p => p.id === task.projectId);
+          // The next round starts right away, so the settled round's result must be published now or never.
+          if (outcome && task.issue && project?.linear?.shareProgress) {
+            state.outbox ||= [];
+            state.outbox.push({ id: randomUUID(), taskId: task.id, projectId: task.projectId, roundReport: true,
+              issueId: task.issue.id, body: roundReportBody(task, outcome, (task.autoRounds || 0) + 1, project.linear,
+                Object.values(this.env).filter(v => typeof v === 'string' && v.length > 12)),
+              status: 'pending', tries: 0 });
+          }
           // A result that left out workItems was kept by reusing the stored ledger, but no stage can be credited
           // that way and the chain stalls after a few rounds. Say so explicitly in the next prompt.
           const openIds = (task.workItems || []).filter(i => i.status !== 'done').map(i => i.id).slice(0, 25);
