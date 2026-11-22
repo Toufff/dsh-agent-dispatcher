@@ -809,3 +809,14 @@ test('round reports carry the result and the repository location of the full rep
   const blocked = reportBody({ ...task, status: 'blocked', outcome: { publicSummary: '' } }, { shareProgress: true }, []);
   assert.match(blocked, /没有附结论摘要。\n完整结论在 Git 仓库/);
 });
+
+test('collected round results go out as one digest that keeps the newest rounds in full', async () => {
+  const { roundsDigest } = await import('../src/reporting.js');
+  const round = (n, size) => ({ at: `2026-11-22T0${n}:00:00.000Z`, body: `自动续办第 ${n} 轮已结束\n阶段进度：${n}/9 完成。\n\n${'y'.repeat(size)}\n完整结论在 Git 仓库：https://x/${n}` });
+  const small = roundsDigest([round(1, 10), round(2, 10)]);
+  assert.match(small, /^ZRSTUDIO：自动续办 2 轮/); assert.match(small, /y{10}[\s\S]*y{10}/);
+  const big = roundsDigest([1, 2, 3, 4, 5].map(n => round(n, 9000)));
+  assert.ok(big.length <= 30100);
+  assert.match(big, /自动续办第 1 轮已结束\n阶段进度：1\/9 完成。\n完整结论在 Git 仓库：https:\/\/x\/1/);
+  assert.match(big, /y{9000}\n完整结论在 Git 仓库：https:\/\/x\/5/);
+});

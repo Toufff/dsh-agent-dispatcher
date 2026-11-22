@@ -10,7 +10,11 @@ import { LinearClient } from './linear.js';
 import { AdapterRegistry } from './adapters/registry.js';
 import { isDeepStrictEqual } from 'node:util';
 import { wakeEvent, waitSchema, validateLocalWait, dependencyEvent, waitFault, waitFaults } from './followup.js';
-import { reportBody, roundReportBody } from './reporting.js';
+import { reportBody, roundReportBody, roundsDigest } from './reporting.js';
+
+// Collected automatic-round results are published together: when the task settles, or at the latest this long
+// after the oldest unpublished round.
+const ROUND_BATCH_MS = 2 * 3600e3;
 import { LinearSync } from './linear-sync.js';
 import { Notifications } from './notifications.js';
 import { currentTask, attentionFor, continuationPolicy, ledgerPrompt, archiveRound, compactRound } from './workflow.js';
@@ -412,6 +416,12 @@ export class Runtime {
         // A continuation round starting only moves the issue back to the active state; the round's
         // result report follows, so a "started" comment per round would just bury the discussion.
         const quiet = task.status === 'running' && Boolean(task.continuationOf);
+        // The task settled: publish the rounds collected since the last batch together with its own result.
+        if (!quiet && task.status !== 'running' && task.pendingRounds?.length) {
+          state.outbox.push({ id: randomUUID(), taskId: task.id, projectId: task.projectId, roundReport: true,
+            issueId: task.issue.id, body: roundsDigest(task.pendingRounds), status: 'pending', tries: 0 });
+          delete task.pendingRounds;
+        }
         task.reportVersion = (task.reportVersion || 0) + 1;
         state.outbox.push({ id: randomUUID(), taskId: task.id, projectId: task.projectId,
           reportVersion: task.reportVersion, taskStatus: task.status,
@@ -419,6 +429,13 @@ export class Runtime {
           body: quiet ? '' : reportBody(task, mapping, Object.values(this.env).filter(v => typeof v === 'string' && v.length > 12)),
           status: 'pending', tries: 0 });
         task.report = 'queued'; task.resumeNotice = false;
+      }
+      // Long-running chains: flush collected rounds at most once per batch window.
+      for (const task of state.tasks.filter(t => currentTask(t, state) && t.issue && t.pendingRounds?.length &&
+          Date.now() - Date.parse(t.pendingRounds[0].at) >= ROUND_BATCH_MS)) {
+        state.outbox.push({ id: randomUUID(), taskId: task.id, projectId: task.projectId, roundReport: true,
+          issueId: task.issue.id, body: roundsDigest(task.pendingRounds), status: 'pending', tries: 0 });
+        delete task.pendingRounds;
       }
       // Supersede obsolete retries immediately, not only when their backoff expires.
       for (const item of state.outbox.filter(i => i.status === 'pending')) {
@@ -524,13 +541,13 @@ export class Runtime {
           }
           task.executors = [attempt.executor]; task.attempts = [];
           const project = state.settings.projects.find(p => p.id === task.projectId);
-          // The next round starts right away, so the settled round's result must be published now or never.
+          // The next round starts right away and the round's result would otherwise never reach Linear. Keep it
+          // locally; reportCurrent publishes the collected rounds in one comment per batch (user 2026-11-22: one
+          // comment per round is too frequent and invites rate limits; it only has to arrive eventually).
           if (outcome && task.issue && project?.linear?.shareProgress) {
-            state.outbox ||= [];
-            state.outbox.push({ id: randomUUID(), taskId: task.id, projectId: task.projectId, roundReport: true,
-              issueId: task.issue.id, body: roundReportBody(task, outcome, (task.autoRounds || 0) + 1, project.linear,
-                Object.values(this.env).filter(v => typeof v === 'string' && v.length > 12)),
-              status: 'pending', tries: 0 });
+            (task.pendingRounds ||= []).push({ at: new Date().toISOString(),
+              body: roundReportBody(task, outcome, (task.autoRounds || 0) + 1, project.linear,
+                Object.values(this.env).filter(v => typeof v === 'string' && v.length > 12)) });
           }
           // A result that left out workItems was kept by reusing the stored ledger, but no stage can be credited
           // that way and the chain stalls after a few rounds. Say so explicitly in the next prompt.

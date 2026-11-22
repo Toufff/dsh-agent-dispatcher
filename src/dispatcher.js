@@ -74,9 +74,12 @@ export class Dispatcher {
               instruction: ownerInstructions.at(-1), at: new Date().toISOString() }
           } : { resumeWindow: prior.resumeWindow || (prior.wait ? { notBefore: prior.wait.notBefore, expiresAt: prior.wait.expiresAt } : undefined) }) } : {}),
         createdAt: new Date().toISOString(), ...(projectId ? { projectId } : {}),
-        ...(issue ? { issue } : {}), ...(session ? { session } : {}) };
+        ...(issue ? { issue } : {}), ...(session ? { session } : {}),
+        // Unpublished automatic-round results travel with the chain instead of dying with the old task.
+        ...(prior?.pendingRounds?.length ? { pendingRounds: prior.pendingRounds } : {}) };
       state.tasks.push(task);
       if (prior) {
+        delete prior.pendingRounds;
         prior.supersededBy = task.id;
         if (prior.wait) prior.wait.status = 'superseded';
         prior.report = 'superseded';

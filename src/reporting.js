@@ -27,6 +27,20 @@ export function summaryText(text) {
   return text.length > SUMMARY_LIMIT ? `${text.slice(0, SUMMARY_LIMIT)}\n\n……（摘要过长已截断，全文见下方仓库链接）` : text;
 }
 
+const DIGEST_LIMIT = 30000;
+// Several collected round results as one comment. When they do not fit, the older rounds shrink to their first
+// line (round number and progress) plus the repository link; the newest rounds stay in full.
+export function roundsDigest(rounds) {
+  const head = `ZRSTUDIO：自动续办 ${rounds.length} 轮的结果合并回写（${rounds[0].at.slice(5, 16).replace('T', ' ')} ～ ${rounds.at(-1).at.slice(5, 16).replace('T', ' ')} UTC，按时间先后）。`;
+  const full = rounds.map(r => r.body);
+  const brief = rounds.map(r => r.body.split('\n').filter(l => /^自动续办第|^阶段进度|^完整结论在 Git/.test(l)).join('\n'));
+  const parts = [...full];
+  for (let i = 0; i < parts.length - 1 && [head, ...parts].join('\n\n---\n\n').length > DIGEST_LIMIT; i++) parts[i] = brief[i];
+  let body = [head, ...parts].join('\n\n---\n\n');
+  if (body.length > DIGEST_LIMIT) body = `${body.slice(0, DIGEST_LIMIT)}\n\n……（过长已截断，全文见仓库链接）`;
+  return body;
+}
+
 // One settled round of an automatically continued task. The next round starts at once, so this is the only
 // place its result reaches Linear (before 2026-11-22 these were dropped: LON-160 showed round 1 of 17 only).
 export function roundReportBody(task, outcome, round, mapping, secrets) {
