@@ -6,7 +6,8 @@ import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
 import { defineDomain } from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
 import { initialState } from './config.js';
-import { DomainStore, acquireLease } from './store.js';
+import { SingleDocumentBackend, acquireLease } from './store.js';
+import { TaskStore } from './state-store.js';
 import { Runtime } from './runtime.js';
 import { remote } from './remote.js';
 
@@ -25,8 +26,9 @@ export default class AgentDispatcher extends TypertRemoteService {
       this.release = release;
       const domain = await ctx.storageDomain.open(domainSpec);
       this.domain = domain;
-      this.runtime = await new Runtime({ ctx, store: new DomainStore(domain),
-        directory }).init();
+      const store = await new TaskStore(new SingleDocumentBackend(domain), { initial: initialState(),
+        log: message => ctx.logger?.('agent-dispatcher')?.warn?.(message) }).open();
+      this.runtime = await new Runtime({ ctx, store, directory }).init();
       return this.runtime;
     });
     ctx.effect(() => ctx.typert.register({ package: 'dsh-agent-dispatcher', face: 'host', schemas: [],

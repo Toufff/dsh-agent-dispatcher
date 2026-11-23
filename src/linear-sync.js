@@ -43,7 +43,7 @@ export class LinearSync {
     return this.inflight;
   }
   async perform({ force = false } = {}) {
-    const r = this.runtime, state = await r.store.load(), groups = syncGroups(state);
+    const r = this.runtime, state = await r.store.read(), groups = syncGroups(state);
     for (const group of groups) {
       const now = this.now(), saved = state.linearSync?.[group.key] || {};
       const same = saved.signature === group.signature;
@@ -52,7 +52,7 @@ export class LinearSync {
       const full = !same || !saved.reconciledAt || now - saved.reconciledAt >= reconcileEvery;
       const since = full || !saved.cursor ? undefined : new Date(Date.parse(saved.cursor) - overlap).toISOString();
       const commentStart = group.waits.length ? new Date(Math.min(...group.waits.map(t => Date.parse(t.wait.armedAt)))).toISOString() : new Date(now).toISOString();
-      const valid = async () => syncGroups(await r.store.load()).some(g => g.key === group.key && g.signature === group.signature);
+      const valid = async () => syncGroups(await r.store.read()).some(g => g.key === group.key && g.signature === group.signature);
       let monitored = false;
       try {
         const result = await r.client(group.projects[0].linear).changes({
@@ -72,7 +72,7 @@ export class LinearSync {
           if (!syncGroups(s).some(g => g.key === group.key && g.signature === group.signature)) return;
           s.linearSync ||= {}; s.linearSync[group.key] = { ...saved, signature: group.signature, comments, reconciledAt: same ? saved.reconciledAt || 0 : 0, nextAt: 0 };
           if (!same) delete s.linearSync[group.key].cursor;
-        });
+        }, { durable: true });
         let intakeError;
         try { await r.intake({ projects: group.projects, issues: result.issues }); }
         catch (error) { intakeError = error; }

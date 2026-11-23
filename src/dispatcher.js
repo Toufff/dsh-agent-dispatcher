@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { captureResultText } from './result-text.js';
 import { waitFaults } from './followup.js';
 import { currentTask, issueKey } from './workflow.js';
+import { asStateStore } from './state-store.js';
 
 export const terminal = new Set(['review', 'failed', 'exhausted', 'stopped', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result']);
 async function bounded(operation, ms = 15000) {
@@ -23,12 +24,15 @@ export function hasSlot(task, occupied, state) {
   return occupied.filter(o => slotGroup(o) === group).length < projectLimit(task, state);
 }
 
-/** A single-owner kernel. store.save must durably replace the aggregate atomically. */
+/**
+ * A single-owner kernel. Every section works on the store's draft inside one lock; a checkpoint commits the
+ * draft (durable ones persist before the next external side effect) and a failed section rolls it back.
+ */
 export class Dispatcher {
   #tail = Promise.resolve();
   /** startContext(task, state): extra fields for adapter.start, computed in the lock (it may record on task). */
   constructor({ store, adapters, id = randomUUID, beforeStart, enabled, startContext }) {
-    this.store = store;
+    this.store = asStateStore(store);
     this.adapters = adapters;
     this.id = id;
     this.beforeStart = beforeStart;
@@ -41,14 +45,24 @@ export class Dispatcher {
     this.#tail = result.catch(() => {});
     return result;
   }
+  /** Runs fn on the draft; an exception discards the draft's uncommitted changes. Caller holds the lock. */
+  async #within(fn) {
+    const state = await this.store.begin();
+    try { return await fn(state); }
+    catch (error) { this.store.rollback(state); throw error; }
+  }
+  #section(fn) { return this.#exclusive(() => this.#within(fn)); }
+  /** tasks: ids of the only tasks this section may have changed (kernel sections touching one task). */
+  #save(state, durable = false, tasks) { return this.store.checkpoint(state, { durable, tasks }); }
+  /** Persist every committed change now. */
+  flush() { return this.#exclusive(() => this.store.flush()); }
 
   enqueue({ source, round, cwd, prompt, executors, title = source, projectId, issue, session, resultContract = false, basePrompt, continuationOf, workflowVersion, goalPrompt, workItems, ownerInstructions, continuationTiming = 'inherit' }) {
-    return this.#exclusive(async () => {
+    return this.#section(async state => {
       if (!source || !round || !cwd || !prompt || !executors?.length)
         throw new Error('source, explicit round, local cwd, prompt and executors required');
       if (new Set(executors).size !== executors.length)
         throw new Error('executor instances must be unique');
-      const state = await this.store.load();
       const key = JSON.stringify([source, round]);
       const existing = state.tasks.find(t => t.key === key);
       if (existing) return existing.id;
@@ -89,14 +103,13 @@ export class Dispatcher {
         prior.report = 'superseded';
       }
       for (const item of state.outbox || []) if (item.status === 'pending' && !currentTask(state.tasks.find(t => t.id === item.taskId) || {}, state)) item.status = 'superseded';
-      await this.store.save(state);
+      await this.#save(state, true);
       return task.id;
     });
   }
 
   tick() {
-    return this.#exclusive(async () => {
-      const state = await this.store.load();
+    return this.#section(async state => {
       if (state.paused) return;
       // Every unresolved, non-queued task owns one automatic execution slot. The global
       // limit (settings.concurrency) and each project's limit (maxConcurrent) default to 1,
@@ -117,7 +130,7 @@ export class Dispatcher {
         }
         if (task.wait) task.wait.status = 'expired';
         task.events.push({ action: 'window-expired', at: new Date().toISOString() });
-        await this.store.save(state); return;
+        await this.#save(state, false, [task.id]); return;
       }
       if (task.resumeWindow?.notBefore && Date.now() < Date.parse(task.resumeWindow.notBefore)) return;
       if (this.beforeStart) {
@@ -129,12 +142,12 @@ export class Dispatcher {
             task.wait.status = 'invalid'; task.wait.failureNotified = true; task.wait.errorCode = error.code;
             task.wait.error = waitFaults[error.code] || '依赖完成回执已改变，需重新核验并设置等待条件。';
             task.events.push({ action: 'dependency-admission-blocked', at: new Date().toISOString() });
-            await this.store.save(state); return;
+            await this.#save(state, false, [task.id]); return;
           }
           // Keep the queue intact for a transient outage, but never execute from stale assignment data.
           task.admissionError = '启动前 Linear 指派或状态复核未通过，未执行；稍后自动重查。';
           task.admissionRetryAt = Date.now() + 30000;
-          await this.store.save(state); return;
+          await this.#save(state, false, [task.id]); return;
         }
       }
       for (let i = task.attempts.length; i < task.executors.length; i++) {
@@ -146,7 +159,7 @@ export class Dispatcher {
         task.attempts.push(attempt);
         task.status = 'starting';
         // Never call start until its intent is durable.
-        await this.store.save(state);
+        await this.#save(state, true, [task.id]);
         let result;
         try {
           const adapter = this.adapters[executor];
@@ -156,12 +169,12 @@ export class Dispatcher {
           result = { status: 'unknown' };
         }
         this.#apply(task, attempt, result);
-        await this.store.save(state);
+        await this.#save(state, true, [task.id]);
         if (attempt.status !== 'rejected') return;
       }
       task.status = 'exhausted';
       task.executionNotice = true; task.report = 'pending';
-      await this.store.save(state);
+      await this.#save(state, false, [task.id]);
     });
   }
 
@@ -196,19 +209,18 @@ export class Dispatcher {
 
   reconcile() {
     return this.#exclusive(async () => {
-      const ids = (await this.store.load()).tasks
+      const ids = (await this.store.read()).tasks
         .filter(t => !terminal.has(t.status) && t.owner !== 'human' && t.status !== 'queued').map(t => t.id);
       // Each running slot is reconciled independently; one task's failure must not skip the rest.
       let failure;
       for (const id of ids) {
-        try { await this.#reconcileOne(id); } catch (error) { failure ??= error; }
+        try { await this.#within(state => this.#reconcileOne(state, id)); } catch (error) { failure ??= error; }
       }
       if (failure) throw failure;
     });
   }
 
-  async #reconcileOne(id) {
-    const state = await this.store.load();
+  async #reconcileOne(state, id) {
     const task = state.tasks.find(t => t.id === id);
     if (!task || terminal.has(task.status) || task.status === 'queued' || task.owner === 'human') return;
     const attempt = task.attempts.at(-1);
@@ -223,7 +235,7 @@ export class Dispatcher {
       if (task.wait) task.wait.status = 'suspended';
       delete task.pendingStop;
       task.events.push({ action, at: new Date().toISOString() });
-      await this.store.save(state); return;
+      await this.#save(state, false, [task.id]); return;
     }
     // Once accepted, a later failure cannot become a pre-start rejection.
     if (result?.status === 'rejected' && attempt.accepted)
@@ -231,14 +243,14 @@ export class Dispatcher {
     if (attempt.status === 'busy' && result?.status === 'ready') {
       task.attempts.pop(); task.status = 'queued';
     } else this.#apply(task, attempt, result);
-    await this.store.save(state);
+    await this.#save(state, false, [task.id]);
   }
 
-  update(fn) {
-    return this.#exclusive(async () => {
-      const state = await this.store.load();
+  /** durable: persist before returning even inside a deferred cycle (before/after an external side effect). */
+  update(fn, { durable = false } = {}) {
+    return this.#section(async state => {
       const result = await fn(state);
-      await this.store.save(state);
+      await this.#save(state, durable);
       return result;
     });
   }
@@ -257,7 +269,7 @@ export class Dispatcher {
         if (!terminal.has(task.status) && task.status !== 'queued' && task.status !== 'busy') {
           task.status = 'stopping';
           task.pendingStop = action;
-          await this.store.save(state);
+          await this.#save(state, true);
           let result;
           try { result = await bounded(() => this.adapters[attempt.executor]?.stop({ task, attempt })); }
           catch { result = null; }

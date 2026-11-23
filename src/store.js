@@ -1,6 +1,5 @@
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
 import { initialState } from './config.js';
 
 // Windows readers/antivirus may briefly hold the destination open. Retry the
@@ -41,18 +40,42 @@ export class FileStore {
   async close() { if (this.lock) { await this.lock.close(); await unlink(this.lockFile); this.lock = null; } }
 }
 
-export class DomainStore {
-  constructor(domain) { this.domain = domain; }
-  async load() { return structuredClone(this.domain.global.get()); }
-  async save(state) {
-    if (isDeepStrictEqual(this.domain.global.get(), state)) return;
-    for (let tries = 0; ; tries++) {
-      try { await this.domain.global.set(structuredClone(state)); return; }
-      catch (error) {
-        if (!['EPERM', 'EBUSY', 'EACCES'].includes(error.code) || tries >= 4) throw error;
-        await new Promise(resolve => setTimeout(resolve, 50 * 2 ** tries));
-      }
+// Windows readers/antivirus may briefly hold a storage file open; retry the same durable write.
+export async function retrying(write, delay = ms => new Promise(resolve => setTimeout(resolve, ms))) {
+  for (let tries = 0; ; tries++) {
+    try { return await write(); }
+    catch (error) {
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(error.code) || tries >= 4) throw error;
+      await delay(50 * 2 ** tries);
     }
+  }
+}
+
+/**
+ * TaskStore backend over the legacy single-document domain (global = the whole state). A write still
+ * replaces the whole document, but only when a record or the global part actually changed.
+ */
+export class SingleDocumentBackend {
+  constructor(domain) { this.domain = domain; }
+  async loadAll() {
+    const { tasks = [], outbox = [], ...globals } = this.domain.global.get();
+    this.texts = { tasks: new Map(tasks.map(t => [t.id, JSON.stringify(t)])), outbox: new Map(outbox.map(i => [i.id, JSON.stringify(i)])) };
+    this.global = JSON.stringify({ ...globals, taskOrder: tasks.map(t => t.id), outboxOrder: outbox.map(i => i.id) });
+    return { global: JSON.parse(this.global), records: { tasks: new Map(tasks.map(t => [t.id, structuredClone(t)])), outbox: new Map(outbox.map(i => [i.id, structuredClone(i)])) } };
+  }
+  async write(batch, written) {
+    const texts = { tasks: new Map(this.texts.tasks), outbox: new Map(this.texts.outbox) };
+    for (const { table, id, text } of batch.puts) texts[table].set(id, text);
+    for (const { table, id } of batch.deletes) texts[table].delete(id);
+    const global = batch.global ?? this.global;
+    const { taskOrder, outboxOrder, ...rest } = JSON.parse(global);
+    const list = (table, order) => `[${order.filter(id => texts[table].has(id)).map(id => texts[table].get(id)).join(',')}]`;
+    const document = JSON.parse(`${JSON.stringify(rest).slice(0, -1)}${Object.keys(rest).length ? ',' : ''}"tasks":${list('tasks', taskOrder)},"outbox":${list('outbox', outboxOrder)}}`);
+    await retrying(() => this.domain.global.set(document));
+    this.texts = texts; this.global = global;
+    for (const { table, id, text } of batch.puts) written('put', table, id, text);
+    if (batch.global !== undefined) written('global', null, null, batch.global);
+    for (const { table, id } of batch.deletes) written('delete', table, id);
   }
 }
 

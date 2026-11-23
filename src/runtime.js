@@ -21,6 +21,7 @@ const DEFAULT_FRESH_CONTEXT_TOKENS = 200000;
 const CONTEXT_READ_MS = 5000;
 const freshContextLimit = policy => policy?.freshContextTokens ?? DEFAULT_FRESH_CONTEXT_TOKENS;
 import { LinearSync } from './linear-sync.js';
+import { asStateStore } from './state-store.js';
 import { Notifications } from './notifications.js';
 import { currentTask, attentionFor, continuationPolicy, ledgerPrompt, archiveRound, compactRound } from './workflow.js';
 
@@ -145,7 +146,7 @@ export function issuePrompt(issue) {
 
 export class Runtime {
   constructor({ store, ctx = {}, directory, linearFactory = token => new LinearClient(token), env = process.env, registry }) {
-    this.store = store; this.ctx = ctx; this.directory = directory; this.env = env;
+    this.store = asStateStore(store); this.ctx = ctx; this.directory = directory; this.env = env;
     this.linearFactory = linearFactory; this.adapters = {}; this.health = {}; this.errors = [];
     this.sync = new LinearSync(this); this.reads = new Map(); this.notifications = new Notifications(this);
     this.registry = registry || new AdapterRegistry();
@@ -153,7 +154,7 @@ export class Runtime {
       for (const type of ['codex', 'claude']) this.registry.register(type, (config, deps) => new CliAdapter(config, path.join(deps.directory, 'runs'), deps.secretKeys));
       this.registry.register('dsh', (config, deps) => new DshAdapter(deps.ctx, config));
     }
-    this.dispatcher = new Dispatcher({ store, adapters: this.adapters,
+    this.dispatcher = new Dispatcher({ store: this.store, adapters: this.adapters,
       startContext: (task, state) => { const effort = effortFor(task, state); return effort ? { effort } : {}; },
       enabled: (executor, state) => Boolean(state.settings.executors.find(e => e.id === executor)?.enabled),
       beforeStart: async (task, state) => {
@@ -171,7 +172,7 @@ export class Runtime {
     } });
   }
   async init() {
-    const state = await this.store.load();
+    await this.dispatcher.update(state => {
     for (const task of state.tasks) {
       const legacy = state.outbox.filter(i => i.taskId === task.id && i.status === 'pending' && !i.reportVersion);
       if (legacy.length) {
@@ -183,9 +184,9 @@ export class Runtime {
       const rounds = task.rounds || [];
       for (let k = 0; k < rounds.length - 1; k++) rounds[k] = compactRound(rounds.slice(0, k), rounds[k]);
     }
-    await this.store.save(state);
-    if (this.env.DISPATCH_START_PAUSED === '1') { state.paused = true; await this.store.save(state); }
-    this.install(state.settings); return this;
+    if (this.env.DISPATCH_START_PAUSED === '1') state.paused = true;
+    }, { durable: true });
+    this.install((await this.store.read()).settings); return this;
   }
   install(settings) {
     const secretKeys = settings.projects.flatMap(project => project.linear ? [project.linear.tokenEnv] : []);
@@ -198,7 +199,7 @@ export class Runtime {
     }
   }
   async snapshot() {
-    const state = await this.store.load();
+    const state = await this.store.read();
     const reportErrors = state.outbox.filter(i => i.status === 'pending' && i.tries >= 3)
       .map(i => `${state.tasks.find(t => t.id === i.taskId)?.issue?.identifier || 'Linear'} 回写已失败 ${i.tries} 次，自动重试中；不会重跑任务。`);
     const monitorErrors = state.tasks.filter(t => currentTask(t, state) && t.wait?.failureNotified && t.status === 'blocked' && state.settings.projects.find(p => p.id === t.projectId)?.followup?.enabled)
@@ -272,7 +273,7 @@ export class Runtime {
   }
   submit(request) { return this.serializePublication(() => this.submitCurrent(request)); }
   async submitCurrent({ projectId, title, prompt, session, source, round, issue, continuationOf, goalPrompt, workItems, ownerInstructions, continuationTiming }) {
-    const state = await this.store.load();
+    const state = await this.store.read();
     const project = state.settings.projects.find(p => p.id === projectId);
     if (!project) throw new Error('Select a locally configured project');
     if (!(await stat(project.cwd)).isDirectory()) throw new Error('Project directory does not exist');
@@ -301,7 +302,7 @@ export class Runtime {
       return { cwd: request.cwd, exists: true };
     }
     if (request.action === 'issue-context') {
-      const state = await this.store.load();
+      const state = await this.store.read();
       const task = state.tasks.find(t => t.id === request.id);
       const project = state.settings.projects.find(p => p.id === task?.projectId);
       if (!task?.issue?.id || !project?.linear) throw new Error('This task has no Linear mapping');
@@ -332,7 +333,7 @@ export class Runtime {
     }
     else if (request.action === 'arm-wait') {
       let wait = waitSchema.parse(request.wait);
-      const before = await this.store.load(), original = before.tasks.find(t => t.id === request.id);
+      const before = await this.store.read(), original = before.tasks.find(t => t.id === request.id);
       const originalProject = before.settings.projects.find(p => p.id === original?.projectId);
       if (!original || !currentTask(original, before)) throw new Error('Task not found or superseded');
       wait = validateLocalWait(wait, original, before);
@@ -377,7 +378,7 @@ export class Runtime {
       if (!['inherit', 'recheck'].includes(request.continuationTiming || 'inherit') ||
           (request.continuationTiming === 'recheck' && !request.prompt?.trim()))
         throw new Error('Describe the new execution timing and scope before revising the old window');
-      const state = await this.store.load();
+      const state = await this.store.read();
       const previous = state.tasks.find(t => t.id === request.id);
       if (!previous || previous.owner === 'human' || !['review', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result'].includes(previous.status))
         throw new Error('Only completed, scheduler-owned tasks can start a continuation');
@@ -417,6 +418,8 @@ export class Runtime {
     }
     else if (request.action === 'retry') await this.retry(request.id);
     else await this.dispatcher.action(request.id, request.action, { confirmedIdle: request.confirmedIdle });
+    // A command's changes are durable before it returns, even when it ran inside a deferred cycle.
+    await this.dispatcher.flush();
     return this.snapshot();
   }
   client(mapping) {
@@ -425,11 +428,11 @@ export class Runtime {
     return this.linearFactory(token);
   }
   async intake(batch) {
-    const state = await this.store.load();
+    const state = await this.store.read();
     const errors = [];
     for (const project of (batch?.projects || state.settings.projects.filter(p => p.linear?.enabled))) {
       try {
-      if (!isDeepStrictEqual(project, (await this.store.load()).settings.projects.find(p => p.id === project.id))) continue;
+      if (!isDeepStrictEqual(project, (await this.store.read()).settings.projects.find(p => p.id === project.id))) continue;
       const client = this.client(project.linear);
       for (const issue of batch ? batch.issues.filter(i => i.project?.id === project.linear.projectId && i.assignee?.id === project.linear.assigneeId && i.state?.id === project.linear.readyStateId && i.updatedAt >= project.linear.since) : await client.issues(project.linear)) {
         await this.submit({ projectId: project.id, title: `${issue.identifier} · ${issue.title}`,
@@ -479,10 +482,10 @@ export class Runtime {
         if (item.roundReport) { if (!task) item.status = 'superseded'; continue; }
         if (!task || !currentTask(task, state) || task.reportVersion !== item.reportVersion || task.status !== item.taskStatus) item.status = 'superseded';
       }
-    });
-    const state = await this.store.load();
+    }, { durable: true });
+    const state = await this.store.read();
     for (const item of state.outbox.filter(i => i.status === 'pending' && (!i.nextAt || i.nextAt <= Date.now()))) {
-      const live = await this.store.load(), latest = live.tasks.find(t => t.id === item.taskId);
+      const live = await this.store.read(), latest = live.tasks.find(t => t.id === item.taskId);
       if (!latest || !item.roundReport && (!currentTask(latest, live) || latest.reportVersion !== item.reportVersion || latest.status !== item.taskStatus)) {
         await this.dispatcher.update(s => { s.outbox.find(i => i.id === item.id).status = 'superseded'; });
         continue;
@@ -495,7 +498,7 @@ export class Runtime {
           delete s.outbox.find(i => i.id === item.id).lastError;
           const task = s.tasks.find(t => t.id === item.taskId);
           if (!item.roundReport && task.reportVersion === item.reportVersion && task.status === item.taskStatus) task.report = 'sent';
-        });
+        }, { durable: true });
       } catch (error) {
         await this.dispatcher.update(s => {
           const entry = s.outbox.find(i => i.id === item.id); entry.tries++;
@@ -529,13 +532,13 @@ export class Runtime {
   }
   /** Retry a stopped/failed round; the original session is reused unless its context is over the limit. */
   async retry(id) {
-    const state = await this.store.load(), task = state.tasks.find(t => t.id === id), attempt = task?.attempts.at(-1);
+    const state = await this.store.read(), task = state.tasks.find(t => t.id === id), attempt = task?.attempts.at(-1);
     const freshSession = attempt?.accepted ? await this.rotationFor(task.projectId, attempt.executor, attempt.sessionId, state) : null;
     return this.dispatcher.action(id, 'retry', freshSession ? { freshSession } : {});
   }
   /** Session context of rounds assess() is about to continue automatically, read outside the state lock. */
   async continuingContexts() {
-    const state = await this.store.load(), contexts = new Map();
+    const state = await this.store.read(), contexts = new Map();
     for (const task of state.tasks) {
       if (!currentTask(task, state) || task.status !== 'review' || task.assessed || task.owner === 'human' || !task.resultContract) continue;
       const attempt = task.attempts.at(-1);
@@ -690,7 +693,7 @@ export class Runtime {
         task.events.push({ action: 'window-expired', at: task.wait.expiredAt });
       }
     });
-    const snapshot = await this.store.load();
+    const snapshot = await this.store.read();
     for (const old of snapshot.tasks.filter(t => currentTask(t, snapshot) && t.status === 'blocked' && t.owner !== 'human' && ['watching', 'validating', 'expired'].includes(t.wait?.status))) {
       const [source] = JSON.parse(old.key);
       if (snapshot.tasks.some(t => t.key === JSON.stringify([source, `continue:${old.id}`]))) continue;
@@ -834,7 +837,7 @@ export class Runtime {
     if (error?.code === 'RATE_LIMITED') this.commentPauseUntil = Date.now() + (error.retryAfterMs || 60000);
   }
   async reviewComments() {
-    const state = await this.store.load();
+    const state = await this.store.read();
     if (state.paused) return;
     if (Date.now() < (this.commentPauseUntil || 0)) return;
     const own = new Set(state.outbox.map(i => i.id));
@@ -980,7 +983,7 @@ export class Runtime {
    * wakes a chain at most once and counts toward maxWakeups. Pending decisions stay unapproved.
    */
   async dataWakes() {
-    const state = await this.store.load();
+    const state = await this.store.read();
     if (state.paused) return;
     for (const project of state.settings.projects) {
       const policy = project.followup;
@@ -1026,7 +1029,7 @@ export class Runtime {
    * failed for a person to look at.
    */
   async retryOutputLimit() {
-    const state = await this.store.load();
+    const state = await this.store.read();
     if (state.paused) return;
     for (const task of state.tasks) {
       const attempt = task.attempts.at(-1);
@@ -1045,6 +1048,11 @@ export class Runtime {
   async cycle() {
     if (this.cycling) return;
     this.cycling = true;
+    try { await this.store.deferred(() => this.cycleBody()); }
+    finally { this.cycling = false; }
+  }
+  /** One pass. Non-durable updates are persisted together at its end. */
+  async cycleBody() {
     try {
       this.errors = [];
       const phase = async (name, operation) => { try { await operation(); } catch { this.errors.push(`${name} failed; retrying independently`); } };
@@ -1073,7 +1081,7 @@ export class Runtime {
           })]); } finally { clearTimeout(timer); }
         });
       }
+      await phase('State persistence', () => this.dispatcher.flush());
     } catch (error) { this.errors = [String(error.message).slice(0, 300)]; }
-    finally { this.cycling = false; }
   }
 }

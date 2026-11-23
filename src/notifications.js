@@ -181,7 +181,7 @@ export class Notifications {
       if (!channel) { entry.status = 'superseded'; entry = null; return; }
       entry.status = 'sending'; entry.tries++; data.nextSendAt = now + 1000;
       entry = structuredClone(entry); channel = structuredClone(channel);
-    });
+    }, { durable: true });
     if (!entry) return;
     let result;
     try { result = await this.send(channel, entry.text, { type: entry.type }); }
@@ -194,6 +194,6 @@ export class Notifications {
         if (item.tries >= 3) { item.status = 'failed'; item.error = '飞书连续限流，已停止重试'; }
         else item.nextAt = this.clock() + (result.retryMs || 60000);
       }
-    });
+    }, { durable: true });
   }
 }
