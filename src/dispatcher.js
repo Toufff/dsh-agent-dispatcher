@@ -135,7 +135,7 @@ export class Dispatcher {
       for (const t of active) {
         if (picked.length >= free) break;
         if (t.status === 'queued' && !notYet(t) && hasSlot(t, [...occupied, ...picked], state) &&
-            (!t.admissionRetryAt || Date.now() >= t.admissionRetryAt) && !state.tasks.some(other => other.owner === 'human' && other.cwd === t.cwd))
+            (!t.admissionRetryAt || Date.now() >= t.admissionRetryAt) && !state.tasks.some(other => other.owner === 'human' && !other.manualParked && other.cwd === t.cwd))
           picked.push(t);
       }
       if (!picked.length) return;
@@ -307,6 +307,9 @@ export class Dispatcher {
       if (!currentTask(task, state)) throw new Error('Historical task is superseded; open the current task');
       const attempt = task.attempts.at(-1);
       if (action === 'stop' || action === 'takeover') {
+        // A takeover of a round that was executing hands a live session to a person, who may now be editing the
+        // working directory; taking over an already settled task only parks it (e.g. a parent waiting for children).
+        const parkedOnly = action === 'takeover' && (terminal.has(task.status) || task.status === 'queued');
         if (!terminal.has(task.status) && task.status !== 'queued' && task.status !== 'busy') {
           task.status = 'stopping';
           task.pendingStop = action;
@@ -322,6 +325,7 @@ export class Dispatcher {
         }
         task.status = action === 'takeover' ? 'manual' : 'stopped';
         task.owner = action === 'takeover' ? 'human' : 'scheduler';
+        if (action === 'takeover') task.manualParked = parkedOnly; else delete task.manualParked;
         delete task.pendingStop;
         if (task.wait) task.wait.status = 'suspended';
       } else if (action === 'return') {
@@ -331,7 +335,7 @@ export class Dispatcher {
           const result = await bounded(() => adapter?.verifyReturn ? adapter.verifyReturn({ task, attempt }) : adapter?.idle({ task, attempt }));
           if (result !== true && !(result === null && confirmedIdle)) throw new Error('Session idle state is unconfirmed; finish the manual session and confirm before returning');
         }
-        task.owner = 'scheduler'; task.status = 'stopped';
+        task.owner = 'scheduler'; task.status = 'stopped'; delete task.manualParked;
       } else if (action === 'retry') {
         if (!['failed', 'exhausted', 'stopped'].includes(task.status)) throw new Error('Stop or reconcile before retry');
         const repair = repairRound(task);
