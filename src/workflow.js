@@ -131,6 +131,30 @@ export function deliverPendingComments(task, at = new Date().toISOString()) {
   return ids;
 }
 
+// ---- fresh-session handover ---------------------------------------------------------------------------------
+/** Opening of a round that takes a task over from another session. */
+export function freshHandover(reason) {
+  return `FRESH SESSION: you are taking over this task from a previous session because ${reason}. You do not have its conversation. Rebuild context from the repository: first read the task's HANDOFF.md (strategies/<issue>-*/HANDOFF.md, or HANDOFF.md in the working directory), the stage ledger and trials.jsonl; read the report, README, logs and AGENTS.md only when you need more. Do not redo completed stages and do not report a done stage as open again (add a new verification stage instead).`;
+}
+const handoverPattern = () => /FRESH SESSION: you are taking over this task from a previous session because [\s\S]*?\(add a new verification stage instead\)\.(?: The rejected result failed validation with: [^\n]*)?\n*/g;
+/** Removes every handover paragraph: a handover only belongs to the round that starts the new session. */
+export const stripHandovers = text => typeof text === 'string' ? text.replace(handoverPattern(), '') : text;
+/** The prompt opened by exactly one (the current) handover, however many sessions the task went through. */
+export const withHandover = (prompt, handover) => `${handover}\n\n${stripHandovers(prompt)}`;
+/**
+ * Repairs a prompt that accumulated several handovers (each retry in a new session used to prepend another one,
+ * with stale token counts). Keeps the newest: the leading one of a retry-built prompt, else the last one.
+ */
+export function latestHandoverOnly(prompt) {
+  if (typeof prompt !== 'string') return prompt;
+  const found = [...prompt.matchAll(handoverPattern())];
+  if (found.length < 2) return prompt;
+  const keep = prompt.startsWith('FRESH SESSION: ') ? found[0] : found.at(-1);
+  let out = '', from = 0;
+  for (const m of found) { out += prompt.slice(from, m.index) + (m === keep ? m[0] : ''); from = m.index + m[0].length; }
+  return out + prompt.slice(from);
+}
+
 export function issueKey(task, state) {
   if (!task.issue?.id) return null;
   const mapping = state.settings.projects.find(p => p.id === task.projectId)?.linear;

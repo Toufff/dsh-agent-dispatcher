@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { captureResultText } from './result-text.js';
 import { waitFaults } from './followup.js';
-import { currentTask, issueKey, keyTaken, repairRound, deliverPendingComments } from './workflow.js';
+import { currentTask, issueKey, keyTaken, repairRound, deliverPendingComments, withHandover } from './workflow.js';
 import { asStateStore } from './state-store.js';
 
 export const terminal = new Set(['review', 'failed', 'exhausted', 'stopped', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result']);
@@ -300,7 +300,8 @@ export class Dispatcher {
         if (fresh) {
           // Same executor, new session: the prompt keeps its ledger and previous-round summary.
           delete task.session; task.executors = [attempt.executor];
-          task.prompt = `${fresh.handover}\n\n${task.prompt}`;
+          // One handover only: an earlier one (from a previous retry) is stale and is replaced.
+          task.prompt = withHandover(task.prompt, fresh.handover);
           task.sessionRounds = 0; task.recoveryStreak = 0;
           task.events.push({ action: 'fresh-session', reason: fresh.reason, at: new Date().toISOString() });
         } else if (attempt?.accepted) {
