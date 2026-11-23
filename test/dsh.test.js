@@ -149,3 +149,17 @@ test('DSH busy wait ignores stray non-user context and detached agents', async (
   assert.equal((await new DshAdapter({ agents: { get: () => steering } }).reconcile({ attempt: { status: 'busy', sessionId: 'session' } })).status, 'busy');
   assert.equal((await new DshAdapter({ agents: { get: () => undefined } }).reconcile({ attempt: { status: 'busy', sessionId: 'session' } })).status, 'ready');
 });
+
+test('DSH context size comes from the token-meter projection, else the newest usage sample in history', async () => {
+  const usage = (inputTokens, cacheReadTokens) => ({ type: 'assistant/message', data: { usage: { inputTokens, outputTokens: 9, totalTokens: 1, cacheReadTokens } } });
+  const history = { inspect: async () => ({ events: [usage(10, 100), { type: 'turn/end', data: {} }, usage(2666, 97024), { type: 'assistant/message', data: {} }] }) };
+  // projection present: prefer projectedTokens (accounts for a later compaction), then pressureTokens
+  const projected = new DshAdapter({ sessionController: { ...history,
+    projections: async request => ({ kind: 'sequenced', asOfSeq: 1, values: { contextPressure: request.sessionId === 's' ? { pressureTokens: 5000, projectedTokens: 4000 } : {} } }) } });
+  assert.equal(await projected.contextTokens('s'), 4000);
+  // projection without a sample, a failing projection read, or no projection API: newest usage in history
+  assert.equal(await projected.contextTokens('other'), 2666 + 97024);
+  const failing = new DshAdapter({ sessionController: { ...history, projections: async () => { throw new Error('unavailable'); } } });
+  assert.equal(await failing.contextTokens('s'), 2666 + 97024);
+  assert.equal(await new DshAdapter({ sessionController: { inspect: async () => ({ events: [] }) } }).contextTokens('s'), null);
+});

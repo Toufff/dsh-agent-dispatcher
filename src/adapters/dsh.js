@@ -53,6 +53,28 @@ export class DshAdapter {
     return { events: pages.flat() };
   }
 
+  /**
+   * Prompt-side context size of the session's next request, or null when unknown. Prefers DSH's own
+   * token-meter projection (`contextPressure`: input + cache read + cache write of the newest model call,
+   * adjusted for later compaction); falls back to the newest `usage` sample in durable history.
+   */
+  async contextTokens(sessionId) {
+    const controller = this.ctx.sessionController;
+    if (typeof controller?.projections === 'function') {
+      try {
+        const projected = await controller.projections({ sessionId }, new AbortController().signal);
+        const pressure = projected?.values?.contextPressure;
+        const tokens = pressure?.projectedTokens ?? pressure?.pressureTokens;
+        if (Number.isFinite(tokens)) return tokens;
+      } catch { /* fall back to history */ }
+    }
+    const usage = (await this.inspect(sessionId)).events
+      .findLast(e => e.type === 'assistant/message' && e.data?.usage)?.data.usage;
+    if (!usage) return null;
+    const tokens = (usage.inputTokens || 0) + (usage.cacheReadTokens || 0) + (usage.cacheWriteTokens || 0);
+    return Number.isFinite(tokens) ? tokens : null;
+  }
+
   /** The session's working directory: from its header when available, else from the session list. */
   async cwd(sessionId, inspection) {
     if (inspection?.meta?.cwd) return inspection.meta.cwd;

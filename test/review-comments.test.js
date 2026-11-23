@@ -587,3 +587,93 @@ test('LinearClient.commentedIssues asks once for the whole project', async () =>
   assert.equal(bodies.length, 1);
   assert.deepEqual(bodies[0].variables.filter, { issue: { project: { id: { eq: 'proj' } } }, updatedAt: { gte: '2026-11-16T00:00:00.000Z' } });
 });
+
+// Session context rotation (followup.freshContextTokens, default 200000).
+const continueResult = `<dispatch-result>${JSON.stringify({ status: 'continue', evidence: ['ok'], remaining: ['a'], next: 'do a', progress: 'new p',
+  blockers: [], workItems: [{ id: 'a', title: 'a', status: 'ready', dependsOn: [], action: 'do a', evidence: ['fresh evidence'] }] })}</dispatch-result>`;
+async function continuingRound(followup, contextTokens) {
+  const { runtime } = await fixture({ followup });
+  const reads = [];
+  runtime.adapters.codex.contextTokens = async sessionId => { reads.push(sessionId); return contextTokens(); };
+  await runtime.dispatcher.update(s => { const t = s.tasks[0]; t.workItems = [{ id: 'a', title: 'a', status: 'ready', dependsOn: [], action: 'do a', evidence: [] }];
+    t.workflowVersion = 2; t.status = 'review'; t.assessed = false; t.summary = continueResult; });
+  await runtime.assess();
+  return { task: (await runtime.snapshot()).tasks[0], reads };
+}
+
+test('every round prompt asks for a HANDOFF.md update and a trials.jsonl check', async () => {
+  const { starts } = await fixture();
+  assert.match(starts[0].task.prompt, /update the task's HANDOFF\.md/);
+  assert.match(starts[0].task.prompt, /otherwise HANDOFF\.md in this round's working directory/);
+  assert.match(starts[0].task.prompt, /check trials\.jsonl/);
+  const { task } = await continuingRound({}, async () => 1000);
+  assert.match(task.prompt, /update the task's HANDOFF\.md/);
+});
+
+test('an automatic round whose session context exceeds the limit continues in a fresh session', async () => {
+  const { task, reads } = await continuingRound({ freshRescue: true }, async () => 250000);
+  assert.deepEqual(reads, ['original-session']);
+  assert.equal(task.status, 'queued');
+  assert.equal(task.session, undefined);
+  assert.equal(task.sessionRounds, 0);
+  assert.equal(task.events.at(-1).action, 'fresh-session');
+  assert.match(task.events.at(-1).reason, /session context reached 250000 tokens/);
+  assert.match(task.prompt, /FRESH SESSION: .*session context reached 250000 tokens/);
+  assert.match(task.prompt, /first read the task's HANDOFF\.md.*trials\.jsonl/);
+  // routine rotation does not use up the once-per-episode rescue
+  assert.notEqual(task.freshRescued, true);
+});
+
+test('an automatic round keeps its session under the limit, on a failed read, or with rotation disabled', async () => {
+  for (const [followup, read] of [[{}, async () => 200000], [{ freshContextTokens: 300000 }, async () => 250000],
+    [{}, async () => { throw new Error('history unavailable'); }], [{}, async () => null], [{}, async () => 'n/a']]) {
+    const { task } = await continuingRound(followup, read);
+    assert.equal(task.status, 'queued');
+    assert.equal(task.session?.id, 'original-session');
+    assert.equal(task.events.at(-1).action, 'auto-continue');
+  }
+  const { task, reads } = await continuingRound({ freshContextTokens: 0 }, async () => 900000);
+  assert.equal(task.session?.id, 'original-session');
+  assert.deepEqual(reads, []);
+});
+
+test('a collaborator comment on a session with a large context continues in a fresh session', async () => {
+  const at = later();
+  const list = [{ id: 'c1', body: 'please dig further', createdAt: at, updatedAt: at, user: { id: 'peer' } }];
+  for (const [tokens, fresh] of [[250000, true], [150000, false], [undefined, false]]) {
+    const { runtime } = await fixture({ comments: () => list });
+    runtime.adapters.codex.contextTokens = async () => { if (tokens === undefined) throw new Error('unreadable'); return tokens; };
+    await runtime.reviewComments();
+    const next = (await runtime.snapshot()).tasks[1];
+    assert.match(next.prompt, /please dig further/);
+    if (fresh) {
+      assert.equal(next.session, undefined);
+      assert.match(next.prompt, /FRESH SESSION: .*session context reached 250000 tokens/);
+      assert.equal(next.events.at(-1).freshSession, 'the session context reached 250000 tokens');
+      assert.equal(next.reviewWakeups, 1);           // an ordinary comment round, not an audit
+    } else {
+      assert.equal(next.session.id, 'original-session');
+      assert.doesNotMatch(next.prompt, /FRESH SESSION/);
+    }
+  }
+});
+
+test('a context rotation from a comment keeps the full owner instruction history', async () => {
+  const at = later();
+  const { runtime } = await fixture({ comments: () => [{ id: 'c1', body: 'latest request', createdAt: at, updatedAt: at, user: { id: 'peer' } }] });
+  await runtime.dispatcher.update(s => { s.tasks[0].ownerInstructions = Array.from({ length: 15 }, (_, i) => `instruction ${i}`); });
+  runtime.adapters.codex.contextTokens = async () => 250000;
+  await runtime.reviewComments();
+  const next = (await runtime.snapshot()).tasks[1];
+  assert.equal(next.session, undefined);
+  assert.equal(next.ownerInstructions.length, 16);
+  assert.match(next.prompt, /instruction 0/);
+});
+
+test('freshContextTokens is an optional non-negative integer', () => {
+  const settings = initialState().settings;
+  settings.projects = [{ id: 'p', label: 'P', cwd: process.cwd(), followup: { enabled: true, commentAuthorIds: [], freshContextTokens: 0 } }];
+  assert.equal(settingsSchema.parse(settings).projects[0].followup.freshContextTokens, 0);
+  settings.projects[0].followup.freshContextTokens = -1;
+  assert.throws(() => settingsSchema.parse(settings));
+});

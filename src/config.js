@@ -32,6 +32,9 @@ export const projectSchema = z.object({
     freshRescue: z.boolean().optional(),
     // Rotate to a fresh session after this many automatic rounds in one session.
     maxSessionRounds: z.number().int().min(5).max(500).optional(),
+    // Hand the next automatic or comment round to a fresh session when the session's context exceeds this many
+    // tokens (default 200000; 0 disables).
+    freshContextTokens: z.number().int().min(0).max(10000000).optional(),
     maxWakeups: z.number().int().min(1).max(50).default(8) }).strict().optional(),
   linear: z.object({ workspaceId: id, projectId: id, assigneeId: id, readyStateId: id,
     reviewStateId: id, activeStateId: id.optional(), blockedStateId: id.optional(), tokenEnv: z.string().regex(/^[A-Z][A-Z0-9_]+$/),
