@@ -107,7 +107,8 @@ export class Dispatcher {
         if (prior.wait) prior.wait.status = 'superseded';
         prior.report = 'superseded';
       }
-      for (const item of state.outbox || []) if (item.status === 'pending' && !currentTask(state.tasks.find(t => t.id === item.taskId) || {}, state)) item.status = 'superseded';
+      // Status reports of the replaced task are obsolete; a round report is a finished round's result and is always sent.
+      for (const item of state.outbox || []) if (item.status === 'pending' && !item.roundReport && !currentTask(state.tasks.find(t => t.id === item.taskId) || {}, state)) item.status = 'superseded';
       await this.#save(state, true);
       return task.id;
     });

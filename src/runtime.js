@@ -511,9 +511,10 @@ export class Runtime {
           status: 'pending', tries: 0 });
         task.report = 'queued'; task.resumeNotice = false;
       }
-      // Long-running chains: flush collected rounds at most once per batch window.
-      for (const task of state.tasks.filter(t => currentTask(t, state) && t.issue && t.pendingRounds?.length &&
-          Date.now() - Date.parse(t.pendingRounds[0].at) >= ROUND_BATCH_MS)) {
+      // Long-running chains: flush collected rounds at most once per batch window. A task that is no longer the
+      // issue's current one (a newer task replaced it without taking its rounds) will never settle: flush at once.
+      for (const task of state.tasks.filter(t => t.issue && t.pendingRounds?.length &&
+          (!currentTask(t, state) || Date.now() - Date.parse(t.pendingRounds[0].at) >= ROUND_BATCH_MS))) {
         state.outbox.push({ id: randomUUID(), taskId: task.id, projectId: task.projectId, roundReport: true,
           issueId: task.issue.id, body: roundsDigest(task.pendingRounds), status: 'pending', tries: 0 });
         delete task.pendingRounds;
@@ -521,15 +522,16 @@ export class Runtime {
       // Supersede obsolete retries immediately, not only when their backoff expires.
       for (const item of state.outbox.filter(i => i.status === 'pending')) {
         const task = state.tasks.find(t => t.id === item.taskId);
-        // A round report belongs to a finished round, not to the task's current status.
-        if (item.roundReport) { if (!task) item.status = 'superseded'; continue; }
+        // A round report belongs to a finished round, not to the task's current status: it is never superseded
+        // (2026-11-23: rounds must reach Linear eventually; it carries its own issue and body).
+        if (item.roundReport) continue;
         if (!task || !currentTask(task, state) || task.reportVersion !== item.reportVersion || task.status !== item.taskStatus) item.status = 'superseded';
       }
     }, { durable: true });
     const state = await this.store.read();
     for (const item of state.outbox.filter(i => i.status === 'pending' && (!i.nextAt || i.nextAt <= Date.now()))) {
       const live = await this.store.read(), latest = live.tasks.find(t => t.id === item.taskId);
-      if (!latest || !item.roundReport && (!currentTask(latest, live) || latest.reportVersion !== item.reportVersion || latest.status !== item.taskStatus)) {
+      if (!item.roundReport && (!latest || !currentTask(latest, live) || latest.reportVersion !== item.reportVersion || latest.status !== item.taskStatus)) {
         await this.dispatcher.update(s => { s.outbox.find(i => i.id === item.id).status = 'superseded'; });
         continue;
       }
@@ -540,7 +542,7 @@ export class Runtime {
           s.outbox.find(i => i.id === item.id).status = 'sent';
           delete s.outbox.find(i => i.id === item.id).lastError;
           const task = s.tasks.find(t => t.id === item.taskId);
-          if (!item.roundReport && task.reportVersion === item.reportVersion && task.status === item.taskStatus) task.report = 'sent';
+          if (!item.roundReport && task && task.reportVersion === item.reportVersion && task.status === item.taskStatus) task.report = 'sent';
         }, { durable: true });
       } catch (error) {
         await this.dispatcher.update(s => {
