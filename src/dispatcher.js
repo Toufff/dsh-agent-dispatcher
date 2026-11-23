@@ -207,6 +207,21 @@ export class Dispatcher {
     if (status === 'rejected') {
       attempt.status = 'rejected';
       task.status = 'queued';
+    } else if (status === 'needs_input') {
+      // An unattended round stopped on a question to a person (NeedsInput). It settles as a decision with the
+      // question as its blocker: reported to Linear and notified like any decision; an owner answer in Linear
+      // continues it in the same session. The adapter already cancelled the blocked turn.
+      const question = String(result.question || '').trim().slice(0, 2000);
+      const asked = question || '（问题正文未能读取，请打开会话查看）';
+      attempt.status = 'stopped'; attempt.accepted = true;
+      task.status = 'decision'; task.assessed = true;
+      task.inputRequest = { kind: result.reason || 'question', question, attemptId: attempt.id, cancelled: Boolean(result.cancelled), at: new Date().toISOString() };
+      task.summary = `The unattended round stopped on a question to a person (ask_user_question) instead of returning a result:\n${asked}`;
+      task.outcome = { status: 'decision', evidence: [], remaining: ['回答执行者在无人值守执行中提出的问题'], next: '', progress: '',
+        blockers: [{ owner: '本地负责人', reason: `执行者提问：${asked}`.slice(0, 2000), resumeWhen: '在 Linear 评论中回答后自动续办' }],
+        publicSummary: `执行者在无人值守执行中提出了问题，需要回答后才能继续：\n${asked}`.slice(0, 4000) };
+      if (task.wait) task.wait.status = 'resolved';
+      task.events?.push({ action: 'input-required', kind: task.inputRequest.kind, attemptId: attempt.id, at: task.inputRequest.at });
     } else if (['running', 'finishing', 'waiting', 'review', 'failed'].includes(status)) {
       attempt.status = task.status = status;
       attempt.accepted = true;
@@ -253,7 +268,7 @@ export class Dispatcher {
     // every running task on every pass was most of the reconcile cost.
     try { result = await bounded(() => adapter?.reconcile(structuredClone({ task: reconcileView(task), attempt }))); }
     catch { result = { status: 'unknown' }; }
-    if (task.pendingStop && ['review', 'failed', 'stopped'].includes(result?.status)) {
+    if (task.pendingStop && ['review', 'failed', 'stopped', 'needs_input'].includes(result?.status)) {
       const action = task.pendingStop;
       attempt.status = 'stopped'; task.status = action === 'takeover' ? 'manual' : 'stopped';
       task.owner = action === 'takeover' ? 'human' : 'scheduler';

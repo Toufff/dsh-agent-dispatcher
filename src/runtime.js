@@ -80,8 +80,10 @@ export function effortFor(task, state) {
     provider: experiment.provider || 'leihuo', model: experiment.model || 'deepseek-flash' };
 }
 
+// An open question to a person blocks an unattended round forever (nobody is there to answer it).
+const unattendedRule = 'UNATTENDED EXECUTION: nobody watches this session. Do not call ask_user_question or any other tool that waits for a person to answer. When something needs a human decision, finish the round and return status decision under the result contract, naming the concrete decision in blockers.';
 function executionContext(project) {
-  return `${project?.executionInstructions || 'Follow local repository rules and existing permissions.'}\n\n${handoffRequirement}\n\nWait routing (not authorization): local receiver author ${JSON.stringify(project?.linear?.assigneeId || null)}; permitted external reply authors ${JSON.stringify((project?.followup?.commentAuthorIds || []).filter(id => id !== project?.linear?.assigneeId))}. New linear waits MUST declare expectedAuthorIds from that list. For a result produced by another local task use kind task, never a self-comment. If you cannot identify the producer, report the missing routing information instead of inventing a peer.`;
+  return `${project?.executionInstructions || 'Follow local repository rules and existing permissions.'}\n\n${unattendedRule}\n\n${handoffRequirement}\n\nWait routing (not authorization): local receiver author ${JSON.stringify(project?.linear?.assigneeId || null)}; permitted external reply authors ${JSON.stringify((project?.followup?.commentAuthorIds || []).filter(id => id !== project?.linear?.assigneeId))}. New linear waits MUST declare expectedAuthorIds from that list. For a result produced by another local task use kind task, never a self-comment. If you cannot identify the producer, report the missing routing information instead of inventing a peer.`;
 }
 
 function waitRouting(project) {

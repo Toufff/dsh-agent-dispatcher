@@ -19,6 +19,26 @@ function coldPending(events) {
   return [...queues.values()].flat();
 }
 
+/** Text of the newest ask_user_question call in session events ('' when it cannot be found). */
+export function askedQuestion(events = []) {
+  const isAsk = node => node && typeof node === 'object' && [node.name, node.toolName, node.tool].includes('ask_user_question');
+  const find = (node, depth = 0) => {
+    if (!node || typeof node !== 'object' || depth > 6) return null;
+    if (isAsk(node)) return node;
+    for (const value of Array.isArray(node) ? node : Object.values(node)) { const hit = find(value, depth + 1); if (hit) return hit; }
+    return null;
+  };
+  for (let i = events.length - 1; i >= 0; i--) {
+    const call = find(events[i]?.data);
+    if (!call) continue;
+    let input = call.input ?? call.args ?? call.arguments ?? call.params;
+    if (typeof input === 'string') { try { input = JSON.parse(input); } catch { input = {}; } }
+    const questions = (input?.questions || []).map(q => [q?.header, q?.question].filter(v => typeof v === 'string' && v.trim()).join('：')).filter(Boolean);
+    return questions.join('\n').slice(0, 2000);
+  }
+  return '';
+}
+
 // Largest page the history API is asked for; long sessions are read in several pages at one fixed cut.
 const HISTORY_PAGE = 1000;
 
@@ -163,7 +183,7 @@ export class DshAdapter {
     // admission this adapter already confirmed is still on the round.
     this.admitted ||= new Set();
     if (agent && pending(agent).some(m => belongs(m, attempt))) return { status: 'running' };
-    if (agent?.status === 'running' && this.admitted.has(attempt.id)) return { status: 'running' };
+    if (agent?.status === 'running' && this.admitted.has(attempt.id)) return (await this.waitingForAnswer(attempt, agent)) || { status: 'running' };
     const inspection = await this.inspect(attempt.sessionId);
     const events = inspection.events;
     const index = events.findIndex(event => event.type === 'agent/inbox/spliced'
@@ -171,7 +191,7 @@ export class DshAdapter {
     if (index < 0) return { status: 'unknown', reason: 'Prompt admission not found in durable history' };
     if (this.admitted.size > 2000) this.admitted.clear();
     this.admitted.add(attempt.id);
-    if (agent?.status === 'running') return { status: 'running' };
+    if (agent?.status === 'running') return (await this.waitingForAnswer(attempt, agent, events)) || { status: 'running' };
     const suffix = events.slice(index);
     const endIndex = suffix.findIndex(event => event.type === 'turn/end');
     const end = suffix[endIndex];
@@ -183,6 +203,30 @@ export class DshAdapter {
     return { status: end.data.reason.kind === 'completed' ? 'review' : 'failed',
       reason: end.data.reason.kind,
       summary: Array.isArray(content) ? captureResultText(content.filter(p => p.type === 'text').map(p => p.text).join('\n')) : '' };
+  }
+  /**
+   * An unattended round that called ask_user_question waits for an answer nobody gives (DSH session/state reports
+   * pendingInput 'question'). Such a round is not running: its turn is cancelled so the session becomes idle
+   * again (an answer continues it later in the same session) and the result is { status: 'needs_input' } with the
+   * question. Returns null while the round is really working. Approvals and other inputs are left alone.
+   */
+  async waitingForAnswer(attempt, agent, events) {
+    const controller = this.ctx.sessionController;
+    if (typeof controller?.state !== 'function') return null;
+    let state;
+    try { state = await controller.state({ sessionId: attempt.sessionId }, new AbortController().signal); } catch { return null; }
+    if (!Array.isArray(state?.pendingInput) || !state.pendingInput.includes('question')) return null;
+    if (!events) { try { events = (await this.inspect(attempt.sessionId)).events; } catch { events = []; } }
+    const question = askedQuestion(events);
+    let cancelled = false;
+    try {
+      agent.cancel({ kind: 'user' }, { keepInbox: true });
+      let timer;
+      cancelled = await Promise.race([agent.whenIdle().then(() => true), new Promise(r => { timer = setTimeout(() => r(false), 5000); })]);
+      clearTimeout(timer);
+    } catch { /* the round is reported as waiting for input either way */ }
+    this.admitted.delete(attempt.id);
+    return { status: 'needs_input', reason: 'question', question, cancelled };
   }
   async idle({ attempt }) {
     const agent = this.ctx.agents?.get(attempt.sessionId);
