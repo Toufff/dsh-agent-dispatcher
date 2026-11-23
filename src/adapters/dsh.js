@@ -158,16 +158,25 @@ export class DshAdapter {
     const agent = this.ctx.agents?.get(attempt.sessionId);
     // A detached Agent is not in memory; let start() re-resolve it instead of waiting forever.
     if (attempt.status === 'busy') return { status: !agent || (agent.status === 'idle' && !blocking(agent).length) ? 'ready' : 'busy' };
+    // Cheap answers first: reading the whole session history every pass for every running task was the bulk of
+    // a reconcile. The prompt still queued in the live inbox proves admission; a live running Agent whose
+    // admission this adapter already confirmed is still on the round.
+    this.admitted ||= new Set();
+    if (agent && pending(agent).some(m => belongs(m, attempt))) return { status: 'running' };
+    if (agent?.status === 'running' && this.admitted.has(attempt.id)) return { status: 'running' };
     const inspection = await this.inspect(attempt.sessionId);
     const events = inspection.events;
     const index = events.findIndex(event => event.type === 'agent/inbox/spliced'
       && event.data.inserted?.some(message => belongs(message, attempt)));
     if (index < 0) return { status: 'unknown', reason: 'Prompt admission not found in durable history' };
-    if (agent?.status === 'running' || agent && pending(agent).some(m => belongs(m, attempt))) return { status: 'running' };
+    if (this.admitted.size > 2000) this.admitted.clear();
+    this.admitted.add(attempt.id);
+    if (agent?.status === 'running') return { status: 'running' };
     const suffix = events.slice(index);
     const endIndex = suffix.findIndex(event => event.type === 'turn/end');
     const end = suffix[endIndex];
     if (!end) return { status: 'unknown', reason: 'No confirmed turn completion' };
+    this.admitted.delete(attempt.id);
     // A later manual/queued turn in the same session is not this attempt's receipt.
     const message = suffix.slice(0, endIndex).findLast(event => event.type === 'assistant/message');
     const content = message?.data?.message?.content ?? message?.data?.content ?? [];

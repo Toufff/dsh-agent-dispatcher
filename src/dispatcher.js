@@ -12,6 +12,8 @@ async function bounded(operation, ms = 15000) {
   })]); } finally { clearTimeout(timer); }
 }
 
+/** The task fields an adapter may need while reconciling an attempt. */
+const reconcileView = ({ id, cwd, status, executors, session, projectId, issue }) => ({ id, cwd, status, executors, session, projectId, issue });
 const slotGroup = task => task.projectId ? `project:${task.projectId}` : `cwd:${task.cwd}`;
 export function globalLimit(state) { return Math.max(1, state.settings?.concurrency ?? 1); }
 /** How many queued tasks one tick may start (settings.startConcurrency, default 6). */
@@ -247,7 +249,9 @@ export class Dispatcher {
     const attempt = task.attempts.at(-1);
     const adapter = this.adapters[attempt.executor];
     let result;
-    try { result = await bounded(() => adapter?.reconcile(structuredClone({ task, attempt }))); }
+    // Adapters reconcile an attempt, not the task's history: copying the whole task (prompt, rounds, events) for
+    // every running task on every pass was most of the reconcile cost.
+    try { result = await bounded(() => adapter?.reconcile(structuredClone({ task: reconcileView(task), attempt }))); }
     catch { result = { status: 'unknown' }; }
     if (task.pendingStop && ['review', 'failed', 'stopped'].includes(result?.status)) {
       const action = task.pendingStop;
