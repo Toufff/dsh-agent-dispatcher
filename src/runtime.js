@@ -58,6 +58,25 @@ function freshHandover(reason) {
   return `FRESH SESSION: you are taking over this task from a previous session because ${reason}. You do not have its conversation. Rebuild context from the repository: first read the task's HANDOFF.md (strategies/<issue>-*/HANDOFF.md, or HANDOFF.md in the working directory), the stage ledger and trials.jsonl; read the report, README, logs and AGENTS.md only when you need more. Do not redo completed stages and do not report a done stage as open again (add a new verification stage instead).`;
 }
 
+/**
+ * The reasoning effort a task's next attempt must use, or null outside the experiment. The first time a task of
+ * an experiment project with a numbered issue starts, its arm (even/odd issue number) and effort are recorded on
+ * the task; continuations inherit them, so retries and fresh sessions keep the same effort.
+ */
+export function effortFor(task, state) {
+  const experiment = state.settings.effortExperiment;
+  if (!experiment?.enabled || !experiment.projectIds.includes(task.projectId)) return null;
+  if (!task.effortArm) {
+    const digits = /(\d+)\s*$/.exec(task.issue?.identifier || '')?.[1];
+    if (!digits) return null;
+    const arm = Number(digits.at(-1)) % 2 ? 'odd' : 'even';
+    task.effortArm = { arm, effort: experiment.arms[arm], at: new Date().toISOString() };
+    (task.events ||= []).push({ action: 'effort-arm', arm, effort: task.effortArm.effort, at: task.effortArm.at });
+  }
+  return { arm: task.effortArm.arm, effort: task.effortArm.effort,
+    provider: experiment.provider || 'leihuo', model: experiment.model || 'deepseek-flash' };
+}
+
 function executionContext(project) {
   return `${project?.executionInstructions || 'Follow local repository rules and existing permissions.'}\n\n${handoffRequirement}\n\nWait routing (not authorization): local receiver author ${JSON.stringify(project?.linear?.assigneeId || null)}; permitted external reply authors ${JSON.stringify((project?.followup?.commentAuthorIds || []).filter(id => id !== project?.linear?.assigneeId))}. New linear waits MUST declare expectedAuthorIds from that list. For a result produced by another local task use kind task, never a self-comment. If you cannot identify the producer, report the missing routing information instead of inventing a peer.`;
 }
@@ -135,6 +154,7 @@ export class Runtime {
       this.registry.register('dsh', (config, deps) => new DshAdapter(deps.ctx, config));
     }
     this.dispatcher = new Dispatcher({ store, adapters: this.adapters,
+      startContext: (task, state) => { const effort = effortFor(task, state); return effort ? { effort } : {}; },
       enabled: (executor, state) => Boolean(state.settings.executors.find(e => e.id === executor)?.enabled),
       beforeStart: async (task, state) => {
       if (!currentTask(task, state)) throw new Error('Task is superseded');

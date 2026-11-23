@@ -96,15 +96,35 @@ export class DshAdapter {
     catch { return undefined; }
   }
 
-  async start({ task, attempt }) {
+  /**
+   * Session-level reasoning effort for the experiment: records a model/selection on the Agent (provider/model
+   * from its current selection, else the configured fallback). Never the session/selectModel RPC, which also
+   * rewrites the profile default. A failure is reported, never blocks the round.
+   */
+  async selectEffort(sessionId, effort, agent) {
+    try {
+      agent ??= (await this.ctx.sessionController.resolveAgent(sessionId))?.agent;
+      if (typeof agent?.model?.select !== 'function') throw new Error('Session model selection unavailable');
+      let current;
+      try { current = agent.model.current?.(); } catch { /* use the fallback route */ }
+      const provider = current?.provider || effort.provider, model = current?.model || effort.model;
+      await agent.model.select({ provider, model, reasoningEffort: effort.effort });
+      return { effort: effort.effort, arm: effort.arm, provider, model };
+    } catch (error) {
+      return { effort: effort.effort, arm: effort.arm, error: error?.message || String(error) };
+    }
+  }
+
+  async start({ task, attempt, effort }) {
     const controller = this.ctx.sessionController;
     if (!controller) return { status: 'rejected', reason: 'DSH session service unavailable' };
     const workspace = await this.workspace(task.cwd);
+    let resolved;
     if (attempt.resume) {
       const inspection = await this.inspect(attempt.sessionId);
       if (path.resolve((await this.cwd(attempt.sessionId, inspection)) || '') !== path.resolve(task.cwd))
         return { status: 'rejected', reason: 'Session directory differs from project' };
-      const resolved = await controller.resolveAgent(attempt.sessionId);
+      resolved = await controller.resolveAgent(attempt.sessionId);
       if (resolved.error) return { status: 'busy', reason: 'Session writer unavailable' };
       if (resolved.agent.status !== 'idle' || blocking(resolved.agent).length)
         return { status: 'busy', reason: 'Session already has active or queued work' };
@@ -118,9 +138,10 @@ export class DshAdapter {
       if (created.sessionId !== attempt.sessionId)
         return { status: 'rejected', reason: 'Requested session identity could not be reserved' };
     }
+    const selected = effort ? await this.selectEffort(attempt.sessionId, effort, resolved?.agent) : undefined;
     await controller.prompt({ sessionId: attempt.sessionId, requestId: attempt.id,
       mode: 'queue', content: [{ type: 'text', text: task.prompt }] }, new AbortController().signal);
-    return { status: 'running', sessionId: attempt.sessionId, runId: attempt.id };
+    return { status: 'running', sessionId: attempt.sessionId, runId: attempt.id, ...(selected ? { effort: selected } : {}) };
   }
   async reconcile({ attempt }) {
     const agent = this.ctx.agents?.get(attempt.sessionId);

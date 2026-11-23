@@ -26,12 +26,14 @@ export function hasSlot(task, occupied, state) {
 /** A single-owner kernel. store.save must durably replace the aggregate atomically. */
 export class Dispatcher {
   #tail = Promise.resolve();
-  constructor({ store, adapters, id = randomUUID, beforeStart, enabled }) {
+  /** startContext(task, state): extra fields for adapter.start, computed in the lock (it may record on task). */
+  constructor({ store, adapters, id = randomUUID, beforeStart, enabled, startContext }) {
     this.store = store;
     this.adapters = adapters;
     this.id = id;
     this.beforeStart = beforeStart;
     this.enabled = enabled;
+    this.startContext = startContext;
   }
 
   #exclusive(fn) {
@@ -75,6 +77,8 @@ export class Dispatcher {
           } : { resumeWindow: prior.resumeWindow || (prior.wait ? { notBefore: prior.wait.notBefore, expiresAt: prior.wait.expiresAt } : undefined) }) } : {}),
         createdAt: new Date().toISOString(), ...(projectId ? { projectId } : {}),
         ...(issue ? { issue } : {}), ...(session ? { session } : {}),
+        // An effort experiment arm stays with the issue's chain.
+        ...(prior?.effortArm ? { effortArm: structuredClone(prior.effortArm) } : {}),
         // Unpublished automatic-round results travel with the chain instead of dying with the old task.
         ...(prior?.pendingRounds?.length ? { pendingRounds: prior.pendingRounds } : {}) };
       state.tasks.push(task);
@@ -135,6 +139,8 @@ export class Dispatcher {
       }
       for (let i = task.attempts.length; i < task.executors.length; i++) {
         const executor = task.executors[i];
+        let extra = {};
+        try { extra = this.startContext?.(task, state) || {}; } catch { /* optional start context never blocks a start */ }
         const attempt = { id: this.id(), executor, status: 'starting', sessionId: this.id(), startedAt: new Date().toISOString(),
           ...(task.session?.executor === executor ? { sessionId: task.session.id, resume: true } : {}) };
         task.attempts.push(attempt);
@@ -144,7 +150,7 @@ export class Dispatcher {
         let result;
         try {
           const adapter = this.adapters[executor];
-          result = adapter && (!this.enabled || this.enabled(executor, state)) ? await bounded(() => adapter.start(structuredClone({ task, attempt })))
+          result = adapter && (!this.enabled || this.enabled(executor, state)) ? await bounded(() => adapter.start(structuredClone({ ...extra, task, attempt })))
             : { status: 'rejected', reason: 'Adapter unavailable; not started' };
         } catch {
           result = { status: 'unknown' };
@@ -176,6 +182,11 @@ export class Dispatcher {
     if (typeof result?.reason === 'string') attempt.reason = result.reason.slice(0, 1000);
     if (typeof result?.sessionId === 'string') attempt.sessionId = result.sessionId;
     if (typeof result?.runId === 'string') attempt.runId = result.runId;
+    if (result?.effort) {
+      const { effort, arm, provider, model, error } = result.effort;
+      task.events?.push({ action: error ? 'effort-select-failed' : 'effort-selected', effort, arm, provider, model,
+        ...(error ? { error: String(error).slice(0, 300) } : {}), attemptId: attempt.id, at: new Date().toISOString() });
+    }
     if (previous !== task.status) {
       task.report = 'pending';
       task.executionNotice = ['running', 'failed', 'unknown'].includes(task.status);

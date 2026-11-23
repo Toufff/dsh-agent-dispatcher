@@ -47,7 +47,16 @@ export const notificationChannelSchema = z.object({
   projectIds: z.array(id).min(1).max(100),
   includeExisting: z.boolean().default(false), completed: z.boolean().default(false)
 }).strict();
+export const reasoningEfforts = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+const effort = z.enum(reasoningEfforts);
+// Per-issue reasoning-effort A/B: tasks of the listed projects are split by the parity of their Linear issue
+// number (LON-212 -> even). Lives at the top level so it can change without stopping project tasks.
+export const effortExperimentSchema = z.object({ enabled: z.boolean(),
+  arms: z.object({ even: effort, odd: effort }).strict(), projectIds: z.array(id).max(100),
+  // Fallback route when the session's current selection cannot be read (default leihuo / deepseek-flash).
+  provider: id.optional(), model: id.optional() }).strict();
 export const settingsSchema = z.object({ executors: z.array(executorSchema), projects: z.array(projectSchema),
+  effortExperiment: effortExperimentSchema.optional(),
   // Global cap on simultaneously running automatic tasks (default 1).
   concurrency: z.number().int().min(1).max(64).optional(),
   notifications: z.object({ channels: z.array(notificationChannelSchema).max(10) }).strict().optional() })
@@ -59,6 +68,8 @@ export const settingsSchema = z.object({ executors: z.array(executorSchema), pro
     const channels = value.notifications?.channels || [];
     if (new Set(channels.map(c => c.id)).size !== channels.length)
       ctx.addIssue({ code: 'custom', message: 'Duplicate notification channel identity' });
+    if (value.effortExperiment?.projectIds.some(id => !value.projects.some(p => p.id === id)))
+      ctx.addIssue({ code: 'custom', message: 'Effort experiment project does not exist' });
     if (channels.some(c => c.projectIds.some(id => !value.projects.some(p => p.id === id))))
       ctx.addIssue({ code: 'custom', message: 'Notification project does not exist' });
   });
