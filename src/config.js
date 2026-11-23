@@ -57,6 +57,9 @@ export const effortExperimentSchema = z.object({ enabled: z.boolean(),
   provider: id.optional(), model: id.optional() }).strict();
 export const settingsSchema = z.object({ executors: z.array(executorSchema), projects: z.array(projectSchema),
   effortExperiment: effortExperimentSchema.optional(),
+  // Projects whose unassigned ready (Todo) issues are taken too, read only (never assigned by the dispatcher).
+  // Top level, like effortExperiment, so it can change without stopping project tasks or invalidating their waits.
+  includeUnassigned: z.object({ projectIds: z.array(id).max(100) }).strict().optional(),
   // Global cap on simultaneously running automatic tasks (default 1).
   concurrency: z.number().int().min(1).max(64).optional(),
   // Queued tasks one dispatcher tick may start, with their Linear admission checks run in parallel (default 6).
@@ -76,6 +79,8 @@ export const settingsSchema = z.object({ executors: z.array(executorSchema), pro
       ctx.addIssue({ code: 'custom', message: 'Duplicate notification channel identity' });
     if (value.effortExperiment?.projectIds.some(id => !value.projects.some(p => p.id === id)))
       ctx.addIssue({ code: 'custom', message: 'Effort experiment project does not exist' });
+    if (value.includeUnassigned?.projectIds.some(id => !value.projects.some(p => p.id === id)))
+      ctx.addIssue({ code: 'custom', message: 'Unassigned-intake project does not exist' });
     if (channels.some(c => c.projectIds.some(id => !value.projects.some(p => p.id === id))))
       ctx.addIssue({ code: 'custom', message: 'Notification project does not exist' });
   });

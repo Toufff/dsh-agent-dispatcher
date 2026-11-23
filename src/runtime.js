@@ -6,7 +6,7 @@ import { outcomeProtocol, parseOutcome, inspectOutcome, outcomeReports } from '.
 import { settingsSchema } from './config.js';
 import { CliAdapter } from './adapters/cli.js';
 import { DshAdapter } from './adapters/dsh.js';
-import { LinearClient } from './linear.js';
+import { LinearClient, linearMapping, assigneeAllowed } from './linear.js';
 import { AdapterRegistry } from './adapters/registry.js';
 import { isDeepStrictEqual } from 'node:util';
 import { wakeEvent, waitSchema, validateLocalWait, dependencyEvent, waitFault, waitFaults } from './followup.js';
@@ -170,7 +170,7 @@ export class Runtime {
           throw Object.assign(new Error('Dependency receipt changed before execution'), { code: 'WAIT_DEPENDENCY_PENDING' });
       }
       if (!task.issue?.id) return;
-      const mapping = state.settings.projects.find(p => p.id === task.projectId)?.linear;
+      const mapping = linearMapping(state.settings.projects.find(p => p.id === task.projectId), state.settings);
       if (!mapping?.enabled) throw new Error('Linear dispatch disabled');
       await this.client(mapping).eligible(mapping, task.issue.id);
     } });
@@ -365,7 +365,7 @@ export class Runtime {
       if (wait.kind === 'linear') {
         if (!original?.issue?.id || !originalProject?.linear?.enabled) throw new Error('Linear mapping is required');
         // Read-only validation before replacing the existing wait/cursor.
-        await this.client(originalProject.linear).activity(originalProject.linear, wait.issueId || original.issue.id, original.issue.id);
+        await this.client(originalProject.linear).activity(linearMapping(originalProject, before.settings), wait.issueId || original.issue.id, original.issue.id);
       }
       await this.dispatcher.update(state => {
         const task = state.tasks.find(t => t.id === request.id);
@@ -471,8 +471,8 @@ export class Runtime {
     for (const project of (batch?.projects || state.settings.projects.filter(p => p.linear?.enabled))) {
       try {
       if (!isDeepStrictEqual(project, (await this.store.read()).settings.projects.find(p => p.id === project.id))) continue;
-      const client = this.client(project.linear);
-      for (const issue of batch ? batch.issues.filter(i => i.project?.id === project.linear.projectId && i.assignee?.id === project.linear.assigneeId && i.state?.id === project.linear.readyStateId && i.updatedAt >= project.linear.since) : await client.issues(project.linear)) {
+      const client = this.client(project.linear), mapping = linearMapping(project, state.settings);
+      for (const issue of batch ? batch.issues.filter(i => i.project?.id === mapping.projectId && assigneeAllowed(i, mapping) && i.state?.id === mapping.readyStateId && i.updatedAt >= mapping.since) : await client.issues(mapping)) {
         await this.submit({ projectId: project.id, title: `${issue.identifier} · ${issue.title}`,
           prompt: issuePrompt(issue),
           source: `${project.linear.workspaceId}/${issue.id}`, round: project.linear.round,
@@ -751,11 +751,11 @@ export class Runtime {
         const localEvent = old.wait.kind === 'task' ? dependencyEvent(old.wait, old, snapshot, Date.now()) : null;
         if (!observing && old.issue?.id && (recheck || old.wait.kind === 'time' || localEvent)) {
           if (!project.linear?.enabled) throw new Error('Enable Linear before resuming an issue timer');
-          await this.client(project.linear).eligible(project.linear, old.issue.id);
+          await this.client(project.linear).eligible(linearMapping(project, snapshot.settings), old.issue.id);
         }
         const supplied = options.activities?.get(old.id);
         if (remote && supplied?.error) throw supplied.error;
-        const activity = remote ? supplied ? supplied.value : await this.client(project.linear).activity(project.linear, old.wait.issueId, old.issue.id) : null;
+        const activity = remote ? supplied ? supplied.value : await this.client(project.linear).activity(linearMapping(project, snapshot.settings), old.wait.issueId, old.issue.id) : null;
         let event = old.wait.kind === 'task' ? localEvent : wakeEvent(observing ? { ...old.wait, kind: 'linear', notBefore: undefined, expiresAt: undefined, recheckAt: undefined,
           seen: [...(old.wait.seen || []), ...(old.wait.observedRevisions || [])] } : old.wait,
           activity, { ...project.followup, assigneeId: project.linear?.assigneeId }, Date.now(), ownCommentIds(snapshot));
@@ -940,7 +940,7 @@ export class Runtime {
       this.reviewCheckedAt.set(task.id, Date.now() + reviewCommentInterval);
       let activity;
       // Closed, reassigned or moved issues are rejected by eligibility: nothing to continue.
-      try { activity = await this.client(project.linear).activity(project.linear, task.issue.id, task.issue.id); }
+      try { activity = await this.client(project.linear).activity(linearMapping(project, state.settings), task.issue.id, task.issue.id); }
       catch (error) { this.commentReadFailed(error); continue; }
       this.commentDirty.delete(task.issue.id);
       const since = Date.parse(task.createdAt || 0), seen = new Set(task.followupSeen || []);
@@ -1026,7 +1026,7 @@ export class Runtime {
     if (Date.now() < (this.reviewCheckedAt.get(task.id) || 0)) return;
     this.reviewCheckedAt.set(task.id, Date.now() + reviewCommentInterval);
     let activity;
-    try { activity = await this.client(project.linear).activity(project.linear, task.issue.id, task.issue.id); }
+    try { activity = await this.client(project.linear).activity(linearMapping(project, state.settings), task.issue.id, task.issue.id); }
     catch (error) { this.commentReadFailed(error); return; }
     this.commentDirty.delete(task.issue.id);
     const prefix = (policy.selfCommentPrefix ?? 'ZRSTUDIO').trim();
@@ -1089,7 +1089,7 @@ export class Runtime {
           });
           continue;
         }
-        try { await this.client(project.linear).eligible(project.linear, task.issue.id); } catch { continue; }
+        try { await this.client(project.linear).eligible(linearMapping(project, state.settings), task.issue.id); } catch { continue; }
         const issue = task.issue.identifier || 'this issue';
         const registered = registeredAttempt(task);
         const rotation = await this.rotationFor(task.projectId, registered?.executor, registered?.sessionId, state);

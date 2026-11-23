@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { WaitTargetError, validWaitTarget } from './linear.js';
+import { WaitTargetError, validWaitTarget, linearMapping, assigneeAllowed } from './linear.js';
 import { currentTask, keyTaken } from './workflow.js';
 
 const overlap = 60000, reconcileEvery = 15 * 60000;
@@ -22,13 +22,18 @@ export function syncGroups(state) {
       group.waits.push(task);
     }
   }
-  for (const group of groups.values()) group.signature = hash([group.projects, group.waits.map(t => [t.id, t.wait.id])]);
+  for (const group of groups.values()) {
+    group.mappings = group.projects.map(p => linearMapping(p, state.settings));
+    // Unassigned intake is part of the mapping the sync reads with (only hashed when used, so other groups keep their cursors).
+    const unassigned = group.mappings.map(m => Boolean(m.includeUnassigned));
+    group.signature = hash([group.projects, group.waits.map(t => [t.id, t.wait.id]), ...(unassigned.some(Boolean) ? [unassigned] : [])]);
+  }
   return [...groups.values()];
 }
 
-function activityFor(task, project, watched, comments) {
+function activityFor(task, project, watched, comments, mapping = project.linear) {
   const parent = watched.find(i => i.id === task.issue.id), target = watched.find(i => i.id === (task.wait.issueId || task.issue.id));
-  if (!parent || parent.archivedAt || parent.project?.id !== project.linear.projectId || parent.assignee?.id !== project.linear.assigneeId || ['completed', 'canceled'].includes(parent.state?.type))
+  if (!parent || parent.archivedAt || parent.project?.id !== project.linear.projectId || !assigneeAllowed(parent, mapping) || ['completed', 'canceled'].includes(parent.state?.type))
     throw new Error('Parent issue is closed, reassigned or outside the mapped project; local continuation remains stopped');
   if (!validWaitTarget(parent, target, project.linear.projectId)) throw new WaitTargetError();
   return { ...target, parentState: parent.state, comments: comments.filter(c => c.issue?.id === target.id) };
@@ -56,7 +61,7 @@ export class LinearSync {
       let monitored = false;
       try {
         const result = await r.client(group.projects[0].linear).changes({
-          workspaceId: group.projects[0].linear.workspaceId, mappings: group.projects.map(p => p.linear),
+          workspaceId: group.projects[0].linear.workspaceId, mappings: group.mappings,
           targets: group.waits.map(t => ({ parentId: t.issue.id, issueId: t.wait.issueId || t.issue.id })),
           issueSince: since, commentSince: since && since > commentStart ? since : commentStart, startedAt: now
         });
@@ -80,7 +85,7 @@ export class LinearSync {
         for (const task of group.waits) {
           const project = group.projects.find(p => p.id === task.projectId);
           try { if (result.activityError) throw result.activityError;
-            activities.set(task.id, { waitId: task.wait.id, value: activityFor(task, project, result.watched, comments) }); }
+            activities.set(task.id, { waitId: task.wait.id, value: activityFor(task, project, result.watched, comments, group.mappings[group.projects.indexOf(project)]) }); }
           catch (error) { activities.set(task.id, { waitId: task.wait.id, error }); }
         }
         await r.monitor({ activities });

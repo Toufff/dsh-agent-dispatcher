@@ -13,6 +13,20 @@ export function validWaitTarget(source, target, projectId) {
     .some(r => ['related', 'blocks'].includes(r.type) && (r.relatedIssue?.id || r.issue?.id) === target.id);
 }
 
+/**
+ * The Linear mapping of a project as the client uses it. settings.includeUnassigned.projectIds lists projects
+ * whose unassigned ready issues are taken as well (read only: the dispatcher never assigns them). It lives at the
+ * settings top level so it can change without stopping the project's tasks or invalidating their waits.
+ */
+export function linearMapping(project, settings) {
+  if (!project?.linear) return project?.linear;
+  return settings?.includeUnassigned?.projectIds?.includes(project.id) ? { ...project.linear, includeUnassigned: true } : project.linear;
+}
+/** An issue belongs to the mapping's receiver: assigned to it, or unassigned when the mapping includes those. */
+export const assigneeAllowed = (issue, mapping) =>
+  issue?.assignee?.id === mapping.assigneeId || Boolean(mapping.includeUnassigned) && !issue?.assignee?.id;
+const assigneeFilters = mapping => [{ id: { eq: mapping.assigneeId } }, ...(mapping.includeUnassigned ? [{ null: true }] : [])];
+
 /** Fixed official endpoint: issue content cannot redirect credentials. */
 export class LinearClient {
   constructor(token, fetcher = fetch) { this.token = token; this.fetcher = fetcher; }
@@ -61,10 +75,10 @@ export class LinearClient {
     const until = new Date(Math.min(startedAt, this.serverTime || startedAt)).toISOString();
     const fields = 'id identifier title description url updatedAt project { id } assignee { id } state { id type } parent { id }';
     let issues = [], watched = [], comments = [], issueError, activityError;
-    try { issues = mappings.length ? await this.collection('issues', { or: mappings.map(m => ({
-      project: { id: { eq: m.projectId } }, assignee: { id: { eq: m.assigneeId } }, state: { id: { eq: m.readyStateId } },
+    try { issues = mappings.length ? await this.collection('issues', { or: mappings.flatMap(m => assigneeFilters(m).map(assignee => ({
+      project: { id: { eq: m.projectId } }, assignee, state: { id: { eq: m.readyStateId } },
       updatedAt: { gte: issueSince && issueSince > m.since ? issueSince : m.since, lte: until }
-    })) }, fields) : []; } catch (error) { if (error.code === 'RATE_LIMITED') throw error; issueError = error; }
+    }))) }, fields) : []; } catch (error) { if (error.code === 'RATE_LIMITED') throw error; issueError = error; }
     const ids = [...new Set(targets.flatMap(t => [t.parentId, t.issueId]))];
     try { watched = ids.length ? await this.collection('issues', { id: { in: ids } }, `id identifier project { id } assignee { id } state { id type } parent { id } archivedAt ${relationFields}`, true) : [];
     comments = targets.length ? await this.collection('comments', {
@@ -107,7 +121,7 @@ export class LinearClient {
           nodes { id identifier title description url updatedAt }
           pageInfo { hasNextPage endCursor }
         }
-      }`, { filter: { project: { id: { eq: mapping.projectId } }, assignee: { id: { eq: mapping.assigneeId } },
+      }`, { filter: { project: { id: { eq: mapping.projectId } }, ...(mapping.includeUnassigned ? { or: assigneeFilters(mapping).map(assignee => ({ assignee })) } : { assignee: { id: { eq: mapping.assigneeId } } }),
         state: { id: { eq: mapping.readyStateId } }, updatedAt: { gte: mapping.since } }, after: cursor });
       issues.push(...data.issues.nodes);
       cursor = data.issues.pageInfo.hasNextPage ? data.issues.pageInfo.endCursor : null;
@@ -119,7 +133,7 @@ export class LinearClient {
     const identity = await this.query('query { organization { id } }');
     if (identity.organization.id !== mapping.workspaceId) throw new Error('Linear token belongs to another workspace');
     const parent = (await this.query(`query($id:String!) { issue(id:$id) { id project { id } assignee { id } state { type } ${relationFields} } }`, { id: parentId })).issue;
-    if (!parent || parent.project?.id !== mapping.projectId || parent.assignee?.id !== mapping.assigneeId || ['completed', 'canceled'].includes(parent.state?.type))
+    if (!parent || parent.project?.id !== mapping.projectId || !assigneeAllowed(parent, mapping) || ['completed', 'canceled'].includes(parent.state?.type))
       throw new Error('Parent issue is closed, reassigned or outside the mapped project; local continuation remains stopped');
     return parent;
   }
