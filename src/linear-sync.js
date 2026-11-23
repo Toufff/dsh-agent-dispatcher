@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { WaitTargetError, validWaitTarget } from './linear.js';
-import { currentTask } from './workflow.js';
+import { currentTask, keyTaken } from './workflow.js';
 
 const overlap = 60000, reconcileEvery = 15 * 60000;
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -18,7 +18,7 @@ export function syncGroups(state) {
       if (task.wait.status === 'expired' && !project.followup.observeAfterExpiry) continue;
       if (state.tasks.some(t => t.owner === 'human' && t.cwd === task.cwd)) continue;
       const [source] = JSON.parse(task.key);
-      if (state.tasks.some(t => t.key === JSON.stringify([source, `continue:${task.id}`]))) continue;
+      if (keyTaken(state, JSON.stringify([source, `continue:${task.id}`]))) continue;
       group.waits.push(task);
     }
   }

@@ -25,8 +25,24 @@ export function Panel({ api }) {
   const [waitDraft, setWaitDraft] = useState(''), [waitTask, setWaitTask] = useState(null);
   const [preserveCursor, setPreserveCursor] = useState(false);
   const [issueContexts, setIssueContexts] = useState({});
-  const filteredTasks = (data?.tasks || []).filter(t => (showHistory || !t.historical) && visibleProjectIds.includes(t.projectId) && (!statusFilter || (statusFilter === 'attention' ? ['blocked','decision','unknown','failed','stalled','needs_result','exhausted'].includes(t.status) : statusFilter === 'review' ? t.status === 'review' : ['queued','starting','running','finishing','waiting','busy','stopping','auto-continue','repair-result'].includes(t.status))) && `${t.issue?.identifier || ''} ${t.title}`.toLowerCase().includes(search.toLowerCase()));
-  const contextTask = filteredTasks.find(t => t.id === selected) || filteredTasks.at(-1);
+  // Archived history (only listed with the history toggle) is fetched in full when selected.
+  const [archivedDetail, setArchivedDetail] = useState({});
+  const listed = [...(data?.tasks || []), ...(showHistory ? (data?.archived || []).map(t => ({ ...t, attempts: [], historical: true, archived: true })) : [])];
+  const filteredTasks = listed.filter(t => (showHistory || !t.historical) && visibleProjectIds.includes(t.projectId) && (!statusFilter || (statusFilter === 'attention' ? ['blocked','decision','unknown','failed','stalled','needs_result','exhausted'].includes(t.status) : statusFilter === 'review' ? t.status === 'review' : ['queued','starting','running','finishing','waiting','busy','stopping','auto-continue','repair-result'].includes(t.status))) && `${t.issue?.identifier || ''} ${t.title}`.toLowerCase().includes(search.toLowerCase()));
+  const listedTask = filteredTasks.find(t => t.id === selected) || filteredTasks.filter(t => !t.archived).at(-1) || filteredTasks.at(-1);
+  const contextTask = listedTask?.archived ? archivedDetail[listedTask.id]?.task || listedTask : listedTask;
+  useEffect(() => {
+    const id = listedTask?.archived ? listedTask.id : null;
+    if (!id || archivedDetail[id] || !api.archivedTask) return;
+    setArchivedDetail(old => ({ ...old, [id]: { status: 'loading' } }));
+    api.archivedTask(id).then(task => setArchivedDetail(old => ({ ...old, [id]: { status: 'ready', task } })))
+      .catch(() => setArchivedDetail(old => ({ ...old, [id]: { status: 'error' } })));
+  }, [api, listedTask?.id, listedTask?.archived]);
+  async function loadEarlierRounds(id) {
+    setArchivedDetail(old => ({ ...old, [`rounds:${id}`]: { status: 'loading' } }));
+    try { const task = await api.archivedTask(id); setArchivedDetail(old => ({ ...old, [`rounds:${id}`]: { status: 'ready', rounds: task.rounds } })); }
+    catch { setArchivedDetail(old => ({ ...old, [`rounds:${id}`]: { status: 'error' } })); }
+  }
   useEffect(() => {
     if (showConfig || !contextTask?.issue?.id || !api.issueContext) return;
     let live = true;
@@ -79,6 +95,7 @@ export function Panel({ api }) {
           <span className={`status ${view ? 'waiting' : t.status}`}>{view?.title || labels[t.status] || t.status}</span></button></li>; })}</ul>}
       {task && <article className="detail"><h2>{task.title}</h2><p className="task-directory"><span>本地工作目录</span><code>{task.cwd}</code></p><p className="muted">{task.owner === 'human' ? '由你控制会话，自动派发暂停等待归还。' : '由调度器控制本轮执行。'}</p>
         {task.historical && <p className="notice">这是历史记录，不再监听或回写。请在队列中选择当前任务。</p>}
+        {task.archived && <p className="muted">{archivedDetail[task.id]?.status === 'error' ? '读取归档记录失败，请稍后重试。' : !task.events ? '正在读取归档记录…' : '已移出常驻状态的归档记录（只读）。'}</p>}
         {task.attention && <section className="notice" aria-label="下一步处理"><strong>{task.attention.reason}</strong><p>下一责任：{task.attention.owner}</p><p>{task.attention.action}</p></section>}
         {task.workItems?.length > 0 && <section aria-label="任务阶段"><h3>任务阶段 · {task.workItems.filter(i => i.status === 'done').length}/{task.workItems.length} 完成</h3><p className="muted">执行者报告的进度；正式验证与人工验收仍需单独完成。</p><ol className="work-items">{task.workItems.map(item => <li key={item.id}><strong>{item.title}</strong> · {({ ready: '本机可继续', blocked: '等待条件', decision: '需要决定', done: '已交付证据' })[item.status]}{item.action && item.status === 'ready' && <p>下一步：{item.action}</p>}{item.blocker && <p>等待 {item.blocker.owner}：{item.blocker.reason}<br/>恢复条件：{item.blocker.resumeWhen}</p>}{item.evidence.length > 0 && <details><summary>查看证据</summary><ul>{item.evidence.map((e, n) => <li key={n}>{e}</li>)}</ul></details>}</li>)}</ol></section>}
         {waiting && <WaitDetails view={waiting}/>}<fieldset disabled={busy || task.historical} className="task-controls"><legend className="sr-only">任务操作</legend><div className="actions">
@@ -92,7 +109,7 @@ export function Panel({ api }) {
         {['blocked', 'decision', 'stopped', 'stalled'].includes(task.status) && task.owner !== 'human' && <button disabled={busy} onClick={() => { setWaitTask(task.id); setWaitDraft(JSON.stringify(waitDraftFor(task), null, 2)); }}>设置恢复条件</button>}
         {task.issue?.url?.startsWith('https://linear.app/') && <a href={task.issue.url} target="_blank" rel="noreferrer">打开 Linear issue</a>}</div></fieldset>
         {continuation === task.id && !task.historical && <form className="continuation-form" onSubmit={async e => { e.preventDefault(); if (await run({ action: 'continue', id: task.id, prompt: followupText.trim(), continuationTiming })) { setContinuation(null); setFollowupText(''); } }}><h3>安排本轮续办</h3><p>保留原会话、已完成阶段和操作权限。执行时机可以按本轮要求调整。</p><label>执行时机<select value={continuationTiming} onChange={e => setContinuationTiming(e.target.value)}><option value="inherit">沿用原执行时段</option><option value="recheck">按本轮要求重新核定</option></select></label>{continuationTiming === 'recheck' && <p role="note">旧排队时段将归档，不再阻止本轮启动。请写明允许执行的条件；生产操作仍须核对实际时机、质量门和协作条件，不自动放宽权限。</p>}<label>本轮要求<textarea required rows={4} maxLength={8000} value={followupText} onChange={e => setFollowupText(e.target.value)} placeholder="说明剩余工作和执行条件，例如：准备与测试现在继续，生产操作只在允许时段执行。"/></label><div className="actions"><button className="primary" disabled={busy || !followupText.trim()}>提交续办要求</button><button type="button" disabled={busy} onClick={() => setContinuation(null)}>取消</button></div></form>}
-        <h3>执行记录</h3>{!task.attempts.length && <p className="muted">尚未派发。</p>}{task.attempts.map(a => <div className="attempt" key={a.id}><strong className="agent-name"><AgentIcon type={data.settings.executors.find(e => e.id === a.executor)?.type}/>{agentLabel(data.settings.executors.find(e => e.id === a.executor)) || a.executor}</strong><span className={`status ${a.status}`}>{a.status === 'review' ? '本轮执行结束' : labels[a.status] || a.status}</span>{a.reason && <p>{a.reason}</p>}{a.sessionId && <><code>{a.sessionId}</code>{data.settings.executors.find(e => e.id === a.executor)?.type === 'dsh' ? <button onClick={() => api.openSession(a.sessionId)}>打开 DSH 会话</button> : <p className="muted">在对应工具中使用此会话 ID 恢复；查看会话不自动接管。</p>}</>}</div>)}
+        <h3>执行记录</h3>{!task.attempts?.length && <p className="muted">尚未派发。</p>}{(task.attempts || []).map(a => <div className="attempt" key={a.id}><strong className="agent-name"><AgentIcon type={data.settings.executors.find(e => e.id === a.executor)?.type}/>{agentLabel(data.settings.executors.find(e => e.id === a.executor)) || a.executor}</strong><span className={`status ${a.status}`}>{a.status === 'review' ? '本轮执行结束' : labels[a.status] || a.status}</span>{a.reason && <p>{a.reason}</p>}{a.sessionId && <><code>{a.sessionId}</code>{data.settings.executors.find(e => e.id === a.executor)?.type === 'dsh' ? <button onClick={() => api.openSession(a.sessionId)}>打开 DSH 会话</button> : <p className="muted">在对应工具中使用此会话 ID 恢复；查看会话不自动接管。</p>}</>}</div>)}
         <h3>结果与下一步</h3><p>{labels[task.status]} · 已自动续办 {task.autoRounds || 0}/{task.autoRoundLimit || 40} 轮 · 条件变化唤醒 {task.wakeups || 0} 次</p>
         <p>已有阶段交付新证据或完成时可继续推进；连续三次续办没有新阶段证据，或累计四十次时暂停复核。证据仍需验证，不代表正式验收。</p>
         {task.admissionError && <p role="alert">{task.admissionError}</p>}
@@ -106,7 +123,10 @@ export function Panel({ api }) {
         {task.status === 'stalled' && <p>已停止重复尝试。请查看本轮结果和历史证据，确定新方案后再续办，无需验收。</p>}
         {waiting && task.outcome?.publicSummary && <p>{task.outcome.publicSummary}</p>}
         {waiting ? <details><summary>完整执行结果与原始回执</summary><pre>{task.summary || '等待 agent 返回执行结果。'}</pre></details> : <pre>{task.summary || '等待 agent 返回执行结果。'}</pre>}<p className="muted">Linear 回写：{task.issue ? ({ pending: '待生成', queued: '等待发送或重试', sent: '已发送' })[task.report] : '本地任务，无需回写'}。启用 shareProgress 后同步可分享摘要；完整执行记录保留在本机。</p>
-        {!!task.rounds?.length && <details><summary>自动续办的历史结果</summary>{task.rounds.map((r, i) => <pre key={i}>{r.summary}</pre>)}</details>}
+        {(!!task.rounds?.length || task.archivedRounds > 0) && <details><summary>自动续办的历史结果</summary>
+          {task.archivedRounds > 0 && !task.archived && (archivedDetail[`rounds:${task.id}`]?.status === 'ready'
+            ? null : <button disabled={archivedDetail[`rounds:${task.id}`]?.status === 'loading'} onClick={() => loadEarlierRounds(task.id)}>{archivedDetail[`rounds:${task.id}`]?.status === 'error' ? '读取失败，重试' : `加载更早的 ${task.archivedRounds} 轮`}</button>)}
+          {(archivedDetail[`rounds:${task.id}`]?.rounds || task.rounds || []).map((r, i) => <pre key={i}>{r.summary}</pre>)}</details>}
         <details><summary>历史与操作记录</summary>{(task.previousAttempts || []).map(a => <p key={a.id}>{agentLabel(data.settings.executors.find(e => e.id === a.executor)) || a.executor} · {a.status === 'review' ? '本轮执行结束' : labels[a.status] || a.status} · {a.sessionId}</p>)}{task.events?.map((event, i) => <p key={i}><time>{new Date(event.at).toLocaleString()}</time> · {labels[event.action] || event.action}</p>)}</details></article>}
     </section></div>}
   </main>;

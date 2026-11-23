@@ -53,7 +53,7 @@ export async function exportLegacyState({ storage, archive }) {
       return { ...rest, rounds: [...earlier, ...(task.rounds || [])] };
     });
     const live = new Set(state.outbox.map(i => i.id));
-    state.outbox = [...archived.outboxItems().filter(i => !live.has(i.id)), ...state.outbox];
+    state.outbox = [...archived.outboxItems().filter(i => !live.has(i.id)).map(({ archivedAt, ...item }) => item), ...state.outbox];
   }
   const { tasks: _t, outbox, ...rest } = state;
   return { ...rest, version: 1, tasks, outbox };

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { waitScopeError } from './workflow.js';
+import { waitScopeError, keyTaken, archivedStubs, findTask } from './workflow.js';
 
 const timestamp = z.string().datetime({ offset: true });
 export const waitSchema = z.object({
@@ -42,14 +42,16 @@ export const waitFaults = {
 };
 export function waitFault(code) { return Object.assign(new Error(waitFaults[code]), { code }); }
 
-// Resolve only kernel-recorded continuation edges, never infer a replacement by date.
-function continuationTarget(target, state) {
+// Resolve only kernel-recorded continuation edges, never infer a replacement by date. Archived history takes
+// part as stubs (id, key, lineage, project, issue); `lineage` is the hot tasks plus those stubs.
+function lineageOf(state) { return [...state.tasks, ...archivedStubs(state)]; }
+function continuationTarget(target, state, lineage = lineageOf(state)) {
   const seen = new Set();
   while (target) {
     if (seen.has(target.id)) throw waitFault('WAIT_DEPENDENCY_CYCLE');
     seen.add(target.id);
     const [source] = JSON.parse(target.key);
-    const children = state.tasks.filter(t => t.continuationOf === target.id ||
+    const children = lineage.filter(t => t.continuationOf === target.id ||
       t.key === JSON.stringify([source, `continue:${target.id}`]) || t.id === target.supersededBy);
     if (!children.length) {
       if (target.supersededBy) throw waitFault('WAIT_DEPENDENCY_INVALID');
@@ -75,10 +77,11 @@ export function validateLocalWait(wait, task, state) {
     if (!allowed.length || wait.expectedAuthorIds?.some(id => !allowed.includes(id))) throw waitFault('WAIT_REPLY_UNREACHABLE');
   }
   if (wait.kind !== 'task') return wait;
-  const matches = state.tasks.filter(t => t.projectId === task.projectId &&
+  const lineage = lineageOf(state);
+  const matches = lineage.filter(t => t.projectId === task.projectId &&
     (wait.taskId ? t.id === wait.taskId : t.issue?.id === wait.issueId || t.issue?.identifier === wait.issueId));
   const targets = [...new Map(matches.map(t => {
-    const resolved = continuationTarget(t, state);
+    const resolved = continuationTarget(t, state, lineage);
     if (wait.id && resolved.id !== t.id) throw waitFault('WAIT_DEPENDENCY_INVALID');
     return [resolved.id, resolved];
   })).values()];
@@ -86,14 +89,15 @@ export function validateLocalWait(wait, task, state) {
   if (targets.length !== 1 || target.id === task.id || wait.taskId && wait.issueId &&
       ![target.issue?.id, target.issue?.identifier].includes(wait.issueId)) throw waitFault('WAIT_DEPENDENCY_INVALID');
   const [source] = JSON.parse(target.key);
-  if (state.tasks.some(t => t.key === JSON.stringify([source, `continue:${target.id}`]))) throw waitFault('WAIT_DEPENDENCY_INVALID');
+  if (keyTaken(state, JSON.stringify([source, `continue:${target.id}`]))) throw waitFault('WAIT_DEPENDENCY_INVALID');
   const seen = new Set([task.id]);
   let cursor = target;
   while (cursor) {
     if (seen.has(cursor.id)) throw waitFault('WAIT_DEPENDENCY_CYCLE');
     seen.add(cursor.id);
-    cursor = cursor.status === 'blocked' && cursor.wait?.kind === 'task'
-      ? state.tasks.find(t => t.id === cursor.wait.taskId) : null;
+    if (cursor.stub) cursor = findTask(state, cursor.id); // an archived stub: read the task back
+    cursor = cursor?.status === 'blocked' && cursor.wait?.kind === 'task'
+      ? findTask(state, cursor.wait.taskId) : null;
   }
   return { ...wait, taskId: target.id, issueId: target.issue?.id,
     ...(wait.taskId && wait.taskId !== target.id ? { resolvedFromTaskId: wait.taskId } : {}) };
@@ -103,7 +107,7 @@ export function dependencyEvent(wait, task, state, now) {
   validateLocalWait(wait, task, state);
   if (wait.expiresAt && now >= Date.parse(wait.expiresAt)) return { expired: true };
   if (wait.notBefore && now < Date.parse(wait.notBefore)) return null;
-  const target = state.tasks.find(t => t.id === wait.taskId);
+  const target = findTask(state, wait.taskId);
   if (target.owner === 'human' || ['failed', 'stopped', 'exhausted', 'decision', 'stalled', 'needs_result'].includes(target.status) ||
       ['invalid', 'expired', 'limit'].includes(target.wait?.status) && target.status === 'blocked') throw waitFault('WAIT_DEPENDENCY_STOPPED');
   const attempt = target.attempts?.at(-1);

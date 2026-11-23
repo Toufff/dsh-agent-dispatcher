@@ -10,6 +10,8 @@ import { initialState } from './config.js';
 import { acquireLease } from './store.js';
 import { RecordDomainBackend, openTaskDomain, TASK_DOMAIN, LEGACY_DOMAIN } from './migration.js';
 import { TaskStore } from './state-store.js';
+import { ArchiveStore } from './archive.js';
+import { archivePlan, archivePolicy, applyArchive } from './archiving.js';
 import { Runtime } from './runtime.js';
 import { remote } from './remote.js';
 
@@ -40,10 +42,15 @@ export default class AgentDispatcher extends TypertRemoteService {
     this.ready = acquireLease(directory).then(async release => {
       this.release = release;
       const log = message => { try { ctx.logger?.('agent-dispatcher')?.warn?.(message); } catch { /* logging is optional */ } };
+      const archive = await new ArchiveStore(path.join(directory, 'archive')).open();
+      // The migration moves history straight to the archive, so only the hot records are written as documents.
+      // Finished write-backs without a finish time are legacy: only their ids matter afterwards (kept).
+      const prepare = async state => { const now = Date.now();
+        await applyArchive(state, archive, archivePlan(state, archivePolicy(state.settings), now, { unstampedOutbox: 'archive' }), now); return state; };
       const domain = await openTaskDomain({ open: spec => ctx.storageDomain.open(spec), spec: taskDomainSpec, legacySpec: domainSpec,
-        isFresh: value => isDeepStrictEqual(value, domainSpec.global.initial), backupCandidates: storageRoots(ctx), directory, log });
+        isFresh: value => isDeepStrictEqual(value, domainSpec.global.initial), backupCandidates: storageRoots(ctx), directory, prepare, log });
       this.domain = domain;
-      const store = await new TaskStore(new RecordDomainBackend(domain), { log }).open();
+      const store = await new TaskStore(new RecordDomainBackend(domain), { archive, log }).open();
       this.runtime = await new Runtime({ ctx, store, directory }).init();
       return this.runtime;
     });

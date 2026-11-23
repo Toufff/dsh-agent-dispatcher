@@ -32,7 +32,7 @@ export function waitView(task, data, now = Date.now()) {
   const dependency = wait?.kind === 'task' ? data.tasks.find(t => t.id === wait.taskId) : null;
   const targetId = wait?.issueId || task.issue?.id;
   const context = data.issueContexts?.[task.id];
-  const target = dependency?.issue || (targetId && context?.target?.id === targetId ? context.target : data.tasks.find(t => t.issue?.id === targetId)?.issue);
+  const target = dependency?.issue || (targetId && context?.target?.id === targetId ? context.target : (data.tasks.find(t => t.issue?.id === targetId) || data.archived?.find(t => t.issue?.id === targetId))?.issue);
   const targetLabel = target?.identifier || (targetId === task.issue?.id ? task.issue?.identifier : null) || '关联工单（名称未同步）';
   const targetUrl = target?.url?.startsWith('https://linear.app/') ? target.url : null;
   const name = user => user?.name || user?.displayName;

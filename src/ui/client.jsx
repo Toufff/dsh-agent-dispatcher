@@ -12,6 +12,7 @@ export async function apply(ctx) {
     snapshot: async () => unwrap(await ctx.remote.agentDispatcher.snapshot()),
     command: async request => unwrap(await ctx.remote.agentDispatcher.command(request)),
     issueContext: async id => unwrap(await ctx.remote.agentDispatcher.command({ action: 'issue-context', id })),
+    archivedTask: async id => unwrap(await ctx.remote.agentDispatcher.command({ action: 'archived-task', id })),
     catalog: async tokenEnv => unwrap(await ctx.remote.agentDispatcher.command({ action: 'linear-catalog', tokenEnv })),
     checkDirectory: async cwd => unwrap(await ctx.remote.agentDispatcher.command({ action: 'check-directory', cwd })),
     openSession: id => ctx.uiWorkspace.openSession(id)

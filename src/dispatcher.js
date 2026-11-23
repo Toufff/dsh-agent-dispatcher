@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { captureResultText } from './result-text.js';
 import { waitFaults } from './followup.js';
-import { currentTask, issueKey } from './workflow.js';
+import { currentTask, issueKey, keyTaken } from './workflow.js';
 import { asStateStore } from './state-store.js';
 
 export const terminal = new Set(['review', 'failed', 'exhausted', 'stopped', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result']);
@@ -64,8 +64,9 @@ export class Dispatcher {
       if (new Set(executors).size !== executors.length)
         throw new Error('executor instances must be unique');
       const key = JSON.stringify([source, round]);
-      const existing = state.tasks.find(t => t.key === key);
-      if (existing) return existing.id;
+      // Rounds are never enqueued twice, including rounds whose task was archived.
+      const existing = keyTaken(state, key);
+      if (existing) return existing;
       const prior = continuationOf && state.tasks.find(t => t.id === continuationOf);
       if (!['inherit', 'recheck'].includes(continuationTiming) || (continuationTiming === 'recheck' && (!prior || !ownerInstructions?.at(-1)?.trim())))
         throw new Error('Timing changes require an explicit owner continuation instruction');

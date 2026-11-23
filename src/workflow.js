@@ -115,6 +115,42 @@ export function issueKey(task, state) {
   const mapping = state.settings.projects.find(p => p.id === task.projectId)?.linear;
   return JSON.stringify([mapping?.workspaceId || task.projectId, task.issue.id]);
 }
+// ---- archive-aware lookups ----------------------------------------------------------------------------------
+// History that left the hot state (see src/archive.js) is attached to the state as a hidden `archive`. A task
+// that is hot again (restored by a command) always wins over its archived copy.
+const archiveOf = state => state?.archive || null;
+/** Stubs of archived tasks that are not in the hot state. */
+export function archivedStubs(state) {
+  const archive = archiveOf(state);
+  if (!archive) return [];
+  const hot = new Set(state.tasks.map(t => t.id));
+  return archive.stubs().filter(stub => !hot.has(stub.id));
+}
+/** A task by id: hot, or read back from the archive. */
+export function findTask(state, id) {
+  return state.tasks.find(t => t.id === id) || archiveOf(state)?.task(id);
+}
+/** Id of the task (hot or archived) holding this dedup key. */
+export function keyTaken(state, key) {
+  const hot = state.tasks.find(t => t.key === key);
+  if (hot) return hot.id;
+  const id = archiveOf(state)?.idForKey(key);
+  return id && !state.tasks.some(t => t.id === id) ? id : undefined;
+}
+/** Every round of a task: archived ones first, then those still in the hot state. */
+export function roundsOf(task, state) {
+  const archive = archiveOf(state);
+  return [...(archive && task.archivedRounds ? archive.rounds(task.id) : []), ...(task.rounds || [])];
+}
+/** Ids of this host's own Linear comments (every outbox item, including archived ones). */
+export function ownCommentIds(state) {
+  return [...(state.outbox || []).map(i => i.id), ...(archiveOf(state)?.outboxIds() || [])];
+}
+export function hasContinuation(task, state) {
+  const [source] = JSON.parse(task.key);
+  return Boolean(keyTaken(state, JSON.stringify([source, `continue:${task.id}`])));
+}
+
 export function currentTask(task, state) {
   if (task.supersededBy) return false;
   const key = issueKey(task, state);
@@ -136,17 +172,19 @@ export function compactRound(earlier, round) {
     .map(item => ({ id: item.id, status: item.status, evidence: item.evidence || [] }));
   return { ...round, outcome: { ...round.outcome, workItems }, compacted: true };
 }
-export function archiveRound(task, round) {
+/** earlier: rounds of this task already moved to the archive (they still count for compaction). */
+export function archiveRound(task, round, earlier = []) {
   task.rounds ||= [];
   const k = task.rounds.length - 1;
-  if (k >= 0) task.rounds[k] = compactRound(task.rounds.slice(0, k), task.rounds[k]);
+  if (k >= 0) task.rounds[k] = compactRound([...earlier, ...task.rounds.slice(0, k)], task.rounds[k]);
   task.rounds.push(round);
 }
 
 // Evidence remains an executor claim. Changing prose alone cannot renew a budget.
-export function continuationPolicy(task, outcome, maxAutoRounds = 40) {
+/** earlier: archived rounds of the task; their ledger history counts like the rounds still kept. */
+export function continuationPolicy(task, outcome, maxAutoRounds = 40, earlier = []) {
   const normalize = value => value.trim().replace(/\s+/g, ' ');
-  const history = [...(task.rounds || []).flatMap(r => r.outcome?.workItems || []), ...(task.workItems || [])];
+  const history = [...[...earlier, ...(task.rounds || [])].flatMap(r => r.outcome?.workItems || []), ...(task.workItems || [])];
   const checkpoint = (outcome.workItems || []).some(item => {
     const old = history.filter(previous => previous.id === item.id);
     if (!old.length || old.some(previous => previous.status === 'done')) return false;
