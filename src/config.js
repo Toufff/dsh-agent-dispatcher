@@ -59,6 +59,8 @@ export const settingsSchema = z.object({ executors: z.array(executorSchema), pro
   effortExperiment: effortExperimentSchema.optional(),
   // Global cap on simultaneously running automatic tasks (default 1).
   concurrency: z.number().int().min(1).max(64).optional(),
+  // Queued tasks one dispatcher tick may start, with their Linear admission checks run in parallel (default 6).
+  startConcurrency: z.number().int().min(1).max(64).optional(),
   // History leaving the hot state (src/archiving.js): finished tasks after taskDays, automatic-round results
   // beyond the latest keepRounds, finished Linear write-backs after outboxDays. Archived data stays readable.
   archive: z.object({ taskDays: z.number().min(0.01).max(3650).optional(), keepRounds: z.number().int().min(1).max(1000).optional(),

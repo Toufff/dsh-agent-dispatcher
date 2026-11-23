@@ -14,6 +14,8 @@ async function bounded(operation, ms = 15000) {
 
 const slotGroup = task => task.projectId ? `project:${task.projectId}` : `cwd:${task.cwd}`;
 export function globalLimit(state) { return Math.max(1, state.settings?.concurrency ?? 1); }
+/** How many queued tasks one tick may start (settings.startConcurrency, default 6). */
+export function startLimit(state) { return Math.max(1, state.settings?.startConcurrency ?? 6); }
 export function projectLimit(task, state) {
   return Math.max(1, (task.projectId && state.settings?.projects?.find(p => p.id === task.projectId)?.maxConcurrent) || 1);
 }
@@ -109,6 +111,11 @@ export class Dispatcher {
     });
   }
 
+  /**
+   * Starts as many queued tasks as there are free slots, at most startLimit per tick. Admission checks (Linear
+   * eligibility) and adapter starts of the picked tasks run in parallel; every start intent is durable before any
+   * start call. A rejected start falls back to the task's next executor in the following parallel wave.
+   */
   tick() {
     return this.#section(async state => {
       if (state.paused) return;
@@ -117,13 +124,21 @@ export class Dispatcher {
       // which keeps the original single-slot behavior.
       const active = state.tasks.filter(t => !terminal.has(t.status) && t.owner !== 'human');
       const occupied = active.filter(t => t.status !== 'queued');
-      if (occupied.length >= globalLimit(state)) return;
+      const free = Math.min(globalLimit(state) - occupied.length, startLimit(state));
+      if (free <= 0) return;
       // A queued task whose inherited window has not opened yet must not hold up the tasks behind it.
       const notYet = t => t.resumeWindow?.notBefore && Date.now() < Date.parse(t.resumeWindow.notBefore);
-      const task = active.find(t => t.status === 'queued' && !notYet(t) && hasSlot(t, occupied, state) &&
-        (!t.admissionRetryAt || Date.now() >= t.admissionRetryAt) && !state.tasks.some(other => other.owner === 'human' && other.cwd === t.cwd));
-      if (!task || task.status !== 'queued' || task.owner === 'human') return;
-      if (task.resumeWindow?.expiresAt && Date.now() >= Date.parse(task.resumeWindow.expiresAt)) {
+      const picked = [];
+      for (const t of active) {
+        if (picked.length >= free) break;
+        if (t.status === 'queued' && !notYet(t) && hasSlot(t, [...occupied, ...picked], state) &&
+            (!t.admissionRetryAt || Date.now() >= t.admissionRetryAt) && !state.tasks.some(other => other.owner === 'human' && other.cwd === t.cwd))
+          picked.push(t);
+      }
+      if (!picked.length) return;
+      const ids = picked.map(t => t.id);
+      const ready = picked.filter(task => {
+        if (!task.resumeWindow?.expiresAt || Date.now() < Date.parse(task.resumeWindow.expiresAt)) return true;
         task.status = 'blocked'; task.assessed = true; task.report = 'pending'; task.resumeNotice = false;
         if (!task.attempts.length && !task.summary && task.rounds?.length) {
           task.summary = task.rounds.at(-1).summary;
@@ -131,51 +146,56 @@ export class Dispatcher {
         }
         if (task.wait) task.wait.status = 'expired';
         task.events.push({ action: 'window-expired', at: new Date().toISOString() });
-        await this.#save(state, false, [task.id]); return;
-      }
-      if (task.resumeWindow?.notBefore && Date.now() < Date.parse(task.resumeWindow.notBefore)) return;
-      if (this.beforeStart) {
-        try { await this.beforeStart(task, state); delete task.admissionError; delete task.admissionRetryAt; }
-        catch (error) {
+        return false;
+      });
+      let admitted = ready;
+      if (this.beforeStart && ready.length) {
+        const checks = await Promise.allSettled(ready.map(task => Promise.resolve().then(() => this.beforeStart(task, state))));
+        admitted = ready.filter((task, i) => {
+          if (checks[i].status === 'fulfilled') { delete task.admissionError; delete task.admissionRetryAt; return true; }
+          const error = checks[i].reason || {};
           if (task.wait && (waitFaults[error.code] || error.code === 'WAIT_DEPENDENCY_PENDING')) {
             // A changed dependency receipt needs a new wait, not a retry with stale evidence.
             task.status = 'blocked'; task.assessed = true; task.report = 'pending'; task.resumeNotice = false;
             task.wait.status = 'invalid'; task.wait.failureNotified = true; task.wait.errorCode = error.code;
             task.wait.error = waitFaults[error.code] || '依赖完成回执已改变，需重新核验并设置等待条件。';
             task.events.push({ action: 'dependency-admission-blocked', at: new Date().toISOString() });
-            await this.#save(state, false, [task.id]); return;
+            return false;
           }
           // Keep the queue intact for a transient outage, but never execute from stale assignment data.
           task.admissionError = '启动前 Linear 指派或状态复核未通过，未执行；稍后自动重查。';
           task.admissionRetryAt = Date.now() + 30000;
-          await this.#save(state, false, [task.id]); return;
-        }
+          return false;
+        });
       }
-      for (let i = task.attempts.length; i < task.executors.length; i++) {
-        const executor = task.executors[i];
-        let extra = {};
-        try { extra = this.startContext?.(task, state) || {}; } catch { /* optional start context never blocks a start */ }
-        const attempt = { id: this.id(), executor, status: 'starting', sessionId: this.id(), startedAt: new Date().toISOString(),
-          ...(task.session?.executor === executor ? { sessionId: task.session.id, resume: true } : {}) };
-        task.attempts.push(attempt);
-        task.status = 'starting';
+      if (!admitted.length) { await this.#save(state, false, ids); return; }
+      // Waves: each admitted task tries its next executor; a definitive rejection moves it to the next wave.
+      for (let wave = admitted; wave.length;) {
+        const starts = [];
+        for (const task of wave) {
+          const executor = task.executors[task.attempts.length];
+          if (!executor) { task.status = 'exhausted'; task.executionNotice = true; task.report = 'pending'; continue; }
+          let extra = {};
+          try { extra = this.startContext?.(task, state) || {}; } catch { /* optional start context never blocks a start */ }
+          const attempt = { id: this.id(), executor, status: 'starting', sessionId: this.id(), startedAt: new Date().toISOString(),
+            ...(task.session?.executor === executor ? { sessionId: task.session.id, resume: true } : {}) };
+          task.attempts.push(attempt);
+          task.status = 'starting';
+          starts.push({ task, attempt, executor, extra });
+        }
         // Never call start until its intent is durable.
-        await this.#save(state, true, [task.id]);
-        let result;
-        try {
-          const adapter = this.adapters[executor];
-          result = adapter && (!this.enabled || this.enabled(executor, state)) ? await bounded(() => adapter.start(structuredClone({ ...extra, task, attempt })))
-            : { status: 'rejected', reason: 'Adapter unavailable; not started' };
-        } catch {
-          result = { status: 'unknown' };
-        }
-        this.#apply(task, attempt, result);
-        await this.#save(state, true, [task.id]);
-        if (attempt.status !== 'rejected') return;
+        await this.#save(state, true, ids);
+        const results = await Promise.all(starts.map(async ({ task, attempt, executor, extra }) => {
+          try {
+            const adapter = this.adapters[executor];
+            return adapter && (!this.enabled || this.enabled(executor, state)) ? await bounded(() => adapter.start(structuredClone({ ...extra, task, attempt })))
+              : { status: 'rejected', reason: 'Adapter unavailable; not started' };
+          } catch { return { status: 'unknown' }; }
+        }));
+        starts.forEach(({ task, attempt }, i) => this.#apply(task, attempt, results[i]));
+        await this.#save(state, true, ids);
+        wave = starts.filter(s => s.attempt.status === 'rejected').map(s => s.task);
       }
-      task.status = 'exhausted';
-      task.executionNotice = true; task.report = 'pending';
-      await this.#save(state, false, [task.id]);
     });
   }
 

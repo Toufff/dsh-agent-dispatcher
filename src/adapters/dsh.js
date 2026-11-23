@@ -92,8 +92,19 @@ export class DshAdapter {
   async workspace(cwd) {
     const registry = this.ctx.workspaceRegistry;
     if (typeof registry?.resolveByPath !== 'function') return undefined;
-    try { return (await registry.resolveByPath(cwd)) ?? (typeof registry.create === 'function' ? await registry.create(cwd) : undefined); }
-    catch { return undefined; }
+    // Starts run in parallel: tasks of one project share the in-flight lookup, so a missing Workspace is
+    // registered once, not once per task.
+    this.workspaces ||= new Map();
+    const key = path.resolve(cwd);
+    if (!this.workspaces.has(key)) {
+      const lookup = (async () => {
+        try { return (await registry.resolveByPath(cwd)) ?? (typeof registry.create === 'function' ? await registry.create(cwd) : undefined); }
+        catch { return undefined; }
+      })();
+      this.workspaces.set(key, lookup);
+      lookup.finally(() => this.workspaces.delete(key));
+    }
+    return this.workspaces.get(key);
   }
 
   /**

@@ -831,7 +831,26 @@ export class Runtime {
    * Returns project => 'all' | 'dirty' | 'skip'.
    */
   async commentSweep(state) {
-    this.commentDirty ||= new Set(); this.commentSweptAt ||= new Map();
+    // The cursor and the issues still to read are persisted (state.commentSweep): a restart used to start with a
+    // full read of every issue (~160 tasks, about two minutes of Linear reads before anything else ran).
+    if (!this.commentSweptAt) {
+      this.commentSweptAt = new Map(Object.entries(state.commentSweep?.cursors || {}).filter(([, at]) => Number.isFinite(at)));
+      this.commentDirty = new Set([...(this.commentDirty || []), ...(state.commentSweep?.dirty || [])]);
+    }
+    this.commentDirty ||= new Set();
+    return this.sweepComments(state);
+  }
+  /** Saves the sweep cursor and the dirty issues that still belong to a hot task (with the cycle's other changes). */
+  async persistCommentSweep() {
+    await this.dispatcher.update(s => {
+      const issues = new Set(s.tasks.map(t => t.issue?.id).filter(Boolean));
+      // Only hot tasks are ever read for comments, so other issues need not stay dirty.
+      this.commentDirty = new Set([...this.commentDirty].filter(id => issues.has(id)));
+      const next = { cursors: Object.fromEntries(this.commentSweptAt), dirty: [...this.commentDirty].sort() };
+      if (!isDeepStrictEqual(s.commentSweep, next)) s.commentSweep = next;
+    });
+  }
+  async sweepComments(state) {
     const modes = new Map(), keyOf = linear => JSON.stringify([linear.workspaceId, linear.tokenEnv, linear.projectId]);
     for (const project of state.settings.projects) {
       if (!project.followup?.enabled || !project.followup.reviewComments || !project.linear?.enabled) continue;
@@ -865,7 +884,12 @@ export class Runtime {
   commentReadFailed(error) {
     if (error?.code === 'RATE_LIMITED') this.commentPauseUntil = Date.now() + (error.retryAfterMs || 60000);
   }
+  /** Settled-round and chain comment pass; the sweep cursor and unread issues are persisted after it. */
   async reviewComments() {
+    try { await this.reviewCommentsPass(); }
+    finally { if (this.commentSweptAt) await this.persistCommentSweep().catch(() => {}); }
+  }
+  async reviewCommentsPass() {
     const state = await this.store.read();
     if (state.paused) return;
     if (Date.now() < (this.commentPauseUntil || 0)) return;
@@ -1121,10 +1145,11 @@ export class Runtime {
       await phase('Execution reconciliation', async () => { await this.dispatcher.reconcile(); await this.assess(); });
       await phase('Local timers', () => this.monitor({ localOnly: true }));
       await phase('Linear sync', () => this.sync.run());
+      // Queued rounds start before the (possibly long) comment pass, not after it.
+      await phase('Execution', async () => { await this.dispatcher.tick(); await this.assess(); });
       await phase('Review comments', () => this.reviewComments());
       await phase('Data wakes', () => this.dataWakes());
       await phase('Output-limit retry', () => this.retryOutputLimit());
-      await phase('Execution', async () => { await this.dispatcher.tick(); await this.assess(); });
       await phase('Linear reporting', () => this.report());
       if (Date.now() - (this.lastArchive ?? 0) >= ARCHIVE_EVERY_MS) {
         this.lastArchive = Date.now();
