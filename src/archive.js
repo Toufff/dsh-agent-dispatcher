@@ -1,6 +1,7 @@
 import { mkdir, open, readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { writeJson } from './store.js';
 
 /**
@@ -19,7 +20,9 @@ export class ArchiveStore {
   async open() {
     await mkdir(path.join(this.directory, 'tasks'), { recursive: true });
     await mkdir(path.join(this.directory, 'rounds'), { recursive: true });
-    this.index = new Map((await this.lines('index.jsonl')).map(stub => [stub.id, stub]));
+    const stubs = await this.lines('index.jsonl');
+    this.index = new Map(stubs.map(stub => [stub.id, stub]));
+    this.log = stubs.filter((stub, i) => stubs.findLastIndex(s => s.id === stub.id) === i);
     this.keys = new Map([...this.index.values()].filter(s => s.key).map(s => [s.key, s.id]));
     this.outbox = new Map((await this.lines('outbox.jsonl')).map(item => [item.id, item]));
     return this;
@@ -42,6 +45,8 @@ export class ArchiveStore {
   /** Id of the archived task with this dedup key. */
   idForKey(key) { return this.keys.get(key); }
   stubs() { return [...this.index.values()]; }
+  /** Latest stub of every archived task, in the order they were archived. */
+  history() { return [...this.log]; }
   taskIds() { return [...this.index.keys()]; }
   outboxItems() { return [...this.outbox.values()]; }
   outboxIds() { return this.outbox.keys(); }
@@ -70,10 +75,13 @@ export class ArchiveStore {
     return value;
   }
 
-  async archiveTasks(tasks, at = new Date().toISOString()) {
+  /** prev: id of the task right before each one in the state's order (restores the exact order on export). */
+  async archiveTasks(tasks, at = new Date().toISOString(), prev = new Map()) {
     for (const task of tasks) await writeJson(path.join(this.directory, 'tasks', `${task.id}.json`), task);
-    const stubs = tasks.map(task => taskStub(task, at));
+    const pass = randomUUID();
+    const stubs = tasks.map(task => ({ ...taskStub(task, at), prev: prev.get(task.id) ?? null, pass }));
     await this.append('index.jsonl', stubs);
+    this.log = [...this.log.filter(old => !stubs.some(s => s.id === old.id)), ...stubs];
     for (const stub of stubs) { this.index.set(stub.id, stub); if (stub.key) this.keys.set(stub.key, stub.id); this.cache.delete(`task:${stub.id}`); }
   }
   /** rounds[i] gets sequence number first + i. */

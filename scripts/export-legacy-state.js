@@ -42,10 +42,28 @@ export async function exportLegacyState({ storage, archive }) {
   const hot = new Set(state.tasks.map(t => t.id));
   let tasks = state.tasks;
   if (archived) {
-    // Archived tasks rejoin in creation order; earlier rounds go back in front of the kept ones.
-    tasks = [...tasks, ...archived.taskIds().filter(id => !hot.has(id)).map(id => archived.task(id))];
-    tasks = tasks.map((task, index) => ({ task, index })).sort((a, b) =>
-      (Date.parse(a.task.createdAt || 0) - Date.parse(b.task.createdAt || 0)) || a.index - b.index).map(x => x.task);
+    // Archived tasks rejoin where they were: archive passes are undone newest first, each task after the task
+    // that preceded it when it was archived. Earlier rounds go back in front of the kept ones.
+    const order = tasks.map(t => t.id);
+    const loaded = new Map(tasks.map(t => [t.id, t]));
+    const byId = id => { if (!loaded.has(id)) loaded.set(id, archived.task(id)); return loaded.get(id); };
+    const passes = [];
+    for (const stub of archived.history()) {
+      if (hot.has(stub.id)) continue;
+      const pass = stub.pass || stub.archivedAt;
+      if (passes.at(-1)?.pass !== pass) passes.push({ pass, stubs: [] });
+      passes.at(-1).stubs.push(stub);
+    }
+    for (const pass of passes.reverse()) for (const stub of pass.stubs) {
+      let index = stub.prev === null ? 0 : order.indexOf(stub.prev) + 1;
+      if (stub.prev === undefined || (stub.prev !== null && index === 0)) {
+        // No recorded neighbour: fall back to creation time.
+        index = order.findIndex(id => Date.parse(byId(id)?.createdAt || 0) > Date.parse(stub.createdAt || 0));
+        if (index < 0) index = order.length;
+      }
+      order.splice(index, 0, stub.id);
+    }
+    tasks = order.map(byId);
     tasks = tasks.map(task => {
       const earlier = archived.rounds(task.id);
       if (!earlier.length) return task;

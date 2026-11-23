@@ -66,7 +66,8 @@ export async function applyArchive(state, archive, plan, now = Date.now()) {
   for (const item of plan.stamp) item.finishedAt = at;
   if (!plan.tasks.length && !plan.rounds.length && !plan.outbox.length) return plan;
   for (const { task, count } of plan.rounds) await archive.archiveRounds(task.id, task.archivedRounds || 0, task.rounds.slice(0, count));
-  await archive.archiveTasks(plan.tasks, at);
+  const prev = new Map(state.tasks.map((t, i) => [t.id, i ? state.tasks[i - 1].id : null]));
+  await archive.archiveTasks(plan.tasks, at, prev);
   await archive.archiveOutbox(plan.outbox, at);
   for (const { task, count } of plan.rounds) {
     task.rounds = task.rounds.slice(count);

@@ -164,3 +164,25 @@ test('migration archives history first, and the rollback export restores the ori
   const exported = await exportLegacyState({ storage: root, archive: path.join(root, 'archive') });
   assert.deepEqual(exported, legacy);
 });
+
+test('the rollback export puts archived tasks back in their exact original order across several passes', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'dispatch-archive-order-'));
+  const archive = await new ArchiveStore(path.join(root, 'archive')).open();
+  // Array order deliberately differs from creation order.
+  const tasks = ['t4', 't1', 't3', 't0', 't2'].map((id, i) => task(id, { createdAt: new Date(NOW - (10 - Number(id[1])) * DAY).toISOString(),
+    ...(i % 2 ? { status: 'accepted', issue: { id: `i${id}` } } : { issue: { id: `i${id}` } }) }));
+  const legacy = state(tasks);
+  const domain = new FakeDomain({ directory: path.join(root, TASK_DOMAIN) });
+  const domains = { agent_dispatcher: new FakeDomain({ initial: legacy, tables: [] }), [TASK_DOMAIN]: domain };
+  await openTaskDomain({ open: async spec => domains[spec.name], spec: { name: TASK_DOMAIN }, legacySpec: { name: 'agent_dispatcher' },
+    isFresh: () => false, backupCandidates: [], directory: root, prepare: async s => s });
+  const store = await new TaskStore(new RecordDomainBackend(domain), { archive }).open();
+  const runtime = await new Runtime({ store, directory: root, env: {} }).init();
+  await runtime.archiveHistory(NOW); // the two accepted tasks
+  await runtime.dispatcher.update(s => { for (const t of s.tasks) if (t.id !== 't2') t.status = 'accepted'; });
+  await runtime.archiveHistory(NOW); // the rest except t2
+  assert.deepEqual((await store.read()).tasks.map(t => t.id), ['t2']);
+  await runtime.dispatcher.update(s => { s.tasks[0].status = 'accepted'; });
+  const exported = await exportLegacyState({ storage: root, archive: path.join(root, 'archive') });
+  assert.deepEqual(exported.tasks.map(t => t.id), ['t4', 't1', 't3', 't0', 't2']);
+});
