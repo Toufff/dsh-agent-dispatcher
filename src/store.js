@@ -51,34 +51,6 @@ export async function retrying(write, delay = ms => new Promise(resolve => setTi
   }
 }
 
-/**
- * TaskStore backend over the legacy single-document domain (global = the whole state). A write still
- * replaces the whole document, but only when a record or the global part actually changed.
- */
-export class SingleDocumentBackend {
-  constructor(domain) { this.domain = domain; }
-  async loadAll() {
-    const { tasks = [], outbox = [], ...globals } = this.domain.global.get();
-    this.texts = { tasks: new Map(tasks.map(t => [t.id, JSON.stringify(t)])), outbox: new Map(outbox.map(i => [i.id, JSON.stringify(i)])) };
-    this.global = JSON.stringify({ ...globals, taskOrder: tasks.map(t => t.id), outboxOrder: outbox.map(i => i.id) });
-    return { global: JSON.parse(this.global), records: { tasks: new Map(tasks.map(t => [t.id, structuredClone(t)])), outbox: new Map(outbox.map(i => [i.id, structuredClone(i)])) } };
-  }
-  async write(batch, written) {
-    const texts = { tasks: new Map(this.texts.tasks), outbox: new Map(this.texts.outbox) };
-    for (const { table, id, text } of batch.puts) texts[table].set(id, text);
-    for (const { table, id } of batch.deletes) texts[table].delete(id);
-    const global = batch.global ?? this.global;
-    const { taskOrder, outboxOrder, ...rest } = JSON.parse(global);
-    const list = (table, order) => `[${order.filter(id => texts[table].has(id)).map(id => texts[table].get(id)).join(',')}]`;
-    const document = JSON.parse(`${JSON.stringify(rest).slice(0, -1)}${Object.keys(rest).length ? ',' : ''}"tasks":${list('tasks', taskOrder)},"outbox":${list('outbox', outboxOrder)}}`);
-    await retrying(() => this.domain.global.set(document));
-    this.texts = texts; this.global = global;
-    for (const { table, id, text } of batch.puts) written('put', table, id, text);
-    if (batch.global !== undefined) written('global', null, null, batch.global);
-    for (const { table, id } of batch.deletes) written('delete', table, id);
-  }
-}
-
 /** Cross-process exclusion. Stale locks require explicit recovery after confirming the owner is gone. */
 export async function acquireLease(directory) {
   await mkdir(directory, { recursive: true });

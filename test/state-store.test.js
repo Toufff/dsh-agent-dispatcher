@@ -2,7 +2,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import { TaskStore, MemoryBackend, shadowOf, sameAs } from '../src/state-store.js';
-import { SingleDocumentBackend } from '../src/store.js';
 import { Dispatcher } from '../src/dispatcher.js';
 import { Runtime } from '../src/runtime.js';
 import { initialState } from '../src/config.js';
@@ -153,17 +152,4 @@ test('the dispatcher runs end to end on the tracked store and persists intent be
   await dispatcher.flush();
   const stored = JSON.parse([...backend.records.tasks.values()][0]);
   assert.equal(stored.status, 'review'); assert.equal(stored.summary, 'done');
-});
-
-test('the single-document backend rewrites the document only when something changed', async () => {
-  let value = { version: 1, revision: 0, paused: true, settings: { executors: [], projects: [] }, tasks: [task('a')], outbox: [] }, sets = 0;
-  const domain = { global: { get: () => value, set: async next => { sets++; value = next; } } };
-  const store = await new TaskStore(new SingleDocumentBackend(domain)).open();
-  const dispatcher = new Dispatcher({ store, adapters: {} });
-  await dispatcher.update(() => {});
-  assert.equal(sets, 0);
-  await dispatcher.update(s => { s.tasks[0].report = 'pending'; s.tasks.push(task('b')); });
-  assert.equal(sets, 1);
-  assert.deepEqual(value.tasks.map(t => [t.id, t.report]), [['a', 'pending'], ['b', 'sent']]);
-  assert.equal(value.paused, true); assert.equal(value.taskOrder, undefined);
 });
