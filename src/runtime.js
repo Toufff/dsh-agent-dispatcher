@@ -491,7 +491,12 @@ export class Runtime {
         const mapping = state.settings.projects.find(p => p.id === task.projectId)?.linear;
         // A continuation round starting only moves the issue back to the active state; the round's
         // result report follows, so a "started" comment per round would just bury the discussion.
-        const quiet = task.status === 'running' && Boolean(task.continuationOf);
+        // Likewise every later start of the same task (automatic rounds, retries, fresh sessions): a "started"
+        // comment is posted once, when the task first starts (2026-11-23: 242 such comments in 30 hours, LON-160
+        // alone 44 in a day). Results and real endings are still reported.
+        const quiet = task.status === 'running' && Boolean(task.continuationOf || task.startReported ||
+          task.previousAttempts?.some(a => a.accepted));
+        if (task.status === 'running' && !quiet) task.startReported = true;
         // The task settled: publish the rounds collected since the last batch together with its own result.
         if (!quiet && task.status !== 'running' && task.pendingRounds?.length) {
           state.outbox.push({ id: randomUUID(), taskId: task.id, projectId: task.projectId, roundReport: true,
