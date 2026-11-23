@@ -677,3 +677,63 @@ test('freshContextTokens is an optional non-negative integer', () => {
   settings.projects[0].followup.freshContextTokens = -1;
   assert.throws(() => settingsSchema.parse(settings));
 });
+
+test('retrying a stopped round whose session context exceeds the limit starts a fresh session with a handover', async () => {
+  const stopped = s => { const t = s.tasks[0]; t.status = 'stopped'; t.prompt = 'ROUND PROMPT with ledger and previous summary'; };
+  for (const [followup, read, fresh] of [[{}, async () => 250000, true], [{}, async () => 150000, false],
+    [{}, async () => { throw new Error('unreadable'); }, false], [{ freshContextTokens: 0 }, async () => 900000, false]]) {
+    const { runtime } = await fixture({ followup });
+    const reads = [];
+    runtime.adapters.codex.contextTokens = async id => { reads.push(id); return read(); };
+    await runtime.dispatcher.update(stopped);
+    await runtime.command({ action: 'retry', id: (await runtime.snapshot()).tasks[0].id });
+    const t = (await runtime.snapshot()).tasks[0];
+    assert.equal(t.status, 'queued');
+    assert.deepEqual(t.executors, ['codex']);
+    assert.match(t.prompt, /ROUND PROMPT with ledger and previous summary$/);
+    if (fresh) {
+      assert.equal(t.session, undefined);
+      assert.match(t.prompt, /^FRESH SESSION: .*session context reached 250000 tokens/);
+      assert.deepEqual(t.events.slice(-2).map(e => e.action), ['fresh-session', 'retry']);
+      assert.notEqual(t.freshRescued, true);
+    } else {
+      assert.equal(t.session.id, 'original-session');
+      assert.doesNotMatch(t.prompt, /FRESH SESSION/);
+      assert.deepEqual(reads, followup.freshContextTokens === 0 ? [] : ['original-session']);
+    }
+  }
+});
+
+test('a retry ignores a context reading taken for a different session', async () => {
+  const { runtime } = await fixture();
+  await runtime.dispatcher.update(s => { s.tasks[0].status = 'stopped'; });
+  const id = (await runtime.snapshot()).tasks[0].id;
+  await runtime.dispatcher.action(id, 'retry', { freshSession: { sessionId: 'other-session', reason: 'x', handover: 'FRESH SESSION: x' } });
+  const t = (await runtime.snapshot()).tasks[0];
+  assert.equal(t.session.id, 'original-session');
+  assert.doesNotMatch(t.prompt, /FRESH SESSION/);
+});
+
+test('a data wake on a session with a large context continues in a fresh session', async () => {
+  const { mkdtemp, writeFile } = await import('node:fs/promises');
+  for (const [tokens, fresh] of [[250000, true], [150000, false]]) {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'qm-ver-')), file = path.join(dir, 'current.txt');
+    await writeFile(file, 'v1');
+    const { runtime } = await fixture({ followup: { dataVersionFile: file } });
+    runtime.adapters.codex.contextTokens = async () => tokens;
+    await runtime.dispatcher.update(s => { const t = s.tasks[0]; t.status = 'blocked';
+      t.workItems = [{ id: 'need', title: 'next stage', status: 'blocked', dependsOn: [], action: '', evidence: [], blocker: { kind: 'external', owner: 'touf', reason: '数据未到位', resumeWhen: '数据到位' } }];
+      t.outcome = { blockers: [{ owner: 'touf', reason: '数据未到位', resumeWhen: '数据到位' }] }; });
+    await runtime.dataWakes(); await writeFile(file, 'v2'); await runtime.dataWakes();
+    const next = (await runtime.snapshot()).tasks[1];
+    assert.match(next.prompt, /DATA UPDATE/);
+    if (fresh) {
+      assert.equal(next.session, undefined);
+      assert.match(next.prompt, /FRESH SESSION: .*session context reached 250000 tokens/);
+      assert.equal(next.events.at(-1).freshSession, 'the session context reached 250000 tokens');
+    } else {
+      assert.equal(next.session.id, 'original-session');
+      assert.doesNotMatch(next.prompt, /FRESH SESSION/);
+    }
+  }
+});

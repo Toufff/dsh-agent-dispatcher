@@ -232,7 +232,11 @@ export class Dispatcher {
     });
   }
 
-  action(id, action, { confirmedIdle = false } = {}) {
+  /**
+   * freshSession (retry only): { sessionId, reason, handover } read by the caller outside this lock. When the
+   * retried attempt is still that session, the retry starts a fresh session with the handover text prepended.
+   */
+  action(id, action, { confirmedIdle = false, freshSession } = {}) {
     return this.update(async state => {
       const task = state.tasks.find(t => t.id === id);
       if (!task) throw new Error('Task not found');
@@ -267,7 +271,14 @@ export class Dispatcher {
       } else if (action === 'retry') {
         if (!['failed', 'exhausted', 'stopped'].includes(task.status)) throw new Error('Stop or reconcile before retry');
         task.previousAttempts = [...(task.previousAttempts ?? []), ...task.attempts];
-        if (attempt?.accepted) {
+        const fresh = attempt?.accepted && freshSession?.sessionId === attempt.sessionId ? freshSession : null;
+        if (fresh) {
+          // Same executor, new session: the prompt keeps its ledger and previous-round summary.
+          delete task.session; task.executors = [attempt.executor];
+          task.prompt = `${fresh.handover}\n\n${task.prompt}`;
+          task.sessionRounds = 0; task.recoveryStreak = 0;
+          task.events.push({ action: 'fresh-session', reason: fresh.reason, at: new Date().toISOString() });
+        } else if (attempt?.accepted) {
           task.session = { executor: attempt.executor, id: attempt.sessionId };
           task.executors = [attempt.executor];
         }

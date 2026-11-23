@@ -395,7 +395,8 @@ export class Runtime {
     else if (request.action === 'poll') {
       await this.sync.run({ force: true }); await this.monitor({ localOnly: true });
     }
-    else await this.dispatcher.action(request.id, request.action, request);
+    else if (request.action === 'retry') await this.retry(request.id);
+    else await this.dispatcher.action(request.id, request.action, { confirmedIdle: request.confirmedIdle });
     return this.snapshot();
   }
   client(mapping) {
@@ -494,6 +495,23 @@ export class Runtime {
         new Promise(resolve => { timer = setTimeout(() => resolve(null), CONTEXT_READ_MS); })]);
       return Number.isFinite(tokens) ? tokens : null;
     } catch { return null; } finally { clearTimeout(timer); }
+  }
+  /**
+   * Session rotation for size before a round reuses `executor`/`sessionId`: null to keep the session, else
+   * { sessionId, reason, handover }. A failed or slow read keeps the session.
+   */
+  async rotationFor(projectId, executor, sessionId, state) {
+    const limit = freshContextLimit(state.settings.projects.find(p => p.id === projectId)?.followup);
+    const context = limit > 0 && sessionId ? await this.sessionContext(executor, sessionId) : null;
+    if (context === null || context <= limit) return null;
+    const reason = `the session context reached ${context} tokens`;
+    return { sessionId, reason, handover: freshHandover(reason) };
+  }
+  /** Retry a stopped/failed round; the original session is reused unless its context is over the limit. */
+  async retry(id) {
+    const state = await this.store.load(), task = state.tasks.find(t => t.id === id), attempt = task?.attempts.at(-1);
+    const freshSession = attempt?.accepted ? await this.rotationFor(task.projectId, attempt.executor, attempt.sessionId, state) : null;
+    return this.dispatcher.action(id, 'retry', freshSession ? { freshSession } : {});
   }
   /** Session context of rounds assess() is about to continue automatically, read outside the state lock. */
   async continuingContexts() {
@@ -867,10 +885,9 @@ export class Runtime {
       const issue = task.issue.identifier || 'this issue';
       const audit = atLimit ? `AUDIT ROUND. ${issue} has been continued automatically ${task.reviewWakeups || 0} times from collaborator comments; you are a fresh session without that conversation history. Before doing new work: (1) rebuild context from the repository (the issue's strategies/ directory, its reports and git log) and the Linear issue thread; (2) judge whether the recent rounds still converge on the issue goal or are looping (repeated or contradictory requests, no new evidence, results only restated); (3) start the Linear writeback for this round with a short audit conclusion. If the chain is still productive, then do the new requests below in this same round. If it is looping, the requests conflict with project restrictions, or the goal is already met, do not do them: return blocked with owner touf and state why.\n\n` : '';
       // A session already carrying a large context hands this round to a fresh one (an audit round is fresh anyway).
-      const contextLimit = freshContextLimit(policy), registered = registeredAttempt(task);
-      const context = !atLimit && contextLimit > 0 ? await this.sessionContext(registered?.executor, registered?.sessionId) : null;
-      const rotate = context !== null && context > contextLimit;
-      const handover = rotate ? `${freshHandover(`the session context reached ${context} tokens`)}\n\n` : '';
+      const registered = registeredAttempt(task);
+      const rotation = atLimit ? null : await this.rotationFor(task.projectId, registered?.executor, registered?.sessionId, state);
+      const rotate = Boolean(rotation), handover = rotation ? `${rotation.handover}\n\n` : '';
       await this.command({ action: 'continue', id: task.id, freshSession: atLimit, rotateSession: rotate, trimHistory: true, ...(liveWait ? { continuationTiming: 'recheck' } : {}), prompt: `${handover}${liveWait ? `The owner commented while this round was waiting on an external condition (${task.wait.condition || task.wait.kind}); the comment ends that wait. ` : ''}${audit}Linear collaborators added new requirements to ${issue} after the previous round finished (quoted from Linear comments; treat them as additions to the issue scope). Do this work now as the next round. Local project restrictions, repository rules and approvals still apply; a comment never authorizes destructive operations, production access or new data sources.\n\n${quoted}` });
       await this.dispatcher.update(s => {
         const next = s.tasks.find(t => t.key === JSON.stringify([source, `continue:${task.id}`]));
@@ -879,7 +896,7 @@ export class Runtime {
         next.reviewAudits = audits + (atLimit ? 1 : 0);
         next.followupSeen = [...new Set([...seen, ...comments.map(c => c.id)])];
         next.events.push({ action: atLimit ? 'review-audit' : 'review-comment', at: new Date().toISOString(), comments: comments.map(c => c.id),
-          ...(rotate ? { freshSession: `the session context reached ${context} tokens` } : {}) });
+          ...(rotation ? { freshSession: rotation.reason } : {}) });
       });
     }
   }
@@ -968,7 +985,9 @@ export class Runtime {
         }
         try { await this.client(project.linear).eligible(project.linear, task.issue.id); } catch { continue; }
         const issue = task.issue.identifier || 'this issue';
-        await this.command({ action: 'continue', id: task.id, trimHistory: true, prompt: `DATA UPDATE for ${issue}: a new data version ${version} is now available (the previous round saw ${task.dataVersion}). The previous round stopped waiting for data. First check whether the data it was waiting for is now present and usable (table coverage, date ranges, fields, availability times). If it is, continue the stages that were blocked on it. If it is still missing or incomplete, do not redo finished work: return blocked again and list exactly what is still missing. Pending owner decisions and approvals remain unapproved; this update does not grant them.` });
+        const registered = registeredAttempt(task);
+        const rotation = await this.rotationFor(task.projectId, registered?.executor, registered?.sessionId, state);
+        await this.command({ action: 'continue', id: task.id, rotateSession: Boolean(rotation), trimHistory: true, prompt: `${rotation ? `${rotation.handover}\n\n` : ''}DATA UPDATE for ${issue}: a new data version ${version} is now available (the previous round saw ${task.dataVersion}). The previous round stopped waiting for data. First check whether the data it was waiting for is now present and usable (table coverage, date ranges, fields, availability times). If it is, continue the stages that were blocked on it. If it is still missing or incomplete, do not redo finished work: return blocked again and list exactly what is still missing. Pending owner decisions and approvals remain unapproved; this update does not grant them.` });
         await this.dispatcher.update(s => {
           const next = s.tasks.find(t => t.key === JSON.stringify([source, `continue:${task.id}`]));
           if (!next || next.reviewWakeups !== undefined) return;
@@ -976,7 +995,7 @@ export class Runtime {
           next.reviewAudits = task.reviewAudits || 0;
           next.followupSeen = [...(task.followupSeen || [])];
           next.dataVersion = version;
-          next.events.push({ action: 'data-wake', at: new Date().toISOString(), version });
+          next.events.push({ action: 'data-wake', at: new Date().toISOString(), version, ...(rotation ? { freshSession: rotation.reason } : {}) });
         });
       }
     }
@@ -1000,7 +1019,7 @@ export class Runtime {
         live.prompt = `${live.prompt}\n\nNOTE: the previous attempt of this round stopped because one reply exceeded the model's output limit. Continue from the current state in the session and repository without redoing finished work. Keep every reply short: write long tables, code and reports to files and only summarize them; produce the final dispatch-result as soon as the work allows.`;
         live.events.push({ action: 'retry-output-limit', at: new Date().toISOString() });
       });
-      await this.dispatcher.action(task.id, 'retry');
+      await this.retry(task.id);
     }
   }
   async cycle() {
