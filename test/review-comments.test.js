@@ -402,7 +402,8 @@ test('owner comments reach an automatic chain that never settles: queued now, ru
   t = (await runtime.snapshot()).tasks[0];
   assert.match(t.prompt, /FRESH SESSION/); assert.match(t.prompt, /先重算主口径/); assert.equal(t.pendingComments, undefined);
 
-  // 3. the round settles instead: the pending comment goes back to the settled-round path and continues the task
+  // 3. the round settles instead: the comment stays queued and the settled-round path continues the task with it,
+  //    even when the issue is not reported dirty again (no new comment)
   ({ runtime } = await fixture({ followup: follow, comments: () => list }));
   await runtime.dispatcher.update(s => { const t = s.tasks[0]; t.status = 'running'; t.createdAt = new Date(Date.now() - 60000).toISOString();
     t.attempts = [{ id: 'r', executor: 'codex', status: 'running', accepted: true, sessionId: 'original-session' }]; });
@@ -410,10 +411,12 @@ test('owner comments reach an automatic chain that never settles: queued now, ru
   await runtime.dispatcher.update(s => { const x = s.tasks[0]; x.status = 'review'; x.assessed = false; x.summary = done; x.attempts[0].status = 'review'; });
   await runtime.assess();
   t = (await runtime.snapshot()).tasks[0];
-  assert.equal(t.status, 'review'); assert.equal(t.pendingComments, undefined); assert.ok(!(t.followupSeen || []).includes('k1'));
-  runtime.reviewCheckedAt.clear(); await runtime.reviewComments();
+  assert.equal(t.status, 'review'); assert.deepEqual(t.pendingComments.map(c => c.id), ['k1']);
+  runtime.reviewCheckedAt.clear(); runtime.commentDue = () => false; await runtime.reviewComments();
   const s = await runtime.snapshot();
-  assert.equal(s.tasks.length, 2); assert.match(s.tasks[1].prompt, /先重算主口径/);
+  assert.equal(s.tasks.length, 2); assert.match(s.tasks[1].prompt, /OWNER COMMENTS[\s\S]*先重算主口径/);
+  assert.equal(s.tasks[0].pendingComments, undefined);
+  assert.equal(s.tasks[1].events.filter(e => e.action === 'comment-delivered').length, 1);
 });
 
 test('a new data version wakes a round waiting for data once; others are left alone', async () => {

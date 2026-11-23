@@ -28,7 +28,7 @@ const endedAt = task => Date.parse(task.events?.at(-1)?.at || task.createdAt || 
 export function archivePlan(state, policy = archivePolicy(state.settings), now = Date.now(), { unstampedOutbox = 'stamp' } = {}) {
   const pendingReports = new Set(state.outbox.filter(i => i.status === 'pending').map(i => i.taskId));
   const candidates = new Set(state.tasks.filter(task => {
-    if (!terminal.has(task.status) || task.owner === 'human' || task.pendingStop || pendingReports.has(task.id) || task.pendingRounds?.length) return false;
+    if (!terminal.has(task.status) || task.owner === 'human' || task.pendingStop || pendingReports.has(task.id) || task.pendingRounds?.length || task.pendingComments?.length) return false;
     if (task.supersededBy) return true;
     if (now - endedAt(task) < policy.taskDays * DAY) return false;
     return !currentTask(task, state) || (['accepted', 'stopped'].includes(task.status) && !task.reviewLimitNotified);

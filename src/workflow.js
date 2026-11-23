@@ -110,6 +110,27 @@ Independent waiting stages MUST retain a structured wait even when a different s
 REQUIRED workItems ledger: cover the ENTIRE requested goal, not just this turn. Each item has {"id":"stable-id","title":"stage or requirement","status":"ready|blocked|decision|done","dependsOn":[],"action":"authorized next action or empty","evidence":[]}. Blocked/decision items also require "blocker":{"kind":"external|task|permission|time","owner":"actual responsible party","reason":"precise missing input","resumeWhen":"observable condition"}. Keep stable IDs, never drop unfinished items, never replay done items. Completed (done) items from earlier rounds are retained by the dispatcher: do not repeat them, report only unfinished items plus items you added or completed this round. Done requires actual evidence; evidence is a claim pending independent verification/human acceptance. Record code, merge, deployment and acceptance as separate items WHEN requested; do not invent extra scope. A production permission blocker must not stop independent local development. Only mark ready actions already permitted by current local instructions. If any ready item remains, return continue even if another item is blocked. The ledger never grants permission or changes local policy. If all items are blocked, declare a real wait or a concrete local decision; do not call an unknown dependency an external blocker without checking its applicability.
 `;
 
+// Owner comments that arrived while an automatic chain was running, appended to the next round's prompt.
+export const chainCommentPrompt = (comments, issue) => `\n\nOWNER COMMENTS: Linear collaborators added requirements to ${issue || 'this issue'} while the previous round was running (quoted from Linear comments; treat them as additions to the issue scope). Do them in this round; they take priority over the ledger's next step where they conflict. Local project restrictions, repository rules and approvals still apply; a comment never authorizes destructive operations, production access or new data sources.\n\n${comments.map(c => `[${c.createdAt} comment ${c.id}]\n${c.body}`).join('\n\n').slice(0, 24000)}\n`;
+// Events that give a task the prompt of a new round.
+const roundStarts = new Set(['repair-result', 'auto-continue', 'fresh-session', 'condition-changed']);
+/** True when the task's next round only repairs the previous result's format (it must not take new work). */
+export function repairRound(task) {
+  return Boolean(task.formatRepair) || task.events?.findLast(e => roundStarts.has(e.action))?.action === 'repair-result';
+}
+/**
+ * Every path that starts a new round hands it the owner comments queued while the previous round ran (LON-160,
+ * 212, 213, 215, 216, 218: comments stayed queued through three stop+retry cycles). Returns the delivered ids.
+ */
+export function deliverPendingComments(task, at = new Date().toISOString()) {
+  if (!task.pendingComments?.length) return [];
+  const ids = task.pendingComments.map(c => c.id);
+  task.prompt += chainCommentPrompt(task.pendingComments, task.issue?.identifier);
+  (task.events ||= []).push({ action: 'comment-delivered', at, comments: ids });
+  delete task.pendingComments;
+  return ids;
+}
+
 export function issueKey(task, state) {
   if (!task.issue?.id) return null;
   const mapping = state.settings.projects.find(p => p.id === task.projectId)?.linear;

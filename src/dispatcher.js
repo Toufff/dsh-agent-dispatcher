@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { captureResultText } from './result-text.js';
 import { waitFaults } from './followup.js';
-import { currentTask, issueKey, keyTaken } from './workflow.js';
+import { currentTask, issueKey, keyTaken, repairRound, deliverPendingComments } from './workflow.js';
 import { asStateStore } from './state-store.js';
 
 export const terminal = new Set(['review', 'failed', 'exhausted', 'stopped', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result']);
@@ -71,7 +71,7 @@ export class Dispatcher {
       if (!['inherit', 'recheck'].includes(continuationTiming) || (continuationTiming === 'recheck' && (!prior || !ownerInstructions?.at(-1)?.trim())))
         throw new Error('Timing changes require an explicit owner continuation instruction');
       if (continuationOf && (!prior || !currentTask(prior, state) || prior.owner === 'human' ||
-          !['review', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result'].includes(prior.status)))
+          !['review', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result', 'stopped'].includes(prior.status)))
         throw new Error('Continue the current completed task, not a historical or active task');
       const issueIdentity = issueKey({ projectId, issue }, state);
       if (issueIdentity && state.tasks.some(t => issueKey(t, state) === issueIdentity &&
@@ -294,6 +294,7 @@ export class Dispatcher {
         task.owner = 'scheduler'; task.status = 'stopped';
       } else if (action === 'retry') {
         if (!['failed', 'exhausted', 'stopped'].includes(task.status)) throw new Error('Stop or reconcile before retry');
+        const repair = repairRound(task);
         task.previousAttempts = [...(task.previousAttempts ?? []), ...task.attempts];
         const fresh = attempt?.accepted && freshSession?.sessionId === attempt.sessionId ? freshSession : null;
         if (fresh) {
@@ -308,6 +309,9 @@ export class Dispatcher {
         }
         task.attempts = []; task.status = 'queued'; task.report = 'pending'; task.assessed = false; task.outcome = null;
         task.formatRepair = false; task.autoRounds = 0; task.continuationIdleRounds = 0; task.lastProgress = '';
+        // A retried working round takes the owner comments queued while it ran; a format-repair round keeps
+        // them for the next working round.
+        if (!repair) deliverPendingComments(task);
       } else if (action === 'accept') {
         if (task.status !== 'review') throw new Error('Task is not ready for review');
         if (!task.resultContract || task.outcome?.status !== 'complete') throw new Error('Completion evidence has not been classified');
