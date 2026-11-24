@@ -119,6 +119,13 @@ export function dependencyEvent(wait, task, state, now) {
   }) };
 }
 
+// An owner acceptance notice ("owner：验收 … 阶段：交回已验收 … 不标 Done") closes a delivered round; it asks for no
+// further work. On 2026-11-24 a batch of them on ~115 delivered issues queued a rework round on every one.
+export function isAcceptanceNotice(body) {
+  const text = String(body || '').trimStart();
+  return /^(owner|ULTRATOUF)\s*[：:]\s*验收/i.test(text) || /阶段[：:]\s*交回已验收/.test(text);
+}
+
 export function wakeEvent(wait, activity, policy, now, ownCommentIds = []) {
   if (wait.expiresAt && now >= Date.parse(wait.expiresAt)) return { expired: true };
   if (wait.notBefore && now < Date.parse(wait.notBefore)) return null;
@@ -129,7 +136,7 @@ export function wakeEvent(wait, activity, policy, now, ownCommentIds = []) {
   const comments = activity.comments.filter(c =>
     policy.commentAuthorIds.includes(c.user?.id) && c.user?.id !== policy.assigneeId &&
     (!wait.expectedAuthorIds || wait.expectedAuthorIds.includes(c.user?.id)) &&
-    !ownCommentIds.includes(c.id) && Date.parse(c.updatedAt) > Date.parse(wait.armedAt) &&
+    !ownCommentIds.includes(c.id) && !isAcceptanceNotice(c.body) && Date.parse(c.updatedAt) > Date.parse(wait.armedAt) &&
     !(wait.seen || []).includes(`${c.id}:${c.updatedAt}`));
   if (!comments.length) return null;
   // Batch all changes in one wake; comments are evidence, never execution permission.

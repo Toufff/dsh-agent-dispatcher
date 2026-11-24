@@ -9,7 +9,7 @@ import { DshAdapter } from './adapters/dsh.js';
 import { LinearClient, linearMapping, assigneeAllowed } from './linear.js';
 import { AdapterRegistry } from './adapters/registry.js';
 import { isDeepStrictEqual } from 'node:util';
-import { wakeEvent, waitSchema, validateLocalWait, dependencyEvent, waitFault, waitFaults } from './followup.js';
+import { wakeEvent, waitSchema, validateLocalWait, dependencyEvent, waitFault, waitFaults, isAcceptanceNotice } from './followup.js';
 import { reportBody, roundReportBody, roundsDigest } from './reporting.js';
 
 // Collected automatic-round results are published together: when the task settles, or at the latest this long
@@ -965,7 +965,7 @@ export class Runtime {
         if (prefix && body.startsWith(prefix)) return false;
         return ownerMarks.some(m => body.startsWith(m)) || Date.parse(c.createdAt) > settled;
       };
-      const comments = (activity.comments || []).filter(c => (!liveWait && allowed.includes(c.user?.id) || fromReceiver(c)) && !own.has(c.id) &&
+      const comments = (activity.comments || []).filter(c => (!liveWait && allowed.includes(c.user?.id) || fromReceiver(c)) && !own.has(c.id) && !isAcceptanceNotice(c.body) &&
         !seen.has(c.id) && Date.parse(c.createdAt) > since).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       if (!comments.length && !carried.length) continue;
       const ids = [...carried, ...comments].map(c => c.id);
@@ -1041,7 +1041,7 @@ export class Runtime {
     const seen = new Set([...(task.followupSeen || []), ...(task.pendingComments || []).map(c => c.id)]);
     const since = Date.parse(task.createdAt || 0);
     const comments = (activity.comments || []).filter(c => {
-      if (own.has(c.id) || seen.has(c.id) || Date.parse(c.createdAt) <= since) return false;
+      if (own.has(c.id) || seen.has(c.id) || Date.parse(c.createdAt) <= since || isAcceptanceNotice(c.body)) return false;
       const body = String(c.body || '').trimStart();
       if (allowed.includes(c.user?.id)) return true;
       return receiver && c.user?.id === receiver && !(prefix && body.startsWith(prefix)) && ownerMarks.some(m => body.startsWith(m));

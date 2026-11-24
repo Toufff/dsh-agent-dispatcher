@@ -754,3 +754,11 @@ test('the project-wide comment sweep asks Linear at most once per interval', asy
   for (let i = 0; i < 5; i++) await runtime.commentSweep(state);
   assert.ok(sweeps <= 1, `swept ${sweeps} times within one interval`);
 });
+
+test('an owner acceptance notice closes a round without queuing rework', async () => {
+  const { isAcceptanceNotice } = await import('../src/followup.js');
+  assert.equal(isAcceptanceNotice('owner：验收（2026-11-24，统一账户复核）。阶段：交回已验收。结论：…不标 Done。'), true);
+  assert.equal(isAcceptanceNotice('  ULTRATOUF: 验收通过'), true);
+  assert.equal(isAcceptanceNotice('owner：第 3 轮补充：再往外扩散一圈'), false);
+  assert.equal(isAcceptanceNotice('owner：请重跑，阶段：交回已验收之前漏了一项'), true);
+});
