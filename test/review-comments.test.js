@@ -20,7 +20,7 @@ async function fixture({ comments = [], eligible = true, followup = {} } = {}) {
     followup: { enabled: true, commentAuthorIds: ['peer', 'me'], maxWakeups: 8, reviewComments: true, ...followup } }];
   await store.save(state);
   const calls = { activity: 0 };
-  const runtime = await new Runtime({ store, directory: os.tmpdir(), env: { TEST_TOKEN: 'synthetic' }, linearFactory: () => ({
+  const runtime = await new Runtime({ store, commentSweepMs: 0, directory: os.tmpdir(), env: { TEST_TOKEN: 'synthetic' }, linearFactory: () => ({
     eligible: async () => ({}),
     activity: async () => { calls.activity++; if (!eligible) throw new Error('closed'); return { comments: comments() }; }
   }) }).init();
@@ -519,7 +519,7 @@ async function sweepFixture({ commented, comments = () => [] }) {
     followup: { enabled: true, commentAuthorIds: ['peer', 'me'], maxWakeups: 8, reviewComments: true } }];
   await store.save(state);
   const calls = { activity: 0, sweep: 0, since: [] };
-  const runtime = await new Runtime({ store, directory: os.tmpdir(), env: { TEST_TOKEN: 'synthetic' }, linearFactory: () => ({
+  const runtime = await new Runtime({ store, commentSweepMs: 0, directory: os.tmpdir(), env: { TEST_TOKEN: 'synthetic' }, linearFactory: () => ({
     eligible: async () => ({}),
     commentedIssues: async (mapping, since) => { calls.sweep++; calls.since.push(since); assert.equal(mapping.projectId, 'proj'); return commented(); },
     activity: async () => { calls.activity++; return { comments: comments() }; }
@@ -739,4 +739,18 @@ test('a data wake on a session with a large context continues in a fresh session
       assert.doesNotMatch(next.prompt, /FRESH SESSION/);
     }
   }
+});
+
+test('the project-wide comment sweep asks Linear at most once per interval', async () => {
+  const { Runtime } = await import('../src/runtime.js');
+  const { MemoryStore } = await import('../src/dispatcher.js');
+  const store = new MemoryStore();
+  await store.save({ tasks: [], settings: { concurrency: 1, executors: [], projects: [{ id: 'p', cwd: os.tmpdir(), maxConcurrent: 1,
+    linear: { enabled: true, tokenEnv: 'TEST_TOKEN', workspaceId: 'w', projectId: 'proj' }, followup: { enabled: true, reviewComments: true, commentAuthorIds: ['u'] } }] } });
+  let sweeps = 0;
+  const runtime = new Runtime({ store, directory: os.tmpdir(), env: { TEST_TOKEN: 'synthetic' }, commentSweepMs: 60000,
+    linearFactory: () => ({ commentedIssues: async () => { sweeps++; return new Set(); } }) });
+  const state = await runtime.store.read();
+  for (let i = 0; i < 5; i++) await runtime.commentSweep(state);
+  assert.ok(sweeps <= 1, `swept ${sweeps} times within one interval`);
 });

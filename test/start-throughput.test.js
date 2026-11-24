@@ -79,7 +79,7 @@ test('parallel DSH starts in one project register a missing Workspace once', asy
 });
 
 async function sweepRuntime(store, calls) {
-  return new Runtime({ store, directory: os.tmpdir(), env: { TEST_TOKEN: 'synthetic' }, linearFactory: () => ({
+  return new Runtime({ store, commentSweepMs: 0, directory: os.tmpdir(), env: { TEST_TOKEN: 'synthetic' }, linearFactory: () => ({
     eligible: async () => ({}),
     commentedIssues: async () => { calls.sweep++; return new Set(calls.flagged || []); },
     activity: async () => { calls.activity++; return { comments: [] }; } }) }).init();
@@ -117,7 +117,7 @@ test('a cycle starts queued tasks before the comment pass', async () => {
   const store = new MemoryStore(), state = initialState();
   state.paused = false;
   await store.save(state);
-  const runtime = await new Runtime({ store, directory: os.tmpdir(), env: {} }).init();
+  const runtime = await new Runtime({ store, commentSweepMs: 0, directory: os.tmpdir(), env: {} }).init();
   const order = [];
   runtime.dispatcher.tick = async () => { order.push('execution'); };
   runtime.reviewComments = async () => { order.push('comments'); };

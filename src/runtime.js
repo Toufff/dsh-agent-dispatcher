@@ -20,6 +20,9 @@ const ROUND_BATCH_MS = 2 * 3600e3;
 const DEFAULT_FRESH_CONTEXT_TOKENS = 200000;
 const CONTEXT_READ_MS = 5000;
 const ARCHIVE_EVERY_MS = 10 * 60e3;
+// The comment sweep is one Linear query; the cycle timer fires every 1.5 s. Once a cycle got fast (dispatcher v2 store,
+// 2026-11-23) an unthrottled sweep alone used ~2000 of the key's 2500 requests per hour and hit Linear's rate limit.
+const COMMENT_SWEEP_MS = 60e3;
 const freshContextLimit = policy => policy?.freshContextTokens ?? DEFAULT_FRESH_CONTEXT_TOKENS;
 import { LinearSync } from './linear-sync.js';
 import { asStateStore } from './state-store.js';
@@ -149,8 +152,8 @@ export function issuePrompt(issue) {
 }
 
 export class Runtime {
-  constructor({ store, ctx = {}, directory, linearFactory = token => new LinearClient(token), env = process.env, registry }) {
-    this.store = asStateStore(store); this.ctx = ctx; this.directory = directory; this.env = env;
+  constructor({ store, ctx = {}, directory, linearFactory = token => new LinearClient(token), env = process.env, registry, commentSweepMs = COMMENT_SWEEP_MS }) {
+    this.store = asStateStore(store); this.ctx = ctx; this.directory = directory; this.env = env; this.commentSweepMs = commentSweepMs;
     this.linearFactory = linearFactory; this.adapters = {}; this.health = {}; this.errors = [];
     this.sync = new LinearSync(this); this.reads = new Map(); this.notifications = new Notifications(this);
     this.registry = registry || new AdapterRegistry();
@@ -871,6 +874,8 @@ export class Runtime {
       if (typeof client.commentedIssues !== 'function' || !project.linear.projectId) { modes.set(key, 'all'); continue; }
       const last = this.commentSweptAt.get(key), started = Date.now();
       if (last === undefined) { this.commentSweptAt.set(key, started); modes.set(key, 'all'); continue; }
+      // Between sweeps only issues already known to have new comments are read.
+      if (started - last < this.commentSweepMs) { modes.set(key, 'dirty'); continue; }
       try {
         // One minute of overlap covers clock skew and comments written while the previous pass ran.
         for (const id of await client.commentedIssues(project.linear, new Date(last - 60000).toISOString())) this.commentDirty.add(id);
