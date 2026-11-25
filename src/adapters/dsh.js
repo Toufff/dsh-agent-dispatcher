@@ -195,7 +195,15 @@ export class DshAdapter {
     const suffix = events.slice(index);
     const endIndex = suffix.findIndex(event => event.type === 'turn/end');
     const end = suffix[endIndex];
-    if (!end) return { status: 'unknown', reason: 'No confirmed turn completion' };
+    if (!end) {
+      // The prompt was admitted but the turn never ended. After a host restart the Agent is gone from memory and
+      // that completion will never arrive, so the round is *interrupted*, not unknown: unknown is a dead end
+      // (continue and retry both refuse it), which made every release wait for every running round to finish.
+      // A live agent already returned above, so requiring an absent agent keeps this to restart recovery.
+      if (!agent && attempt.status === 'running')
+        return { status: 'interrupted', reason: 'Host restarted mid-round; the same session can be resumed' };
+      return { status: 'unknown', reason: 'No confirmed turn completion' };
+    }
     this.admitted.delete(attempt.id);
     // A later manual/queued turn in the same session is not this attempt's receipt.
     const message = suffix.slice(0, endIndex).findLast(event => event.type === 'assistant/message');

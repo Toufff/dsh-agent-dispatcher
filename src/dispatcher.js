@@ -208,6 +208,24 @@ export class Dispatcher {
     if (status === 'rejected') {
       attempt.status = 'rejected';
       task.status = 'queued';
+    } else if (status === 'interrupted') {
+      // The executor died mid-round (host restart). Requeue the way retry does — keep the same session so start()
+      // resumes it (attempt.resume) instead of opening a new one — rather than parking the task in 'unknown', which
+      // neither continue nor retry accepts and so blocked every release until all rounds happened to finish.
+      attempt.status = 'unknown';
+      task.previousAttempts = [...(task.previousAttempts ?? []), ...task.attempts];
+      task.session = { executor: attempt.executor, id: attempt.sessionId };
+      task.executors = [attempt.executor];
+      task.attempts = [];
+      task.status = 'queued';
+      task.report = 'pending';
+      task.assessed = false;
+      task.outcome = null;
+      task.autoRounds = 0;
+      task.continuationIdleRounds = 0;
+      task.lastProgress = '';
+      task.events?.push({ action: 'interrupted', at: new Date().toISOString(), attemptId: attempt.id,
+        reason: String(result?.reason || '').slice(0, 300) });
     } else if (status === 'needs_input') {
       // An unattended round stopped on a question to a person (NeedsInput). It settles as a decision with the
       // question as its blocker: reported to Linear and notified like any decision; an owner answer in Linear
