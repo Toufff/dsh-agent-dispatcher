@@ -208,9 +208,14 @@ export class DshAdapter {
     // A later manual/queued turn in the same session is not this attempt's receipt.
     const message = suffix.slice(0, endIndex).findLast(event => event.type === 'assistant/message');
     const content = message?.data?.message?.content ?? message?.data?.content ?? [];
-    return { status: end.data.reason.kind === 'completed' ? 'review' : 'failed',
-      reason: end.data.reason.kind,
-      summary: Array.isArray(content) ? captureResultText(content.filter(p => p.type === 'text').map(p => p.text).join('\n')) : '' };
+    const summary = Array.isArray(content) ? captureResultText(content.filter(p => p.type === 'text').map(p => p.text).join('\n')) : '';
+    const kind = end.data.reason.kind;
+    // A host shutdown writes turn/end with reason 'interrupted' (2026-11-25: every round killed by
+    // release-dsh.ps1 had it). With no agent left in memory that round is resumable, so requeue it instead of
+    // leaving a 'failed' that only a manual retry revives. A live agent with the same reason is a real failure.
+    if (kind === 'interrupted' && !agent && attempt.status === 'running')
+      return { status: 'interrupted', reason: 'Host restarted mid-round; the same session can be resumed' };
+    return { status: kind === 'completed' ? 'review' : 'failed', reason: kind, summary };
   }
   /**
    * An unattended round that called ask_user_question waits for an answer nobody gives (DSH session/state reports

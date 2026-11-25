@@ -43,6 +43,27 @@ test('adapter: an agent that is detached but still idle is not treated as a rest
   assert.equal(result.status, 'unknown');
 });
 
+test('adapter: a turn/end with reason interrupted and no live agent is a restart, not a failure', async () => {
+  // 2026-11-25: the host writes turn/end { reason: { kind: 'interrupted' } } when it is shut down mid-round.
+  const killed = [admitted, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'half done' }] } } },
+    { type: 'turn/end', data: { reason: { kind: 'interrupted' } } }];
+  const result = await adapterWith(killed).reconcile({ attempt: { id: 'attempt', sessionId: 'session', status: 'running' } });
+  assert.equal(result.status, 'interrupted');
+
+  // The same reason with a live agent in memory is a genuine failure and must stay failed.
+  const live = { status: 'idle', inbox: { nextTurn: [], nextStep: [] } };
+  const failed = await adapterWith(killed, live).reconcile({ attempt: { id: 'attempt', sessionId: 'session', status: 'running' } });
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.reason, 'interrupted');
+  assert.equal(failed.summary, 'half done');
+});
+
+test('adapter: interrupted is not claimed when the task was not the running attempt', async () => {
+  const killed = [admitted, { type: 'turn/end', data: { reason: { kind: 'interrupted' } } }];
+  const result = await adapterWith(killed).reconcile({ attempt: { id: 'attempt', sessionId: 'session', status: 'review' } });
+  assert.equal(result.status, 'failed');
+});
+
 const input = { source: 'example-workspace/example-issue', round: '1',
   cwd: '/example/project', prompt: 'Review the synthetic fixture', executors: ['first'] };
 
