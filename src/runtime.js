@@ -29,6 +29,7 @@ import { asStateStore } from './state-store.js';
 import { archivePlan, archivePolicy, applyArchive, restoreTask } from './archiving.js';
 import { Notifications } from './notifications.js';
 import { currentTask, attentionFor, continuationPolicy, ledgerPrompt, archiveRound, compactRound, keyTaken, findTask, roundsOf, ownCommentIds, archivedStubs, chainCommentPrompt, repairRound, deliverPendingComments, freshHandover, stripHandovers, withHandover, latestHandoverOnly } from './workflow.js';
+import { foldTaskWorkItems } from './work-items.js';
 
 // A queued continuation may expire before creating its next attempt. Reuse
 // only the latest confirmed historical attempt matching the durable session.
@@ -599,7 +600,7 @@ export class Runtime {
   }
   async assess() {
     const contexts = await this.continuingContexts();
-    await this.dispatcher.update(state => {
+    await this.dispatcher.update(async state => {
       for (const task of state.tasks.filter(t => currentTask(t, state) && (t.status === 'review' && !t.assessed || t.status === 'needs_result') && t.owner !== 'human')) {
         if (task.status === 'needs_result') {
           const stored = parseOutcome(task.summary), attempt = task.attempts.at(-1);
@@ -618,10 +619,14 @@ export class Runtime {
         task.autoRoundLimit = autoRoundLimit;
         const continuation = outcome?.status === 'continue' ? continuationPolicy(task, outcome, autoRoundLimit, archivedRounds(task, state)) : null;
         task.outcome = outcome; task.assessed = true;
-        if (outcome?.workItems) task.workItems = structuredClone(outcome.workItems);
+        const followupPolicy = state.settings.projects.find(p => p.id === task.projectId)?.followup || {};
+        if (outcome?.workItems) {
+          task.workItems = structuredClone(outcome.workItems);
+          // Completed stages are history, not next steps: fold the oldest out of the hot ledger (src/work-items.js).
+          await foldTaskWorkItems(task, state, followupPolicy);
+        }
         task.report = 'pending'; task.resumeNotice = false;
         const attempt = task.attempts.at(-1);
-        const followupPolicy = state.settings.projects.find(p => p.id === task.projectId)?.followup || {};
         // Long sessions get stuck on their own mistakes (LON-35: the same rejected stage reported twice after
         // explicit correction, workItems left out round after round). Instead of a human noticing it, the
         // dispatcher hands the task to a fresh session that rebuilds context from the repository and the ledger:

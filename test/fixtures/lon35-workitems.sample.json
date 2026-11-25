@@ -1,0 +1,2954 @@
+[
+ {
+  "id": "r1-gapmath",
+  "title": "量化目标差距：把 300% 拆成「交易日覆盖率 × 每仓日期望」",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "gap_math.py/gap_math.json：日几何 +0.570%、72% 交易日或 60% 持仓日×+1.17%、信号日 143/782=18.3%"
+  ]
+ },
+ {
+  "id": "r1-audit",
+  "title": "第 1 轮反方审计",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "audit.json：7 成立、1 削弱、0 推翻；独立重建 breakbuy 两个月 1,675 笔 −1.170%；纠正 8 处口径"
+  ]
+ },
+ {
+  "id": "data-l2-queue",
+  "title": "L2 逐笔委托/撤单（2023-08 起）——排队成交率",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "owner 2026-11-13 明确不提供：龙虎委托接口仅当天、无历史（11-06 实测 errcode 1020）；库内 l2_entrust_packed 自 2026-10-19 起且只收大单（Vol=500 / Tur=30）⇒ 已收口，封死组反事实方向跳过"
+  ]
+ },
+ {
+  "id": "r2-h18",
+  "title": "T 日未封板强势股排除项",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "映射 h18（falsified）：第 4 轮 r4-h18 完成"
+  ]
+ },
+ {
+  "id": "r3-h22",
+  "title": "尾盘临近封板买入",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "映射 h22（falsified）：第 4 轮 r4-h22 完成"
+  ]
+ },
+ {
+  "id": "r4-audit",
+  "title": "第 4 轮反方审计",
+  "status": "done",
+  "dependsOn": [
+   "r4-h22",
+   "r4-h23"
+  ],
+  "action": "",
+  "evidence": [
+   "audit_r4.json + audit/round4/（a1_rebuild/a1_supp/a2_rebuild/a5_late_seal/cross）：3 成立、0 削弱、0 推翻；纠正两处口径并补上界检验"
+  ]
+ },
+ {
+  "id": "r5-h26",
+  "title": "北交所 30cm 涨停池次日承接",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "h26_bj.py + 审计 r5_a5.py：limit_pool_full 全表 82 行北交所涨停均在 2022-02-23..2022-09-15，面板窗口内 0 行 → 不可测，记 needs_data"
+  ]
+ },
+ {
+  "id": "data-bj",
+  "title": "北交所涨停池（2023-08 起）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "R293 按 owner 11-16 裁决收口：北交所不在研究范围、不补"
+  ]
+ },
+ {
+  "id": "r7-h30",
+  "title": "B 腿回撤分解 + 因果风险闸门（目标 DD ≤30%、年化 ≥+37%）",
+  "status": "done",
+  "dependsOn": [
+   "r6-h27"
+  ],
+  "action": "",
+  "evidence": [
+   "h30_gate.py/h30_gate.json：−37.7% 来自 9 个入场日、两笔尾部亏损（600811.SH −30.69% 跌停顺延 5 天、002693.SZ −17.40%），剔两笔残余 MDD −18.0%；冷清日不做 52 笔 +2.887%/回撤 −8.9%/OOS 3 笔，高位不做 54 笔 +1.472%/回撤 −11.2%/OOS 22 笔 −0.139%，净值暂停无效"
+  ]
+ },
+ {
+  "id": "r7-h28",
+  "title": "资金占用口径（盘中卖出的钱何时能再投）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "同 r5-h28：owner 同意、qm_eval 2b4b217 落地、主口径新旧口径并列一致"
+  ]
+ },
+ {
+  "id": "r8-h34",
+  "title": "B 腿(+overlay) 与现役 A/B 组合口径",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "映射 h34（done）：第 9 轮 r9-h34 完成"
+  ]
+ },
+ {
+  "id": "r9-audit",
+  "title": "第 9 轮反方审计（精简版）",
+  "status": "done",
+  "dependsOn": [
+   "r9-h34",
+   "r9-h35",
+   "r9-h36"
+  ],
+  "action": "",
+  "evidence": [
+   "audit_r9.json + audit/round9/：三条全部削弱；指出 B 腿 77/115 与 A/B 重合、gap>3% p=0.48、top1/top2 p=0.84；纠正日历锚/逐笔锚口径"
+  ]
+ },
+ {
+  "id": "r10-h38",
+  "title": "找低相关腿：ST 池 × B 腿组合",
+  "status": "done",
+  "dependsOn": [
+   "r9-h34"
+  ],
+  "action": "",
+  "evidence": [
+   "h38_h39.py/h38_check.py：ST≥5 亿 123 笔 +0.946%/年化 +22.8%；并集 186=23.7%、相关 −0.299；并池 +59.2%/−37.9%、50/50 +31.9%/−19.2%；审计：补零相关 −0.032、仅 ST 日占 44%、top5% 90.9% → 不能写低相关腿"
+  ]
+ },
+ {
+  "id": "r10-h41",
+  "title": "B+ST 组合的补零并集诚实版",
+  "status": "done",
+  "dependsOn": [
+   "r10-h38"
+  ],
+  "action": "",
+  "evidence": [
+   "h40_41_42.py：并池 +59.2%/−37.9%/23.7%；去仅 ST 日 29.8%；清共同日仍 +51.0%；成本翻倍 34.1%；50/50 +31.9%/−19.2%；审计 A2 成立（叠账不是分散）"
+  ]
+ },
+ {
+  "id": "r12-audit",
+  "title": "第 12 轮反方审计（精简版）",
+  "status": "done",
+  "dependsOn": [
+   "r11-h43",
+   "r11-h44",
+   "r11-h45"
+  ],
+  "action": "",
+  "evidence": [
+   "audit_r12.json + audit/round12/：A1 成立、A2 成立（措辞受限）、封单比削弱、首板溢价推翻；406 次 trials 下 DSR≈0"
+  ]
+ },
+ {
+  "id": "r13-publish",
+  "title": "第 13 轮报告、清单与提交发布",
+  "status": "done",
+  "dependsOn": [
+   "r13-audit"
+  ],
+  "action": "",
+  "evidence": [
+   "report.md 第 13 轮按审计改写；backlog 51 条；提交 6db2fc3 已 publish 到 main"
+  ]
+ },
+ {
+  "id": "r14-publish",
+  "title": "第 14 轮报告、清单与提交发布（含快照变更说明）",
+  "status": "done",
+  "dependsOn": [
+   "r14-audit"
+  ],
+  "action": "",
+  "evidence": [
+   "report.md 第 14 轮按审计改写并写明快照变更与基线重算；backlog 54 条；提交 f88e0bb → 73ea47c 已 publish 到 main"
+  ]
+ },
+ {
+  "id": "r15-h56",
+  "title": "扩大 B 腿样本检验冷日效应（115→300+）",
+  "status": "done",
+  "dependsOn": [
+   "r14-h53"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/sample16/r16.py/r16_results.json：230 笔 −0.103%/年化 −22.3%；冷 36 笔 −2.766% vs 暖 194 笔 +0.391%、聚类 p≈0.016；新增笔拆解显示单放宽仍为正；审计 A1 成立"
+  ]
+ },
+ {
+  "id": "r16-h60",
+  "title": "mask 三条件 leave-one-out",
+  "status": "done",
+  "dependsOn": [
+   "r15-h56"
+  ],
+  "action": "",
+  "evidence": [
+   "r17_results.json：10 个变体信号数全对；去任一条件每笔转负、单条件 −0.71%~−0.83%；seal≤0.15 → 49 笔 +0.088%；审计削弱（暴露效应而非负期望、6 个 LOO 年化未复核）"
+  ]
+ },
+ {
+  "id": "r17-h64",
+  "title": "冷日不做 × overlay（带「只剔 002693」对照）",
+  "status": "done",
+  "dependsOn": [
+   "r16-h59"
+  ],
+  "action": "",
+  "evidence": [
+   "r18_results.json：冷日+overlay 97 笔 +1.772%/年化 +45.6%/−32.5%；只剔 002693+overlay 114 笔 +53.3%；审计削弱（前 5 笔占净增益 230.8%、符号 p=0.86、回撤恶化）"
+  ]
+ },
+ {
+  "id": "r19-audit",
+  "title": "第 19 轮反方审计（极简版）",
+  "status": "done",
+  "dependsOn": [
+   "r18-h65",
+   "r18-h66",
+   "r18-h67"
+  ],
+  "action": "",
+  "evidence": [
+   "audit_r19.json + audit/round19/：3 条全部成立；纠正 overlay「净增益」表述为累计收益 +18.5~+80.3pp"
+  ]
+ },
+ {
+  "id": "r20-publish",
+  "title": "第 20 轮报告、清单与提交发布",
+  "status": "done",
+  "dependsOn": [
+   "r20-audit"
+  ],
+  "action": "",
+  "evidence": [
+   "report.md 第 20 轮按审计改写；backlog 72 条；提交 960e0c9 已 publish 到 main"
+  ]
+ },
+ {
+  "id": "r21-h74",
+  "title": "全市场涨停池上 ld_10d≥5 的发生率与次日期望",
+  "status": "done",
+  "dependsOn": [
+   "r20-h71"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/cap22/r22.py/r22_results.json：58,988 行；ld≥5 占 0.8%、≥7 占 0.26%；次日期望 ld≥5 474 笔 −0.188%（t=−0.43）、ld≥7 152 笔 −0.021%（t=−0.03），毛均值 +0.112%/+0.279%、成交率 0.65、OOS 0 笔；审计削弱"
+  ]
+ },
+ {
+  "id": "r22-h78",
+  "title": "强市日 + 冷日剔除 + 同日多笔三叠加",
+  "status": "done",
+  "dependsOn": [
+   "r21-h76"
+  ],
+  "action": "",
+  "evidence": [
+   "r23_results.json：46 笔 +3.472%/年化 +45.92%/回撤 −8.94%/成本翻倍 +41.3%/OOS 3 笔；审计成立（不含 600811）"
+  ]
+ },
+ {
+  "id": "r23-h82",
+  "title": "弱市日踩雷概率",
+  "status": "done",
+  "dependsOn": [
+   "r22-h79"
+  ],
+  "action": "",
+  "evidence": [
+   "r24_results.json：强市 0/52、弱市 2/63；P(≤−5%) 9.6% vs 14.3%；审计成立（Fisher p=0.50、CI 重叠）"
+  ]
+ },
+ {
+  "id": "r25-audit",
+  "title": "第 25 轮反方审计（极简版）",
+  "status": "done",
+  "dependsOn": [
+   "r24-h83",
+   "r24-h84",
+   "r24-h85"
+  ],
+  "action": "",
+  "evidence": [
+   "audit_r25.json + audit/round25/：A1/A2 削弱、A3 成立"
+  ]
+ },
+ {
+  "id": "r26-publish",
+  "title": "第 26 轮报告、清单与提交发布",
+  "status": "done",
+  "dependsOn": [
+   "r26-audit"
+  ],
+  "action": "",
+  "evidence": [
+   "report.md 第 26 轮按审计改写；backlog 90 条；本地 3035d74 → 发布 5a7b14d 到 main"
+  ]
+ },
+ {
+  "id": "r27-h92",
+  "title": "合法换手（T+1 开买、T+2 收卖，1.5 天）",
+  "status": "done",
+  "dependsOn": [
+   "r26-h90"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/legal28/r28.py/r28_results.json：115 笔 +0.258%/年化 −4.3%/−50.2%/成本翻倍 −12.0%/OOS 24；审计成立（主因 10 笔 T+2 收盘跌停顺延 −8.27%/笔，占 −0.91pp 的 79%）"
+  ]
+ },
+ {
+  "id": "r28-h97",
+  "title": "组合层面（基线 + A/B 温度 + 两叠加 50/50）",
+  "status": "done",
+  "dependsOn": [
+   "r27-h92"
+  ],
+  "action": "",
+  "evidence": [
+   "r29_results.json：50/50 +43.7%/−34.4%/20.1%；三等权 +45.9%/−23.3%/20.1%；审计削弱（2/3×(50/50) 即 −23.2%/+29.3%、年化/回撤比 1.26 vs 1.27，是现金稀释；三腿同源）"
+  ]
+ },
+ {
+  "id": "r29-h100",
+  "title": "收口定稿（交 touf 决定是否换题）",
+  "status": "done",
+  "dependsOn": [
+   "r28-h95"
+  ],
+  "action": "",
+  "evidence": [
+   "report.md 第 30 轮 R30-3：样本内上限、三条硬约束、三个前提、结论句；审计成立并按审计收窄"
+  ]
+ },
+ {
+  "id": "r31-audit",
+  "title": "第 31 轮反方审计（极简版）",
+  "status": "done",
+  "dependsOn": [
+   "r30-h101",
+   "r30-h102",
+   "r30-h103"
+  ],
+  "action": "",
+  "evidence": [
+   "audit_r31.json + audit/round31/：A1 成立、A2 削弱（混口径）"
+  ]
+ },
+ {
+  "id": "r32-publish",
+  "title": "第 32 轮报告、清单与提交发布",
+  "status": "done",
+  "dependsOn": [
+   "r32-audit"
+  ],
+  "action": "",
+  "evidence": [
+   "report.md 第 32 轮按审计改写；backlog 108 条；本地 67742be → 发布 3c02bbc 到 main"
+  ]
+ },
+ {
+  "id": "r33-h111",
+  "title": "同日共振量化",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "属 LON-33；本单第 66 轮已做同日 top-k/随机十种子"
+  ]
+ },
+ {
+  "id": "r35-h118",
+  "title": "按单腿口径重写收口",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "已由 R62/R68/R73/R77 覆盖"
+  ]
+ },
+ {
+  "id": "r36-h120",
+  "title": "校验用法标准化（先过滤 filled 再 execution_issues）",
+  "status": "done",
+  "dependsOn": [
+   "r35-h117"
+  ],
+  "action": "",
+  "evidence": [
+   "report.md R37-3 方法段：先 trades[trades.filled] 再 execution_issues（未成交行被误判 T+0）；verdict 样本外年化为 None 时抛 TypeError 需 try/except（r37.py 已加）"
+  ]
+ },
+ {
+  "id": "r39-h124",
+  "title": "多重检验补齐（PBO/DSR）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "R54/R55 冻结独立变体集 PBO=0.351 < 0.5 → eligible"
+  ]
+ },
+ {
+  "id": "r43-publish",
+  "title": "第 43 轮交接段提交与发布",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "提交 da1a4ac 并 publish 到 main（Windows OpenSSH）；工作树干净"
+  ]
+ },
+ {
+  "id": "r46-h130",
+  "title": "口径守则落地（增量笔逐笔期望列为固定检查项并复查历史放宽变体）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/check47/r47.py + r47_check.json：8 个放宽变体的 WF 内增量笔为 A1 −1.226%、A2 −0.615%、A3 +0.613%、B1 −0.750%、B2 −0.701%、C1 +0.011%、C2 +0.609%、C3 +0.493%；全样本 C2 增量笔 −0.213%（2024 年 67 笔 −1.157%）→ 判窗口依赖、不升级；README 增 5 条检查清单"
+  ]
+ },
+ {
+  "id": "r49-h133",
+  "title": "有仓日代价评估（温度阈值 0.2~0.35 平衡点）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/sweep50/r50.py + r50_sweep.json：0.15 86 笔 +70.7%/−17.4%；0.20 80 笔 +76.3%/−13.1%；0.25 与 0.20 完全相同；0.30 77 笔 +76.6%（3 笔 −0.021%）；0.35 73 笔 +67.9%（7 笔 +1.434%）；增/减量笔两口径一致 → 0.20~0.30 平台区，维持 0.20"
+  ]
+ },
+ {
+  "id": "r52-h136",
+  "title": "昨日队列盈亏作情绪闸门（T-1 涨停队列在 T 日表现分 3 档）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/queue53/r53.py + r53_queue.json：main_temp 复现主口径 80 笔/+1.904%/+76.3%/−13.1%；q_low 12 笔 −0.774%/年化 −1.9%；q_mid 26 笔 +2.869%/MDD −6.2%；q_high 42 笔 +33.9%；main_drop_qlow 68 笔 +2.376%/+79.1%/−11.4%/entry 51；增量检查两口径一致；台账 8 变体入根台账（527→535 行/581→589）"
+  ]
+ },
+ {
+  "id": "r55-publish",
+  "title": "第 55 轮报告、README 更正与提交发布",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "report.md 新增 R55 段（四构造表 + 更正第 54 轮表述）；README 检查清单第 1 条改写为正确 PBO 口径；backlog 138 条（done 110）；提交 518e8ac 已 publish 到 main，工作树干净，台账 566 行/620 变体"
+  ]
+ },
+ {
+  "id": "r58-h142",
+  "title": "用分钟线复刻 20cm 封板位置条件（2025-02-25 起）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/c2058/r59.py + r59_c20_exact.json：更正 seal_pct 定义（b-leg/h06_bucket.py:95，无需分钟线）；精确口径 6 笔 +3.658%/累计 +21.7%/最差日 −4.9%（n=6 不构成证据）；近似口径 72 笔 +0.014%/最差日 −14.9%；新增 3 变体入 lenses/c2058（577 行/631 变体）"
+  ]
+ },
+ {
+  "id": "r61-h145",
+  "title": "综合收口（容量并入最终状态 + 可交付物整理）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "README 新增「可交付物（一段话）」段（主口径条件 + 滚动曲线 68 笔/+2.376%/+79.1%/−11.4%/10% 有仓日 + 三项未达标 + 容量 300–500 万 + 集中度 26.1%）；report.md 新增 R62 段；14 项口径一致性核对全过（0 失败）"
+  ]
+ },
+ {
+  "id": "r64-h148",
+  "title": "板块内龙一 vs 跟风（同板块同日按首次封板时间排序）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/leader65/r65.py + r65_leader.json：龙一 33 笔 +2.829%/+47.7%/−15.7%/26 天；跟风 34 笔 +2.006%/+32.3%/−12.3%/31 天；全量 68 笔 +2.376%/+79.1%/51 天；全池龙一 6,439 笔 −0.954%、跟风 22,774 笔 −1.035%；两腿 6 共同日相关 0.865 → weak（身位弱溢价但不能当过滤器）"
+  ]
+ },
+ {
+  "id": "r67-h151",
+  "title": "bootstrap 三条限定与全交易日等权对照写入最终结论口径",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "README 新增「最终结论口径（第 68 轮定稿）」段（年化 79.1%/95% 区间 23.1%~166.4%、回撤 −11.4%/95% 区间 −6.1%~−28.6%、有仓日 10%、300% 概率 0%、全交易日等权中位 48.4%）；report.md 新增 R68 段；12 项口径一致性核对全过"
+  ]
+ },
+ {
+  "id": "r70-h154",
+  "title": "纯隔夜腿（T+1 收盘买、T+2 开盘卖）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/on71/r71.py + r71_overnight.json：开盘买 68 笔 +2.38%/+79.09%/−11.36%；收盘买 51 笔 −0.44%/−9.61%/−18.87%；成本翻倍 −14.19%/−27.45%；四档 issues 均为空 → falsified（利润来自 T+1 开盘折价、两端都须开盘价）"
+  ]
+ },
+ {
+  "id": "r73-publish",
+  "title": "第 73 轮报告、README、数据需求与提交发布",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "report.md R73 段含审计结论；data_requests.md 补北交所与可转债/ETF 两条；backlog 155 条；提交 9efd265 + ff3efe5 均已 publish 到 main，工作树干净"
+  ]
+ },
+ {
+  "id": "r75-publish",
+  "title": "第 75 轮报告、README、台账与提交发布",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "report.md 新增 R75 段（含审计结论）；README 增「让利润奔跑」证伪注记；backlog 157 条（falsified 22）；台账 4 变体入 lenses/cond75（627→631 行/681→685 变体）；提交 c87e136 已 publish 到 main"
+  ]
+ },
+ {
+  "id": "r81-h165",
+  "title": "机制不同的腿（可转债/ETF）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "owner 2026-11-13 决定不做 ETF/可转债交易腿，该路径关闭；backlog/data_requests 已标已关闭"
+  ]
+ },
+ {
+  "id": "r87-h168",
+  "title": "剔除 0~+3% 小高开档（68 笔剩 52 笔）",
+  "status": "done",
+  "dependsOn": [
+   "r86-h167"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/drop88/r88.py + r88_drop.json：52 笔 +2.82%/年化 79.06%/回撤 −12.28%/胜率 65.4%/top5% 21.92%；成本翻倍 68.38%/−12.84%；2025 年 6.67% vs 基准 35.51% → 判定 weak；提交 1925fa1"
+  ]
+ },
+ {
+  "id": "r89-h170",
+  "title": "主口径的年份稳定性体检（leave-one-year-out + 去掉最好 5 天）",
+  "status": "done",
+  "dependsOn": [
+   "r88-h169"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/stab90/r90.py + r90_stability.json：LOO +67.17%/+56.05%/+61.73%（去掉 2026 回撤 −2.85%）；去掉最好 5 天 +29.53%/累计 +77.0%/46 天；去掉最好 5 笔数值相同；提交 96efcbe"
+  ]
+ },
+ {
+  "id": "r91-h172",
+  "title": "信号定义与结果固化成机器可读 spec + 复现脚本",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "signal_spec.json + spec_replay.py：9 项全 OK、PASS（signals 71 / trades 68 / +2.3760279% / +79.0885% / −11.3633% / 51 天）；README「如何一条命令复现」；提交 c9f20c8"
+  ]
+ },
+ {
+  "id": "r93-spec-v11",
+  "title": "spec v1.1 补 nan_policy",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "signal_spec.json v1.1：滚动分位 NaN 槽计入分母；边界笔 2026-07-02 002458.SZ 13/40=0.325 vs 13/38=0.342105"
+  ]
+ },
+ {
+  "id": "r96-h177",
+  "title": "台账索引表（按 lens 汇总 trials.jsonl 并校验合计）",
+  "status": "done",
+  "dependsOn": [
+   "r95-h176"
+  ],
+  "action": "",
+  "evidence": [
+   "lens_index.py：58 个 lens、合计 651 行 / 705 变体；--write 写入 README「台账索引」；check_hygiene 第⑤条校验合计（5/5 PASS）；提交 ce4752d"
+  ]
+ },
+ {
+  "id": "r97-h178",
+  "title": "台账「漏网最优变体」体检",
+  "status": "done",
+  "dependsOn": [
+   "r96-h177"
+  ],
+  "action": "",
+  "evidence": [
+   "lens_audit.py：12 个 Sharpe 高于基线 0.4367 的变体全部归类（理想化成交 2 / 已测并否 2 / 子集 4 / 仓位分配 3 / 待复核 1），待判定 0；提交 9c5ac53"
+  ]
+ },
+ {
+  "id": "r99-h180",
+  "title": "台账字段完整性体检 + 轮次归属映射",
+  "status": "done",
+  "dependsOn": [
+   "r98-h179"
+  ],
+  "action": "",
+  "evidence": [
+   "lens_rounds.py + lenses/lens100/lens_rounds.json：655 行字段 0 缺失；59/59 lens 有归属、未归属 0；README「台账轮次归属」表；提交 376f5cc"
+  ]
+ },
+ {
+  "id": "r101-h182",
+  "title": "目标差距表机器化",
+  "status": "done",
+  "dependsOn": [
+   "r100-h181"
+  ],
+  "action": "",
+  "evidence": [
+   "gap_report.py：目标读 config/targets.json、现状读 fresh + r54_final.pbo + 台账 + 成本翻倍档；生成表并写入 README；--check 校验一致；提交 dc44ceb"
+  ]
+ },
+ {
+  "id": "r103-h184",
+  "title": "对主口径补做一次真实七类审计（result 轮）",
+  "status": "done",
+  "dependsOn": [
+   "r102-h183"
+  ],
+  "action": "",
+  "evidence": [
+   "audit/round104/{replay,extra,tail}.json → audit104.json（7 items，5 成立/2 削弱）；audit_gate 7/7 ✓；提交 fbe9021"
+  ]
+ },
+ {
+  "id": "r105-h186",
+  "title": "PBO 实现敏感性体检（n_splits × 变体子集扰动）",
+  "status": "done",
+  "dependsOn": [
+   "r104-h185"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/pbo105/r106.py + r106_sensitivity.json：24 设定，PBO 中位 0.4833、11/24 ≥0.5、温队家族 0.682~0.763 全超门槛；提交 bd4bbc4"
+  ]
+ },
+ {
+  "id": "r107-publish",
+  "title": "第 107 轮 README、report、audit 与提交发布",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "check_all 七组 ALL PASS 且工作树干净；清单 218 条；提交 0682ded/ca17b827 已 publish"
+  ]
+ },
+ {
+  "id": "r109-queue-doc",
+  "title": "spec v1.4 queue_gate.worst20 + README/报告/audit 同步",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "spec v1.4 queue_gate.worst20（含 cost2x）；README「队列写法对照」小节；report R109；audit round 109 七类全覆盖"
+  ]
+ },
+ {
+  "id": "r111-official-grid",
+  "title": "官方网格固化（spec v1.6 official_grid）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "spec v1.6 official_grid（7 温度 × 4 队列写法 = 28，含三套对照与「不能更小」理由）；README「官方候选网格」小节；report R111；audit round 111 七类全覆盖"
+  ]
+ },
+ {
+  "id": "r113-snapshot-recheck",
+  "title": "新快照 20261111T195550 上的复核",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "spec_replay 9/9 PASS、官方 28 网格 70 笔/+79.8703%/−14.3819%/PBO 0.4655，与旧快照逐位一致（lenses/card113/r113_recheck.json；spec.snapshot_recheck）"
+  ]
+ },
+ {
+  "id": "r115-snapshot-fix",
+  "title": "修正 views_sql 与 data_version.txt 并在真实快照重算",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "views_sql → 20261111T195550；data_version.txt 头部（787 天/4,236,278 行）；spec.snapshot_recheck.history 记录第 113 轮证据路径错误"
+  ]
+ },
+ {
+  "id": "r117-precision-fix",
+  "title": "修掉百分比未乘 100 与整数子串误计",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "FIELD_MAP 增加 scale=100；整数计数改 word-boundary、lenses 仅百分比；输出由 +1.00%/69.0/12 处 变为 +100.00%/69/7 处"
+  ]
+ },
+ {
+  "id": "r118-publish",
+  "title": "第 118 轮 README、report、audit 与提交发布",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "check_all 七组 ALL PASS、交付判据十项 10/10；清单 229 条；提交 a1cb4de/be64ab4a 已 publish"
+  ]
+ },
+ {
+  "id": "r120-entry-impl-fix",
+  "title": "修掉分钟线 OOM 与 intraday trading_date 语义",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "整批 unnest OOM → 每 8 对分块并只取 09:30–10:05；intraday 改传买入日 T+1，成交笔数由 20 纠正为 58/54"
+  ]
+ },
+ {
+  "id": "r121-h202",
+  "title": "核对开盘价可获得性（日线 open vs 09:30 分钟价）",
+  "status": "done",
+  "dependsOn": [
+   "r120-h201"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/open122/r122.py + r122_open.json：64 笔 100% 相等、平均差 0；分钟开盘价重算与 baseline 完全一致（64 笔/+1.9129%/+73.84%/−14.38%）；提交 1291c0e"
+  ]
+ },
+ {
+  "id": "r123-h204",
+  "title": "成交率曲线级敏感性 + 候选卡执行假设",
+  "status": "done",
+  "dependsOn": [
+   "r122-h203"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/fill124/r124.py + r124_sens.json：两臂完全相同、拖累 0.00pp；候选卡执行三条；check_card ⑩组 37/37；提交 0b781b2"
+  ]
+ },
+ {
+  "id": "r125-h206",
+  "title": "多重检验第三次验证（28→84 候选，加 seal 三档）",
+  "status": "done",
+  "dependsOn": [
+   "r124-h205"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/pbo126/r126.py + r126_pbo84.json：PBO 0.222（分块 0.186~0.271）、曲线 78 笔/+36.19%/−14.38%/47 天 → 推翻加维度致 PBO 变差，且 PBO 低≠更好；提交 9ae66ba"
+  ]
+ },
+ {
+  "id": "r127-h208",
+  "title": "改选参评分（Sharpe × 子窗一致性）在 84 网格重跑",
+  "status": "done",
+  "dependsOn": [
+   "r126-h207"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/score128/r128.py + r128_score.json：两臂逐项完全相同（78 笔/+36.19%/−14.38%/PBO 0.222），每折选中同一候选 → 评分不是瓶颈；提交 742308b"
+  ]
+ },
+ {
+  "id": "r129-h210",
+  "title": "选参加最小样本量约束（N=3/5/8）",
+  "status": "done",
+  "dependsOn": [
+   "r128-h209"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/minsamp130/r130.py + r130_minsamp.json：N≥3/N≥5 与对照相同，N≥8 = 87 笔/+49.64%/−14.38%/55 天；三档 PBO 均 0.222；提交 695b47e"
+  ]
+ },
+ {
+  "id": "r131-h212",
+  "title": "用当前口径重算官方曲线逐年与 LOO",
+  "status": "done",
+  "dependsOn": [
+   "r130-h211"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/year132/r132.py + r132_year.json：全期逐项复现；分年每笔 9.545/2.326/1.632%；留一年 66.79/55.82/63.99%；提交 3fc2a6a"
+  ]
+ },
+ {
+  "id": "r133-h214",
+  "title": "最差 10 笔的事前特征识别",
+  "status": "done",
+  "dependsOn": [
+   "r132-h213"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/worst134/r134.py + r134_attrib.json（六特征无差异；break_times 三分位 low+1.94/mid−0.06/high+4.24%）与 r134b.py + r134_filter.json（54 笔/+60.32%/−11.03%/PBO 0.6168）；提交 1bad8d8"
+  ]
+ },
+ {
+  "id": "r135-h216",
+  "title": "固定单折样本外检验",
+  "status": "done",
+  "dependsOn": [
+   "r134-h215"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/split136/r136.py + r136_split.json：训练选出 temp0.20/queue0.20；检验段 55 笔/+1.745%/+86.13%/−14.38%/40 天，年化高于 9 折拼接 +79.87%；提交 823e14c"
+  ]
+ },
+ {
+  "id": "r137-h218",
+  "title": "单维扫描（只留温度自由度）",
+  "status": "done",
+  "dependsOn": [
+   "r136-h217"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/dim138/r138.py + r138_single_dim.json：曲线 +85.00%/−14.38%/73 笔，PBO 0.735 仅 5 变体被拒；0.20 为单峰尖点；提交 bac94db"
+  ]
+ },
+ {
+  "id": "r139-h220",
+  "title": "训练窗长度敏感性（6/9/12 个月）",
+  "status": "done",
+  "dependsOn": [
+   "r138-h219"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/wfwin140/r140.py + r140_window.json：6m +49.89%、9m +59.53%、12m +79.87%，极差 29.98pp；PBO 三档恒 0.4655；提交 fc6bd43"
+  ]
+ },
+ {
+  "id": "r141-h222",
+  "title": "「评估配置敏感性」一页交接小结",
+  "status": "done",
+  "dependsOn": [
+   "r140-h221"
+  ],
+  "action": "",
+  "evidence": [
+   "README「评估口径敏感性」小节（两窗口表 + 四条规则）；spec.methodology_notes.caliber_sensitivity（含 cross_refs）；提交 5f63f5d"
+  ]
+ },
+ {
+  "id": "r143-h224",
+  "title": "确认 12 个月峰值是平台还是尖点（10/11/13/14 个月）",
+  "status": "done",
+  "dependsOn": [
+   "r142-h223"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/wfplat144/r144.py + r144_plateau.json：10m +64.68%、11m +73.24%、13m +96.52%、14m +89.87%；12~14 为高位带、最高点 13m；提交 1c8ba57"
+  ]
+ },
+ {
+  "id": "r145-h226",
+  "title": "检验窗平台带（2/4/5 个月）",
+  "status": "done",
+  "dependsOn": [
+   "r144-h225"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/wftest146/r146.py + r146_testclip.json：2m +63.16%、4m +75.38%、5m +83.75%；3~6 个月在 ≥75% 带内、1/2 在带外；提交 62eedf3"
+  ]
+ },
+ {
+  "id": "r147-h228",
+  "title": "embargo 敏感性（5/10/20 个交易日）",
+  "status": "done",
+  "dependsOn": [
+   "r146-h227"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/emb148/r148.py + r148_embargo.json：5d 与 10d 完全相同(+79.87%)、20d +85.84%；PBO 三档 0.4655；提交 6f09e73"
+  ]
+ },
+ {
+  "id": "r149-h230",
+  "title": "lock_pct_in_day 三档建仓过滤（WF 级检验）",
+  "status": "done",
+  "dependsOn": [
+   "r148-h229"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/lock150/r150.py + r150_lock.json：低三分位 +29.68%、高三分位 +18.98%、≥中位 +48.95%，最好档仍比基线差 30.92pp；PBO 0.63~0.81；提交 b2ae10e"
+  ]
+ },
+ {
+  "id": "r151-h232",
+  "title": "放宽入池成交额门槛（5000 万 / 3000 万）",
+  "status": "done",
+  "dependsOn": [
+   "r150-h231"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/amt152/r152.py + r152_amount.json：2亿 +56.01%/80天、5000万 +71.78%/91天、3000万 +83.14%/96天/PBO 0.46025(eligible)",
+   "lenses/amt152/r152_cost2x.py + r152_cost2x.json：3000 万档 cost2x 132 笔/+64.79%/−19.41%，仍盈利",
+   "提交 76940b3"
+  ]
+ },
+ {
+  "id": "r153-h234",
+  "title": "3000 万/无门槛档容量体检（决定是否切官方口径）",
+  "status": "done",
+  "dependsOn": [
+   "r152-h233"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/cap154/r154.py + r154_capacity.json：容量最低 490.9 万/p05 1719.7 万/中位 6553.2 万（5 亿档最低 5033 万）；固定参数口径 214 笔/+63.89%/−38.89% ⇒ 不切口径",
+   "提交 925495b"
+  ]
+ },
+ {
+  "id": "r155-h236",
+  "title": "streak 分层（首板 / 2 板 / ≥3 板）WF + 固定参数",
+  "status": "done",
+  "dependsOn": [
+   "r154-h235"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/streak156/r156.py + r156_streak.json：首板 113/二板 5/≥3 板 1；首板 WF 72 笔/+76.74%/−14.38%/PBO 0.397、固定 83 笔/+85.37%；非首板仅 6 行",
+   "提交 b02c277"
+  ]
+ },
+ {
+  "id": "r157-h238",
+  "title": "T+2 盘中止损（分钟线子样本）",
+  "status": "done",
+  "dependsOn": [
+   "r156-h237"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/stop158/r158.py + r158_stop.json：base +80.85%/−12.66%、close +16.18%/−28.52%、stop3 +19.67%/−21.88%、stop5 +17.36%/−25.78%，execution_issues 全 0；提交 ea20ff1"
+  ]
+ },
+ {
+  "id": "r159-h240",
+  "title": "组合口径：官方腿 + 「1~5 分钟」低回撤腿",
+  "status": "done",
+  "dependsOn": [
+   "r158-h239"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/port160/r160.py + r160_port.json：相关 0.620、only_leg=0；混合累计 270.30% → 30% 档 220.02%/回撤 −9.12%；风险调整比 21.4 → 24.1；提交 9904dcc"
+  ]
+ },
+ {
+  "id": "r161-h242",
+  "title": "regime_label（市场状态）分档检验",
+  "status": "done",
+  "dependsOn": [
+   "r160-h241"
+  ],
+  "action": "",
+  "evidence": [
+   "实测分布：池内 unknown 111/119（93.3%）、全表 43587/43950（99.3%）、非 unknown 仅 8 行 ⇒ 不可测",
+   "spec.regime_check.measurable=false；提交 339b212"
+  ]
+ },
+ {
+  "id": "r163-h244",
+  "title": "连续打分排序取前 K（不切档）",
+  "status": "done",
+  "dependsOn": [
+   "r162-h243"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/rank164/r164.py + r164_rank.json：前1 +79.97%/PBO 0.449、前2 +80.17%/PBO 0.4425、全量 +79.87%/PBO 0.4655 ⇒ 打平（+0.30pp）；每日信号数中位 1",
+   "提交 e61740f"
+  ]
+ },
+ {
+  "id": "r165-h246",
+  "title": "回撤归因多变量版",
+  "status": "done",
+  "dependsOn": [
+   "r164-h245"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/attr166/r166.py + r166_attr.json：R²=0.081、n=96；仅当日信号数显著（+0.00897，t=2.39）；n_sig≡n_plate 共线",
+   "提交 2444a6a"
+  ]
+ },
+ {
+  "id": "r167-h248",
+  "title": "炸板次数门槛提高（≥4/≥5/≥6）",
+  "status": "done",
+  "dependsOn": [
+   "r166-h247"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/break168/r168.py + r168_break.json：≥3 70 笔/+79.87%、≥4 48 笔/+58.00%/−11.34%、≥5 36 笔/+44.39%、≥6 31 笔/+42.79%；每笔单调升（+2.292%→+3.600%）",
+   "提交 3635e1f"
+  ]
+ },
+ {
+  "id": "r169-h250",
+  "title": "变现路径总收口（方法学结论）",
+  "status": "done",
+  "dependsOn": [
+   "r168-h249"
+  ],
+  "action": "",
+  "evidence": [
+   "spec.realization_paths（四条通道数值 + 结构性原因 + 含义 + decision）；README「变现路径总收口」；handoff_summary 同步；提交 364dd7f"
+  ]
+ },
+ {
+  "id": "r171-h252",
+  "title": "「开盘买不进」的比例与补救价值",
+  "status": "done",
+  "dependsOn": [
+   "r170-h251"
+  ],
+  "action": "",
+  "evidence": [
+   "lenses/unfill172/r172.py + r172_unfill.json：85 信号/82 成交/3 买不进（3.5%）；10:00 补救 0 成交",
+   "提交 ac21b22"
+  ]
+ },
+ {
+  "id": "r173-h254",
+  "title": "清单状态审计（backlog ↔ data_requests）+ 本地可测方向是否已尽",
+  "status": "done",
+  "dependsOn": [
+   "r172-h253"
+  ],
+  "action": "",
+  "evidence": [
+   "清单 286 条；needs_data 10 + blocked 2 全部覆盖、missing=0；check_align ALL PASS；spec.backlog_audit 写入；新增 data-regime-label 与 data_requests 第 9 节",
+   "提交 ec8ad5d"
+  ]
+ },
+ {
+  "id": "r175-publish",
+  "title": "第 175 轮 README、report、audit 与提交发布",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "check_all 七组 ALL PASS、deliverables 十项 10/10；清单 287 条；提交 576ac86/576ac86a 已 publish"
+  ]
+ },
+ {
+  "id": "r177-h258",
+  "title": "卖出侧分钟级复核（T+2 10:00 / 10:30 卖）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/exit178/r178.py + r178_exit.json：开盘 +72.29%/−11.36%；10:00 +68.26%/−14.42%（−4.03pp）；10:30 +49.38%/−17.34%（−22.91pp）；管道自证 1.1e-16",
+   "提交 e1e4308，已 publish e1e43082"
+  ]
+ },
+ {
+  "id": "r179-publish",
+  "title": "第 179 轮提交与发布",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "check_all 七组 ALL PASS、deliverables 十项 10/10；清单 292 条；提交 d9c214e 已 publish d9c214eb"
+  ]
+ },
+ {
+  "id": "r181-publish",
+  "title": "第 181 轮提交与发布",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "check_all 七组 ALL PASS、deliverables 十项 10/10；清单 294 条；提交 ddf2a47 已 publish ddf2a473"
+  ]
+ },
+ {
+  "id": "r183-h264",
+  "title": "T+2 买入封死票是否可行",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "同脚本 (B)：389 笔下单、成交 166、买不进 223（limit_up_unfillable 218）；成交部分每笔 −2.5322%、胜率 38.6%、累计 −98.37%、年化 −77.15%",
+   "提交 8e5460c，已 publish 8e5460c9"
+  ]
+ },
+ {
+  "id": "r185-h266",
+  "title": "T+1 开盘跳空幅度分档",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/gap186/r186.py + r186_gap.json：四档 gap<0 +2.9497%/68.6%、0~2% −0.2398%/31.6%、2~5% +2.5281%、>5% +5.0793%/80.0%；28 候选 WF 曲线 10 笔/DSR 4.24e-05/PBO 0.3513",
+   "提交 a81f360，已 publish a81f3609"
+  ]
+ },
+ {
+  "id": "r187-h268",
+  "title": "T 日前 5 日累计涨幅分档",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/mom5_188/r188.py + r188_mom5.json：四档 <0 +4.4408%/71.4%、0~10% +0.8268%/50.0%、10~25% +1.9458%、>25% +3.4553%；20 候选 WF 曲线 22 笔/+4.87%/DSR 0.00/PBO 0.0245",
+   "提交 ae94a64，已 publish ae94a648"
+  ]
+ },
+ {
+  "id": "r189-h270",
+  "title": "连板（streak≥2）作为独立腿",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/streak190/r190.py + r190_streak.json：池 14,236 行/742 天；28 候选、1,277 笔、exposure 61.5%、每笔 −1.1982%、胜率 42.8%、年化 −79.08%、回撤 −97.01%、DSR 0.00、PBO 0.0563",
+   "提交 b61fe37，已 publish b61fe377"
+  ]
+ },
+ {
+  "id": "r191-h272",
+  "title": "首板一侧放宽条件扩笔数",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/widen192/r192.py + r192.json：24 候选、130 笔、exposure 15.5%、每笔 +1.3725%、年化 +71.28%、回撤 −20.72%、DSR 0.00、PBO 0.1023；对照官方 +79.87%/−14.38% 年化 −8.59pp",
+   "提交 be7eb9e，已 publish be7eb9e2"
+  ]
+ },
+ {
+  "id": "r193-h274",
+  "title": "低开档的分钟线买点优化（回抽到 T 收盘价再买）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/lowopen194/r194.py + r194.json：开盘买 +2.9497%/68.6%/−5.52%；回抽买 26 笔 +0.7437%/34.6%/−16.46%，9 笔未回抽",
+   "提交 a514a77，已 publish a514a77b"
+  ]
+ },
+ {
+  "id": "r195-h276",
+  "title": "按跳空分档的资金权重分配（weight 列）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/weightgap196/r196.py + r196.json：五组权重 (1.0,1.0) +72.29%/−11.36%/6.23 → (3.0,0) +34.46%/−5.52%/4.45，单调下降",
+   "提交 4faf762，已 publish 4faf762c"
+  ]
+ },
+ {
+  "id": "r198-doc",
+  "title": "spec.report_new_caliber + README「按新口径重报」+ report/audit 同步 + gap_report 重算",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "spec.report_new_caliber（caliber_date/rule/train12/train6/candidates/signals/caliber_note/conclusion/decision）；README 两表 + 口径说明；report R198；audit round 198（result，七类全覆盖）；check_all 七组 ALL PASS、deliverables 10/10"
+  ]
+ },
+ {
+  "id": "r200-shortwin-doc",
+  "title": "spec.short_window_check + README「6 个月训练窗对照」+ report/audit 同步 + gap_report 重算",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "spec.short_window_check（candidates/train_months/train6/train12_reference/conclusion/decision）；README 两行表；report R200；audit round 200（result，七类全覆盖）；check_all 七组 ALL PASS、closure 核对通过"
+  ]
+ },
+ {
+  "id": "r202-union-doc",
+  "title": "spec.room_union_check + README「room 两端并集」+ report/audit 同步 + gap_report 重算",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "spec.room_union_check（cuts/candidates/signals/recent/full/multiple_testing/cost_x2/status/folds/baseline_B/conclusion/decision）；README 两行对照表；report R202；audit round 202（result，七类全覆盖）；check_all 七组 ALL PASS、closure 通过"
+  ]
+ },
+ {
+  "id": "r203-h284",
+  "title": "去杠杆复算（按真实持有期分仓）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/delever204/r204.json + r204b.json：exit_delay 全 0；A +78.58%/−14.39%；B +17.62%/−4.31%；C（Σw=1）+80.97%/−12.57%/累计 +270.82%",
+   "提交 01e6f10，已 publish 01e6f10a"
+  ]
+ },
+ {
+  "id": "r205-publish",
+  "title": "第 205 轮提交与发布",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "提交 a17de00 已 publish a17de009；清单 320 条"
+  ]
+ },
+ {
+  "id": "r207-publish",
+  "title": "第 207 轮提交与发布",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "提交 e9ca594 已 publish 652ca3c4；清单 322 条"
+  ]
+ },
+ {
+  "id": "r209-rate-doc",
+  "title": "spec.exchange_rate_check + README「持仓日—年化兑换率」+ report/audit 同步 + gap_report 重算",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "spec.exchange_rate_check（baseline/held_days/flat_days/scenarios/breakeven_per_trade/method/conclusion/decision）；README 三行情景表；report R209；audit round 209（result，七类全覆盖）；check_all 七组 ALL PASS、closure 通过"
+  ]
+ },
+ {
+  "id": "r210-h291",
+  "title": "等值线判据固化 + 回灌数据需求",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "spec.closure.criterion.sources_assessment：L2 29 天（不可得）/ ETF·可转债 201 天且单笔 ≥0.91%（唯一活路径）/ 竞价 66 天且单笔需 0.41%（单独不可达）/ 盘中池需单笔 1.53%；README 主口径表加判据行"
+  ]
+ },
+ {
+  "id": "r213-roomhigh-doc",
+  "title": "spec.room_high_check + README「room 在非低开样本内复核」+ report/audit 同步 + gap_report 重算",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "spec.room_high_check（trades/non_low_open/cut/low_room/high_room/all_non_low/mean_diff/diff_ci95/diff_p_two_sided/conclusion/decision）；README 两行表 + CI 结论；report R213；audit round 213（result，七类全覆盖）；check_all 七组 ALL PASS、closure 通过"
+  ]
+ },
+ {
+  "id": "r215-dd-doc",
+  "title": "spec.dd_attribution_2026 + README「2026 回撤逐笔归因」+ report/audit 同步 + gap_report 重算",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "spec.dd_attribution_2026（trades/by_year/base/groups/method/conclusion/decision）；README 25 行分组表；report R215；audit round 215（result，七类全覆盖）；check_all 七组 ALL PASS、closure 通过"
+  ]
+ },
+ {
+  "id": "r217-closure-doc",
+  "title": "回撤方向 falsified 固化 + 数据需求排序 + 清单清点（untried=0）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "spec.closure.drawdown_direction（R215→R216）、data_priority（L2/ETF/竞价）、local_exhausted；backlog 331 条 by_status 见 spec.backlog_status；check_all 七组 ALL PASS、closure 与 check_card 通过"
+  ]
+ },
+ {
+  "id": "r219-h298",
+  "title": "持有期维度扫描",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/holdscan220/r220.json：27 候选曲线 68 笔 / +3.70% / −14.93% / 每笔 +0.7207% / 有仓 28.5%；PBO 0.0780、DSR 0.00；对照主口径 +78.58%/8.6% ⇒ falsified",
+   "提交 96150eb 已 publish 96150eba"
+  ]
+ },
+ {
+  "id": "r221-r220-wording",
+  "title": "修掉 r220.py 文档串的 same-day 关键词误报",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/holdscan220/r220.py 措辞改为「更短的设置无法通过 T+1 校验」"
+  ]
+ },
+ {
+  "id": "r223-firstyin-doc",
+  "title": "spec.first_yin_check + README「首阴反包形态」+ trials 记录 + report/audit 同步",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "spec.first_yin_check（candidates/trades/first_yin_samples/vol_mult_quartiles/fold_picks/full/recent/multiple_testing/cost_x2/warnings/status/method/conclusion/decision）；trials.jsonl record_scan（1845 次）；README 对照表；report R223；audit round 223（result，七类全覆盖）；check_all 七组 ALL PASS、closure 通过"
+  ]
+ },
+ {
+  "id": "r225-breadth-doc",
+  "title": "spec.breadth_check + README「市场宽度上限过滤」+ trials 记录 + report/audit 同步",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "spec.breadth_check（candidates/trades/fold_picks/lu_count_stats/full/recent/multiple_testing/cost_x2/warnings/status/method/conclusion/decision）；trials.jsonl record_scan（2026 次）；README；report R225；audit round 225（result，七类全覆盖）；check_all 七组 ALL PASS、closure 通过"
+  ]
+ },
+ {
+  "id": "r227-sealtime-doc",
+  "title": "spec.seal_time_check + closure.degenerate_dimensions + README 退化清单 + report/audit 同步",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "spec.seal_time_check 与 spec.closure.degenerate_dimensions（三条 + 结论）；trials.jsonl record_scan（2226 次）；README「封板时间分档」+「⚠ 维度退化清单」；report R227；audit round 227（result，七类全覆盖）；check_all 七组 ALL PASS、closure 通过"
+  ]
+ },
+ {
+  "id": "r230-decision",
+  "title": "落地 owner 2026-11-13 方向决定（停挖涨停类、转按月复核、新方向、口径与三关、ETF 关闭、h28 批准）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "spec.owner_decisions_20261113b（stop_mining_limit_up / new_direction / target_caliber / etf_cb_closed / h28_approved）；README「owner 方向决定（2026-11-13 07:46）」；report R230；audit round 230；提交 2a53401 已 publish 9b484d27"
+  ]
+ },
+ {
+  "id": "r231-h310",
+  "title": "② 板块轮动与补涨（持 1–3 天）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/rot232/r232_sector.json：24 候选诚实 WF = 819 笔 / 每笔 -0.0294% / 有仓 67.8% / 年化 -4.28% / 回撤 -36.46%；成本 2x -0.3294%/笔；PBO 0.2385（24 变体）；三关：低重合通过（相关 0.0876、新增 133 天）、每笔为正不通过、PBO 通过 ⇒ falsified"
+  ]
+ },
+ {
+  "id": "r233-h314",
+  "title": "分时放量上穿均价线的动量买点（R233 回踩的镜像）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/mom234/r234_mom.json：36 候选诚实 WF = 317 笔 / 每笔 -2.8304% / 年化 -79.71% / 回撤 -97.15%；成本 2x -3.13%/笔；PBO 0.04325（36 变体）；三关：低重合通过（相关 0.0056、新增 152 天）、每笔为正不通过、PBO 通过 ⇒ falsified"
+  ]
+ },
+ {
+  "id": "r235-h318",
+  "title": "PIT 财报业绩超预期漂移（持 5–10 天）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/earn236/r236_earn.json：24 候选 WF = 5,632 笔 / 每笔 +1.6698% / 年化 +34.40% / 回撤 -24.67%；成本 2x +1.3698%/笔；PBO 0.1295（24 变体）；相关 0.0359、新增 162 天；近期 968 笔 -1.3463%/笔 ⇒ candidate（近期衰减）；r236_earn2.json 可执行版 824 笔 / +0.5974% / 年化 +38.95% / PBO 0.127 / 近期 -0.4075%/笔"
+  ]
+ },
+ {
+  "id": "r237-h322",
+  "title": "主腿+业绩腿联合现金账户 simulate",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/joint238/r238_joint.json：主腿单独 82 笔/+58.17% 年化/-12.77% 回撤（cash_unfilled 0）；业绩首版单独 +13.78%/-29.41%（4,793 未成交）、可执行版 +25.37%/-25.88%（679）；主腿+首版 +45.05%/-22.95%、主腿+可执行版 +57.35%/-26.59% ⇒ 组合无增益、回撤扩大"
+  ]
+ },
+ {
+  "id": "r239-h326",
+  "title": "主腿仓位规则（一次一只 / 当日平分 / 单票上限）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/pos240/r240.json：equal +58.17%/-12.77%；single（同日取成交额最大一只）+63.94%/-14.81%；capped1/3 +21.24%/-7.50%；capped1/2 +30.31%/-11.16% ⇒ 年化 +5.8pp 但回撤差 2pp，登记为候选（weak）、不替换主口径"
+  ]
+ },
+ {
+  "id": "r241-h330",
+  "title": "日块 bootstrap 检验仓位规则差异显著性",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/pos242/r242.json：20 日块 x 500 次 —— 按成交额取一只 vs 等权 年化差 +7.81pp、95% 区间 [-1.62, +23.08]pp、胜率 93.8%、P(<=0)=6.2%；break_times 规则 +7.29pp、[-1.88, +21.03]、胜率 93.0%、P=7.0% ⇒ 方向一致但未过 95% 显著（weak）"
+  ]
+ },
+ {
+  "id": "r243-h334",
+  "title": "成交额过滤版与主口径按日等权组合（诊断）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "owner 2026-11-14 裁决：涨停池主腿不再挖新维度（h354 只登记备选、不进下一版）⇒ 本项与 r253-h356 一并收口，不再执行（台账已标 done）"
+  ]
+ },
+ {
+  "id": "r245-h339-redo",
+  "title": "大小盘风格切换",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "R291 总市值口径已证伪（39,425 笔 / 每笔 -0.2339%）；流通市值口径已另行登记为 r293-h413（等 circ_mv），本项作为旧 id 收口"
+  ]
+ },
+ {
+  "id": "r246-h341",
+  "title": "市值字段覆盖核查 / 风格分层",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "daily_valuation_packed.total_mv 非空 99.84%（2023 99.7% / 2024 99.7% / 2025 99.9% / 2026 99.99%，每日 5,234~5,571 只）；circ_mv 仍 5.50%（2023-2025 为 0）",
+   "据此做的市值分层见 r245-h339（falsified）；data_requests 条目 10 已关闭",
+   "lenses/ev291/probe*.py、r405*.json；spec.r291_data_unlock；README 第 291 轮；report R291"
+  ]
+ },
+ {
+  "id": "r248-h347",
+  "title": "回避 0~2% 档的 in-sample 稳定性诊断",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/mktgap249/r249.json：剔除后 63 笔/每笔 +3.167%/胜率 69.8%/年化 +75.62%/回撤 -9.50%（基线 82 笔/+2.378%/+72.20%/-12.66%）；被剔除档 2024 -0.53%、2025 +4.58%、2026 -2.76% ⇒ 不稳（weak）"
+  ]
+ },
+ {
+  "id": "r250-h351",
+  "title": "剔除平开档版 2025 年超额的 bootstrap 归因",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/time251/r251.json：全期日收益差 bootstrap 均值 -5.41%（区间 [-36.7%, +26.0%]、胜率 37.6%）；2025 -10.81%、bootstrap -18.57%、区间 [-21.7%, -14.5%]、胜率 0% ⇒ 组合口径更差、每笔改善是假象"
+  ]
+ },
+ {
+  "id": "r252-h355",
+  "title": "只做低开的诚实 WF",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/cut253/r253.json：8 笔（低于 30 笔门槛）/每笔 +0.286%/年化 +1.50%/回撤 -5.77% ⇒ falsified"
+  ]
+ },
+ {
+  "id": "r255-pending-merge",
+  "title": "r243-h334/h335 并入 r253-h356 待决项",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "backlog：r243-h334/h335 改 decision，理由「按 owner 停止挖新维度，并入 r253-h356」"
+  ]
+ },
+ {
+  "id": "r257-h359",
+  "title": "放量下跌次日反转",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/rev258/r258.json：24 候选 WF 34,840 笔/每笔 -0.329%/胜率 42.2%/有仓 99.8%/回撤 -49.83%/PBO 0.00225/RECENT -0.85%/笔；与主口径同日同票 0、新增出手日 480 天、相关 0.033 ⇒ falsified（宽度太大）"
+  ]
+ },
+ {
+  "id": "r260-h362",
+  "title": "板块内相对强度（801 映射）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "R274：801 键仍 0 行，但新增 sws_industry_l3（553 行业 / 5,925 只）与 ths_index_*（带 available_at/known_at）可替代；owner 2026-11-13 16:22 已裁决「板块轮动」不做 ⇒ 按 owner 关闭，不恢复"
+  ]
+ },
+ {
+  "id": "r266-h373",
+  "title": "除权后填权漂移",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "R267：32 候选 = 354 笔成交（曲线 93、capital_skipped 261）/ 每笔 +0.0944%（t=0.33）/ 年化 +46.17% / 回撤 -15.24% / PBO 0.09725（32 变体）/ DSR 0 / 成本×2 每笔 -0.2056% / RECENT 156 笔 -0.6728%/笔 ⇒ weak；审计更正：入曲线 93 笔 +0.477%/笔 vs 跳过 261 笔 -0.042%/笔，2024 只靠 300532.SZ 一笔 +39.96%（去掉后年化 +31.66%、每笔转负）",
+   "lenses/ev267/r373.json、trades_r373.parquet、variants_r373.parquet；spec.r267_postex_check；README 第 267 轮 ②；report R267-2"
+  ]
+ },
+ {
+  "id": "r269-h378",
+  "title": "VCP 收紧版每日限量",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "R270：36 候选诚实 WF = 334 笔成交（曲线仅 55、capital_skipped 279）/ 每笔 +0.3702%（t=0.55，不显著）/ 年化 +5.94% / 回撤 -37.57% / PBO 0.50575（36 变体，>0.5 不过）/ 成本×2 每笔 +0.0702%；审计：alpha -56.6bp、tranche 年化 -0.31%、top5 笔 PnL 是总 PnL 的 2.22 倍 ⇒ falsified",
+   "lenses/ev270/r270.py、r378.json、trades_r378.parquet、variants_r378.parquet；spec.r270_cap_check；README 第 270 轮 ①；report R270-1"
+  ]
+ },
+ {
+  "id": "r274-h384",
+  "title": "竞价强弱分档（已收口）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "R278 改判 falsified：右尾（涨停/连板延续）不可事前识别（90 格最高 3.5%），叠加 R277 的分半衰减与剔除 top5% 后 -16.29% ⇒ 不可稳定复制",
+   "spec.auction_direction_closed_r278；README 第 278 轮；report R278"
+  ]
+ },
+ {
+  "id": "r276-h387",
+  "title": "竞价腿稳健性压测",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "①分半：第一半 +0.8319%/笔、年化 +302.61%/-14.77%、成本×2 +0.5319%；第二半 +0.3175%/笔、年化 +42.13%/-25.67%、成本×2 +0.0175% ⇒ 衰减 7 倍",
+   "②逐月 40 个月 4 个负月、最差 -20.75%；③剔除 top5%（1,174 笔）后 22,311 笔每笔 -0.0206%、累计 -42.60%、年化 -16.29% ⇒ 全部盈利来自右尾；④量比窗口 5/10/20 日 +223.76%/+195.03%/+176.47%（稳健）；tail.py：top5% 每笔 +14.16%、分位 9.6%~59.7%，事前画像与其余几乎相同",
+   "lenses/ev277/r277.py、r387.json、tail.py、tail.json；spec.r277_robustness_check；README 第 277 轮；report R277"
+  ]
+ },
+ {
+  "id": "r279-h393",
+  "title": "市场状态切换多腿规则",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "弱档空仓 年化 36.77% / 回撤 -21.05% vs 始终持有 47.34% / -14.39%；强档减权 0.7/0.5/0.3/0.0 → 35.07%/27.28%/19.81%/9.17%，回撤只改善到 -14.22%~-13.84%；弱档半仓 42.22%/-15.76%",
+   "根因：主口径逆势（弱档日均 +0.175%、146 天累计 +25.57%、同期市场 -1.81%/日）⇒ 宽度择时无价值 ⇒ falsified",
+   "lenses/ev281/r281.py、r393.json、r393_alt.py、r393_alt.json；spec.r281_multifactor_regime_check；README 第 281 轮；report R281"
+  ]
+ },
+ {
+  "id": "r283-h398",
+  "title": "组合口径三门槛合规核对与收口",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "①同日同票 1 笔、新增出手日 482、日收益相关 0.0141；②成本×2 每笔 主口径 +1.6307%、竞价腿 +0.3882%，组合成本×2 +47.69%/-10.99%；③竞价腿 WF PBO 0.0、主口径 0.4655",
+   "最终对照：主口径 47.34%/-14.39%/有仓 108（13.7%）→ 组合 96.47%/-7.71%/有仓 540（68.6%）；成本×2 39.55%/-16.18% → 47.69%/-10.99%；分年 2024 +41.1%→+55.6%、2025 +36.4%→+162.1%、2026 +74.4%→+102.0%；年化仍差 203.5pp",
+   "lenses/ev284/r398.py、r398.json；spec.portfolio_check；README 第 284 轮；report R284"
+  ]
+ },
+ {
+  "id": "r289-h404",
+  "title": "最终状态收口",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "README「最终状态」节 + spec.closure：adopted 124.32%/-10.90%（成本×2 69.00%/-12.77%）、备选 m2_0 85.52%/-9.25%、三腿 126.42%/-10.56%、1e8 版 96.47%/-7.71%（被取代）",
+   "目标进度：回撤与持仓日达标、年化距 300% 差 175.7pp；6 族收口原因与天花板写明；7 项外部数据依赖列名",
+   "两处修正：spec.closure 旧字段恢复（8fd5a95）、adopted 由 1e8 改为 5e8 组合（4776ebe），均记入 audit round 290",
+   "lenses/ev290/closure.py、fix_adopted2.py、restore_closure.py；spec.closure；README 第 290 轮；report R290"
+  ]
+ },
+ {
+  "id": "r293-h413-redo",
+  "title": "流通市值分层（circ_mv 版）",
+  "status": "blocked",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "circ_mv/float_share 在 2023-08-15..2025-01 仍为空（2025-02..2026-08 已补）；total_mv 版已证伪（每笔 −0.2339%）"
+  ],
+  "blocker": {
+   "kind": "external",
+   "owner": "touf",
+   "reason": "daily_valuation_packed 的 circ_mv 尚未对 2023-08-15..2025-01 重算",
+   "resumeWhen": "owner 在本单通知 circ_mv 已重算"
+  }
+ },
+ {
+  "id": "r300-h423",
+  "title": "反选检验：R299 排序键取最差端",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "27 候选诚实 WF = 2,899 笔 / 每笔 -0.3599% / 年化 +37.08% / 回撤 -31.68% / PBO 0.538 / 成本×2 每笔 -0.6599% ⇒ 本单首个正年化，但每笔为负、PBO>0.5、回撤超 30%、近期衰减 ⇒ weak",
+   "正年化来自「少量仓位 + 长持有」的复利路径，不是每笔期望",
+   "lenses/ev301/r423.py、r423.json、trades_r423.parquet；spec.r301_inverse_capital；README 第 301 轮；report R301"
+  ]
+ },
+ {
+  "id": "r303-h430",
+  "title": "主口径 × 低波动池组合口径",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "同一日收益路径：main 48.91%/-14.39%/Sharpe 1.747 → main+0.2×lowvol 46.30%/-16.11%/1.656；日相关 0.0249、同日同票 1 笔 ⇒ 低重合但组合更差，低波动不能作对冲腿",
+   "lenses/ev304/r429.py、r429.json；spec.r304_fixed_volume_combo；README 第 304 轮；report R304"
+  ]
+ },
+ {
+  "id": "r308-h436",
+  "title": "gt20 稀疏性与稳定性检验",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "25 个信号日（677 笔），18 正 / 7 负；前 1 天贡献 16%、前 3 天 45%；最好 2023-10-25 +9.03%，最差 2024-01-22 -20.75%",
+   "21-39 只档 24 天 / 622 笔 / 每笔 +6.1195% / 年化 +6.69% / 回撤 -23.33% / 成本×2 +5.8195%；≥40 只档仅 1 天 ⇒ 门槛再提高会打光样本",
+   "信号既出现在暴跌日也出现在强势日 ⇒ 非单一暴跌反弹；结论 gt20 从 adopted 降回 promising",
+   "lenses/ev309/r435.py、r435.json；spec.r309_gt20_sparsity；README 第 309 轮；report R309"
+  ]
+ },
+ {
+  "id": "r314-h442",
+  "title": "不选参的 hold 等权集成",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "集成腿：1,245 子头寸 / 每笔 +0.4128% / 年化 +2.76% / 回撤 -7.27% / 成本×2 +2.32%；execution_issues 0",
+   "组合：main 51.01% → w=0.3 52.31%（+1.30pp）、回撤不变 -14.39%、日相关 0.0079、成本×2 后 52.10%",
+   "B 的 +7.06pp 中约 5.8pp 为选参溢价（与 PBO 0.513 一致）；三门槛齐（PBO 不适用）⇒ adopted",
+   "lenses/ev315/r441.py、r441.json；spec.r315_hold_ensemble；README 第 315 轮；report R315"
+  ]
+ },
+ {
+  "id": "r320-h448",
+  "title": "二段式（缩量回调 + 放量首阳）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "hold=2 的 8 格每笔全负；hold=5 的 8 格中 7 格为正（nd3_dry0.8_su1.5_h5 +0.6575%/406 笔、成本×2 +0.3575%；nd2_dry1.0_su2.0_h5 +0.3138%/3,676 笔）",
+   "成本×2 后只剩 2/16 格为正；32 候选 WF 559 笔 / 每笔 -0.3385% / 年化 -7.39% / 回撤 -39.60% / PBO 0.6645 / candidate ⇒ 标 weak",
+   "lenses/ev321/r447.py、r447.json；spec.r321_two_stage；README 第 321 轮；report R321"
+  ]
+ },
+ {
+  "id": "r327-h454",
+  "title": "事件后延迟入场（研报上调/调研/共振 × T+2,T+3 × hold{5,10,15,20}）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "24 候选诚实 WF = 5,730 笔 / 每笔 −0.3870% / 近期段 −3.49% / PBO 0.05675 / candidate（近期衰减）⇒ falsified",
+   "固定 18/24 格每笔为正（both/d3/h20 +1.534%、5,063 笔；2023 −2.90% / 2024 +4.35% / 2025 +1.56% / 2026 −0.29%），正格集中在 WF 不检验的前段",
+   "lenses/ev328/r455.py、r455.json、trades_r455.parquet、variants_r455.parquet；README/report 第 328 轮"
+  ]
+ },
+ {
+  "id": "r327-h457",
+  "title": "逐日历史 ST 状态",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "OPUS-4 st_daily.parquet（2019-01-02..2026-11-10、9,114,928 行、is_st/st_wide/st_next）已在 main；本单按 owner 口径（主板 is_st、双创 st_wide、st_next 不用）重算",
+   "main：bpanel 拼面板时已按 T 日简称含 ST 剔除（PIT），85 个信号 ST=0 ⇒ 85/82、+2.6779%、72.20%、−12.66% 不变；反事实真不剔 → 83 个信号、多 3 个真 ST",
+   "gt21：旧 25/250/9.37%/−18.28% → PIT 26/260/10.27%/−18.70%；前视 391 行中 213 行当日非 ST、58/200 只误剔、漏 190 行真 ST（lenses/ev394/r394b.json；spec.r394_st_pit；README R394）"
+  ]
+ },
+ {
+  "id": "r331-h466",
+  "title": "h464 集成腿的毛暴露封顶配置（用闲置现金）",
+  "status": "done",
+  "dependsOn": [
+   "r330-h464"
+  ],
+  "action": "",
+  "evidence": [
+   "主腿优先 +39.51%/−28.71%；70/30 +35.52%/−12.83%；50/50 +28.25%/−15.10% —— 全部低于 main 单独 +45.31%（自写口径）",
+   "审计 a331_A.json / a331_funded.json 实测；封顶后腿对组合是负贡献 ⇒ falsified"
+  ]
+ },
+ {
+  "id": "r334-h472",
+  "title": "资金级重叠与毛暴露门槛脚本",
+  "status": "done",
+  "dependsOn": [
+   "r283-h398"
+  ],
+  "action": "",
+  "evidence": [
+   "新增 tools/overlap_gate.py（股票级 / 资金级共持（工作日）/ 毛暴露 + additive_allowed），已修日历日→工作日（audit 指出 4 天周末被误计）",
+   "gt21 腿（唯一 adopted）：0 撞票；共持 5 个交易日（8.2% 主口径持日）、毛暴露 1.06–1.24 ⇒ additive_allowed=false；封顶只损 0.05pp 年化、回撤不变（lenses/ev335/gate_summary.json、r470.json）"
+  ]
+ },
+ {
+  "id": "r339-h478",
+  "title": "固定参数的组合曲线（不选参的 9 折拼接）",
+  "status": "done",
+  "dependsOn": [
+   "r338-h477"
+  ],
+  "action": "",
+  "evidence": [
+   "同 9 窗不选参基准 **76.73% / 成本×2 63.98%**；连续窗拼接 326 行 / **74.59% / −14.39% / 有仓 13.68%**、成本×2 **61.77%**、execution_issues=[]",
+   "74.59% 与 76.73% 的 2.14pp 差只来自 1 笔边界交易（002122.SZ, entry 2025-05-15, ret −2.67%）⇒ 脆数；选参增益仅 **+0.85pp**，相对固定 w=0.50（77.74%）/h123_w0.50（77.90%）为 −0.16~−0.32pp",
+   "集中度 24.3%/28.55%/**88.21%**（三种分母）；剔除最好 1/3/5 天 64.69/49.74/37.54%；326 行 = 126 个去重信号（lenses/ev340/r475.py、r475.json；audit/a340_verdict.json）"
+  ]
+ },
+ {
+  "id": "r345-h484",
+  "title": "gt21 短持有版（hold 1–2 日）的诚实 WF",
+  "status": "done",
+  "dependsOn": [
+   "r344-h483"
+  ],
+  "action": "",
+  "evidence": [
+   "108 笔 / 每笔 +1.069% / 年化 4.81% / 回撤 −6.26% / 有仓 2.87% / DSR 0.00；成本×2 3.41%；execution_issues=[]、peak_gross=1.00、fill 108/110",
+   "不通过多重检验：PBO 24 变体 0.340，但 **cap10 子集 0.544 > 0.5**、DSR=0",
+   "短持有不解决稀疏：11 个信号日 = 3 簇、6/9 折空窗、有成交 3 折 hold 各 3/1/2 且 hold2 唯一为负；固定格 hold1 +1.1289% < hold2 +1.4780% < hold3 +2.6635% < hold5 +3.3403%；2026 由单日 10-27 决定（lenses/ev346/r481.py、r481.json；audit/a346_verdict.json）"
+  ]
+ },
+ {
+  "id": "r350-h490",
+  "title": "gt21 / 事件日方向收口（写清天花板并停止迭代）",
+  "status": "done",
+  "dependsOn": [
+   "r349-h489"
+  ],
+  "action": "",
+  "evidence": [
+   "天花板文档 lenses/ev351/ceiling_gt21.md；closure.closed_directions 已标注「gt21 / event-day」",
+   "固定格样本内增量 +2.54/+2.78pp（成本×2 手动 +2.36/+2.19pp）、drop-one 1.15–4.02pp、beta 94%、选股 +0.16pp（剔 2024-09-02 后 −1.11pp）、腿水平 +7.57%/−18.88%/31% 与 +18.65%/−19.18%/41%",
+   "WF 110 笔全部成交但 50 笔无现金不进曲线（曲线 60 笔）、6/9 折空窗、2026 曲线 −2.34%；PBO<0.5 结构性、DSR 恒 0；信号日 2023 4/2024 20/2025 2/2026 5=31 天（audit/a351_verdict.json）"
+  ]
+ },
+ {
+  "id": "r353-h496",
+  "title": "20 日振幅分位的横截面反转",
+  "status": "done",
+  "dependsOn": [
+   "r352-h495"
+  ],
+  "action": "",
+  "evidence": [
+   "18 候选 WF：5,400 行 / 5,380 笔 / 每笔 +0.157% / 年化 +3.76% / 回撤 −24.39%；成本×2 −10.26%；PBO 0.150 但仅 18 变体（<20）被判 not accepted、DSR 0",
+   "funded 2,103 笔 +0.021% vs unfunded 3,277 笔 +0.243%；全部正收益来自 2024-09-16..10-08（剔除后 −9.45%）；2026 −0.642%/笔、近期 −0.81%/笔；18 变体参与率 1.62/1.75（lenses/ev354/r490.py、r490.json；audit/a354_verdict.json）"
+  ]
+ },
+ {
+  "id": "r356-h502",
+  "title": "横截面分布因子族收口（R271 + R352–R356）",
+  "status": "done",
+  "dependsOn": [
+   "r355-h500"
+  ],
+  "action": "",
+  "evidence": [
+   "ceiling_distribution_factors.md：7 组 9 特征全部为负或门槛全败（R272 40 格全负、R273 40 格全负、R281 −1.086%、R352 −0.330%、R353 振幅 +0.157%、R353 行业内占比 −0.882%、R354 收盘位置 +0.548%、R354 beta −0.294%、R356 +0.077%）",
+   "审计更正：撤掉「funded 1/2~1/4 ⇒ 不可实现」的独立否决（cash 曲线已定价）、峰度标未测；closure 已加 closed_directions（lenses/ev357/ceiling_distribution_factors.md；audit/a357_verdict.json）"
+  ]
+ },
+ {
+  "id": "r358-h508",
+  "title": "gt21 腿自身的低分位闸门（已撤回）",
+  "status": "done",
+  "dependsOn": [
+   "r357-h506"
+  ],
+  "action": "",
+  "evidence": [
+   "审计后撤回：同上，76 笔样本上继续调 w/thr 无意义；改由 h509 处理"
+  ]
+ },
+ {
+  "id": "r360-h513",
+  "title": "收盘位置作 main 的排序因子（官方 hold1 口径）",
+  "status": "done",
+  "dependsOn": [
+   "r357-h505"
+  ],
+  "action": "",
+  "evidence": [
+   "宇宙 216,591 行/764 天，cp 最低 k=1 净 −0.303%/笔（cost×2 −0.603%）、k=2 −0.348%、k=3 −0.310%、cp 最高 k=1 −0.951%、宇宙平均 −0.341%；分年 low_k1 一致为负、fill 99.0–99.8%",
+   "审计更正：最低档比宇宙平均好 +3.79bp（原写 0.4bp 是 10 倍算术错）；加回成本后 low_k1 毛收益 −0.29bp ⇒ 零成本下也无边，65bp 低/高差只能靠做空 high 端兑现（lenses/ev361/r504.json；audit/a361_verdict.json）"
+  ]
+ },
+ {
+  "id": "r365-h521",
+  "title": "出手日–每笔的前沿曲线：5 个条件阈值的系统性放松扫描",
+  "status": "done",
+  "dependsOn": [
+   "r364-h520"
+  ],
+  "action": "",
+  "evidence": [
+   "10 档（baseline + seal{0.35,0.5,1.0} + break{2,1} + mt{0.1,0} + qp{0.2,0}）：baseline 85/82/64、毛 +2.6779%/净 +2.3779%、年化 72.20%、回撤 −12.66%、2× 61.30%；qp≥0.2 = 90/87/69、毛 +2.6081%、年化 75.17%、回撤 −14.39%、2× 63.19%；seal≤1.0 = 220 天但毛 +0.5652%/年化 −7.70%",
+   "**无任何一档「同时」满足「净≥1.2% 且信号日≥150」**；最接近 seal≤0.5（130 天、净 1.1307%）但年化 43.19%、回撤 −31.29% 明显更差",
+   "**审计推翻「qp≥0.2 双超=改进」**：2024/2025 完全相同、+2.97pp 全来自 2026 新增 5 笔（000636 +13.84%，剔除后 67.08% < 72.20%）、新增 5 笔均值 +1.165%（CI 含 0）、2 候选 WF 80.25% < 同窗固定 82.79%、8/9 折选基线、PBO 0.936 ⇒ 记为「候选、单笔驱动、非 WF、未通过多重检验」",
+   "seal/break_times/mt 摊薄写入 closed_directions（dist_hi60 引用 R365）；PIT 只能写「结构无前视、入库时点不可证」；差距 224.83pp 注明口径（lenses/ev371/r517.py、r517.json；audit/a371_verdict.json）"
+  ]
+ },
+ {
+  "id": "r371-h527",
+  "title": "qp≥0.2 档的收敛验证：诚实 WF + 分年 + 删单笔稳健性",
+  "status": "done",
+  "dependsOn": [
+   "r365-h521"
+  ],
+  "action": "",
+  "evidence": [
+   "四档实为 3 集合（qp∈[0.25,0.30) 零样本）：基线 85/72.198%/−12.66%/2× 61.30%；0.30≡0.25 = 87/66.77%/−14.39%；0.20 = 90/75.166%/−14.39%/2× 63.19%",
+   "**相对基线只有 +2.97pp**（原写 +8.4pp 是 0.25→0.20 的差）；2024/2025 与基线相同、2026 每笔 1.714%→1.658%、新增 5 笔中位数 −1.0813%、top5pct 26.24%→28.20%",
+   "删单笔：000636 剔除后 67.08% < 基线 ⇒ 单笔占 8.09pp；**WF 与 2 候选逐行相同**，强制对照永远基线 78.9593%/永远 0.2 82.7941% ⇒ +1.29pp / −2.54pp，唯一切换 fold8 且切错；**PBO 0.38675 是重复候选产物**（2 候选 0.93575、3 候选 0.94425），DSR 0.00 ⇒ 仍 candidate",
+   "措辞改为「有正号但非稳健、单笔驱动、不足以升为候选」；连同 dist_hi60/seal/break_times/mt，「放宽出手条件族」整族写入 closed_directions；PIT：19/90（21.1%）信号行日线晚于 T+1（全在 2026）（lenses/ev372/r518.py、r518.json；audit/a372_verdict.json）"
+  ]
+ },
+ {
+  "id": "r377-h533",
+  "title": "涨停池内「首板 vs 连板高度」分层：main 5 条件在各高度档里的表现",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "limit_up_days 82/2/1 退化（同 R72/R226）；vendor n_boards 0/2/3/4/5/11/22 = 66/10/3/2/2/1/1",
+   "纯首板 66/63 毛 +1.7648%/年化 31.62%/−13.74%/2× 24.70%；vendor n_boards≥2 19/19 毛 +5.7052%/净 +5.4052%/胜率 73.7%/年化 40.08%/−3.14%/2× 37.70%",
+   "审计削弱：3 笔尾部占毛收益 59.6%、9/19 笔在 2024-02、剔 002583 后 18/18 +4.8133%/t=1.540/CI[−0.46,+7.10]pp、n_boards 2–4 t=1.071；vendor 字段语义不自洽（43.6% +1、52.3% 跳 +2、3.9% 不变、36 对为负），全表 2026-10 重取（2023–2025 共 42,598 行 0 当日入库）",
+   "自算 lu20：0 档 33/33 +1.6290%/14.71%；1 档 20/18 +1.6271%/8.58%；≥2 档 32/31 +4.4045%/49.98%/−10.11%/2× 45.76%，差 +2.78pp（t=1.633、CI[−0.42,+6.14]pp、p=0.044）；剔 002583 30 笔 +3.8260%/39.70%、剔前 3 笔 +2.5410%/21.60%；分年毛 +7.72/+3.78/+2.60%",
+   "两档年化都低于基线 72.20% ⇒ 结构线索不是改进；3 候选 WF 10 笔/40.23%/−2.54%/2× 38.16%，与固定臂逐位相同（选择贡献 0）；lenses/ev378/run378.py、h533b.py、r378.json、r378b.json；spec.r378_h533_nboards；README 第 378 轮 R378-1"
+  ]
+ },
+ {
+  "id": "r379-h539",
+  "title": "main 5 条件在 2019-2023 的前置样本复核与失效归因",
+  "status": "done",
+  "dependsOn": [
+   "r379-h537"
+  ],
+  "action": "",
+  "evidence": [
+   "同一自算管线、不选参：2019-2023 漏斗 12,797→1,544→254→89→56 信号/55 成交、毛 +1.0079%/净 +0.7079%、年化 +0.30%、回撤 −22.64%、2× −3.20%；2023-2026 78/75、毛 +2.6156%/净 +2.3156%、年化 +50.46%、回撤 −14.27%、2× +42.91%",
+   "审计推翻「不是 regime-bound」：前置段每笔算术为正但资本加权曲线 +1.1228%（年化 0.3003%）、2× −11.4071%（−3.2005%）；2019-2021 +17.99%（年化 7.93%）vs 2022-2023 −14.30%（−10.01%）；去最好 5 笔 −0.106%/笔（占净收益 113.6%）；hi60 复权 −1.31%、seal_pct 未过滤池 −1.65%",
+   "口径：h539 的 seal_pct 与 bpanel 有 34,062/41,694 行不同、cur 78/75 不是主口径 85/82；含 600811 时 cur 年化 +4.63%/回撤 −66.11%；pre/cur 用两套价格源 ⇒ 无法排除 regime 依赖",
+   "lenses/ev380/h539.py、r539.json；spec.r380_h539_presample；audit/a380_b.py、a380_b2.py；README R380-2"
+  ]
+ },
+ {
+  "id": "r382-h545",
+  "title": "涨停原因（reason）分组：业绩/公告/概念/其他",
+  "status": "done",
+  "dependsOn": [
+   "r381-h543"
+  ],
+  "action": "",
+  "evidence": [
+   "分类无效（审计）：严格关键词 19/85 改类、优先级 25/85 改类、6 条双类；人工核对 main「重整/控制权」18 条里 ≥10 条不是控制权/重整事件、pre 6 条真事件 ≤2；反向「公司描述」25 条里 22 条含题材词",
+   "四类每笔在主口径只有 2.19%~2.76%，差异在噪声内；cur 业绩 +2.7617% > 重整 +2.6846%，main t 最高是概念 2.59、重整 1.25（CI[−1.00,+7.45]）",
+   "pre 重整 6 笔 +5.05% 但去最优 3 笔只剩 +0.86%（3 笔占 91%）；main 重整去最优 3 笔 −0.52%（3 笔 = 总收益 115%）；main 重整逐年 2024 +9.24%/2025 −1.29%/2026 +1.51 翻号 ⇒ 只作描述性记录、weak（lenses/ev383/r383.py、r545.json；spec.r383_h545_reason；README R383-2）"
+  ]
+ },
+ {
+  "id": "r385-h551",
+  "title": "「当日 main 信号数 = 1」规则化：过滤器 vs 资金分配",
+  "status": "done",
+  "dependsOn": [
+   "r384-h549"
+  ],
+  "action": "",
+  "evidence": [
+   "all 82 笔 +2.3779%/年化 72.20%/回撤 −12.66%/2× 61.30%；single 45 笔 +3.2338%/65.43%/−11.96%/2× 57.34%；multi 37 笔 +1.3369%/6.47%/−9.63%/2× 4.61%",
+   "pre all 55 笔 +0.7079%/0.30%、single 37 笔 −0.2321%（≈0）/ −3.18%、multi 18 笔 +2.6401%/5.03%；cur all 75 笔 +2.3156%/50.46%、single 41 笔 +3.0253%/43.84%、multi 34 笔 +1.4599%/7.17%",
+   "逐年累计 all 都高于 single（2024 0.729 vs 0.653、2025 0.364 vs 0.225、2026 0.881 vs 0.849）；3 候选 WF 41 笔、年化 73.15%（首笔起）/42.68%（整段检验期）、曲线 multi 24/single 17 笔、只有 1 折选 single、PBO 0.5835 不被接受、DSR 0.00 ⇒ single-only 不优于 all，不作过滤器；但维度本身非无信息（cur single 每笔更高、去最优 1/2 笔仍 2.67%/2.23%）⇒ weak（lenses/ev386/r386.py、r551.json；spec.r386_h551_nsig_rule；README R386-2）"
+  ]
+ },
+ {
+  "id": "r388-h557",
+  "title": "drop_0_1 与 adopted 组合的组合口径三门槛",
+  "status": "done",
+  "dependsOn": [
+   "r387-h554"
+  ],
+  "action": "",
+  "evidence": [
+   "gt21 腿按 r451.py 重建并逐位验证（年化 9.3735%/回撤 −18.283%，25 事件日/250 池）；additive w=0.3：main_all+gt21 62.73%/−12.66%/Sharpe 1.92 → main_drop_0_1+gt21 64.30%/−11.31%/1.99（+1.57pp）；2× 61.99→63.56（只换 gt 腿）",
+   "审计更正：additive w=0.3 = 1.3× 的 76.9/23.1 组合（硬性规则 6）；合规闲置现金 62.48%、weighted 0.7/0.3 43.72%；overlap 9 个重叠日/相关 0.151/新增 62，9 个重叠日承载 24% 收益；三条门槛本身过，真正不过的是硬性规则 4/6 ⇒ 只作诊断、weak（lenses/ev389/r389.py、r557.json；spec.r389_h557_combo；README R389-2）"
+  ]
+ },
+ {
+  "id": "r391-h563",
+  "title": "gt21 事件日的后续日延伸：D+1 / D+2 继续用同一池子买入",
+  "status": "done",
+  "dependsOn": [
+   "r390-h561"
+  ],
+  "action": "",
+  "evidence": [
+   "集成腿 ext0 250 笔 9.37%/−18.28%、ext1 491 笔 10.89%/−19.45%（用全量 b 涨停标记重做 473 笔/11.02%）、ext2 728 笔 10.48%/−20.22%（重做 698 笔/9.94%）；only_unsealed 轴恒真（lu 取自已剔除涨停的 u）",
+   "闲置现金组合 ext0 66.29%/−19.63% → ext1 64.68%/−20.83%（−1.61pp）、ext2 64.76%/−21.98%（−1.53pp）；换约定翻号、劣势只在 2024（2026 ext2 +3.1pp）",
+   "审计推翻原 WF（run563 未用 dates）：诚实 WF 60 笔/4.8175%（首笔）/4.6968%（整段）/−6.158%、折 [ext1,ext1,ext0×7]、PBO 0.66、DSR 0.00；2× 组合 55.39/53.38/52.92%（增量 1.06/0.24pp）；ext1 新增 bootstrap [−1.174,+2.910]、2026 +0.05%、top5% 占 99.97%；结论：不采用（lenses/ev392/r563.json；spec.r392_h563_extend；README R392-1）"
+  ]
+ },
+ {
+  "id": "r394-h569",
+  "title": "PIT ST 后的 adopted 组合与全量并排复核",
+  "status": "done",
+  "dependsOn": [
+   "r327-h457"
+  ],
+  "action": "",
+  "evidence": [
+   "正确写法（R391 的 exposure 在窗口内枚举）：old 90.74%/−12.66%/Sharpe 2.267 → PIT 92.99%/−12.66%/2.298；2×（两腿都 2×）77.06%→79.05%；gt21 单独 2× 7.72%→8.56%；非零日 22.86%、真实有仓 15.79%/16.09%",
+   "撤回初稿错误更正：99.24/101.56 是 r395.py exposure 索引 bug（pos 用 cal2 787 天、数组 common 665 天；32/82 越界、50 错位；2024-02..07 gt +32.21% 全计入 vs 正确 19.63%），审计逐位证明 R391 的 90.74% 正确",
+   "PIT 增量 +2.25pp（64% 换 6 行池子、36% 恢复 2024-06-06，全落 2024；2025/2026 不变）；组合仍为 candidate/诊断（非 WF、日收益相加、无指纹），h572 做诚实 WF（lenses/ev395/r569.json；spec.r395_combo_pit；README R395-1）"
+  ]
+ },
+ {
+  "id": "r396-h575",
+  "title": "本单补 2026-11-20 验收门槛：probe.json / PER-TRADE / universe 超额 / 去右尾 / 候选分散度",
+  "status": "done",
+  "dependsOn": [
+   "r395-h572"
+  ],
+  "action": "",
+  "evidence": [
+   "probe.json 首次写入（limit_pool_full 135,744 / canonical_bars_daily 4,275,201 / bpanel 43,950 / st_daily 9,114,928 行，全 PASS；限定：未传 available_col、未做可用性断言；日线/涨停池可得性 99%+ 晚于 15:00/T+1 09:30）",
+   "main 28 网格 WF 76 笔/72.36%/−14.39% → candidate（未过 multiple_testing / right_tail；data_probe、capital_skip 0%、same_day_excess 过）；same_day_excess 用信号前合格池 +2.09%/笔、t 2.59（初稿 +0.02%/t 1.02 是 universe 传成信号后交易集，已撤回）",
+   "right_tail 去最好 27 天 −40.0%、最好 3 笔持平 +107.8%；multiple_testing 相关中位 0.8268、n_eff 1.43、6/9 折同一条 temp、仅 4 个不同设定；PER-TRADE 76 笔/+1.9307%/t 2.4552；2× 同交易集 59.82%；最近两窗 +1.65%/笔（lenses/ev397/r575.json；probe.json；spec.r397_five_c；README R397）"
+  ]
+ },
+ {
+  "id": "r399-h581",
+  "title": "跨市场联动：海外隔夜（移交 LON-76）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "按 AGENTS 11-20 19:50 拆单记录移交 LON-76（海外隔夜冲击映射行业），本单不再做；移交时已有本快照 30 个非 A 股代码/102 天、29 笔 main 诊断（^SOX>+1% 19 笔 +4.43%/t 2.69）与完整数据集缺口"
+  ]
+ },
+ {
+  "id": "r400-h584",
+  "title": "完整 overseas_bars_daily 后的隔夜闸门 24 候选 WF（移交 LON-76）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "属 LON-76 范围延伸，随 r399-h581 一并移交；backlog 记 split_issue=LON-76"
+  ]
+ },
+ {
+  "id": "r403-h592",
+  "title": "滞涨放量：T 日 volratio ≥2 但涨幅 0–3% 的非涨停股，次日承接",
+  "status": "done",
+  "dependsOn": [
+   "r402-h590"
+  ],
+  "action": "",
+  "evidence": [
+   "24 候选固定配置全负：最好 {vr 3–5, 涨幅 0–3%, hold1} = 9,095 笔/每笔 −0.27%/t −2.83、剔除版 −0.26%、2× −0.57%；中位 −0.72%、total −91.3%；审计加 4 个网格外邻域仍负（−0.31%~−0.41%）",
+   "披露：每日 head(20) cap、exit_marked 8 笔；WF 未跑（池 2M 行过慢）⇒ 无 PBO/DSR；5b 翻面：作为多头腿证伪，放量滞涨后次日买入为负与信号偏空一致，不写「无信号」（lenses/ev404/r592_scan.json；README R404-2）"
+  ]
+ },
+ {
+  "id": "r408-h599",
+  "title": "股东户数「翻面」：户数下降 × 事件日强势（ret20>0）的 2 天",
+  "status": "done",
+  "dependsOn": [
+   "r407-h598"
+  ],
+  "action": "",
+  "evidence": [
+   "hold1–2 的 24 候选 WF：3,369 笔/每笔 +0.22%/年化 +10.47%/mdd −42.63%、candidate（近期衰减）、PBO 0.359（24 候选、corr 0.533、n_eff 2.78）、capital_skip 34.7%、right_tail FAIL（−87.6%）、固定 k 全负（k2 −10.43%/k5 −39.97%/k7 −51.35%/k10 −63.17%）",
+   "同批 3,369 笔 2× = −0.075%/笔（代表候选 −0.227%、3× −0.527%）；代表候选 6,327 笔/+0.073%/t 0.38；**对全市场等权超额 +0.067%/t 0.82**（初稿 same_day_excess +0.01%/t 1.32 是自证式 0）",
+   "2026-04-29/30 两天 170 笔贡献 131% 净额、分年 2023 −0.205%/2024 −0.094%/2025 −0.014%/2026 +0.329%、去掉最好 27 天 −87.6%；hold3 漏测（1,265 笔/+0.753%/t 2.00、2× +0.453%、超额 +0.40%/t 1.62）记 weak 转 r409-h601；因子降幅五分档单调（+0.016~−0.499%）（lenses/ev409/r599.json；spec.r409_corrections；README R409-1）"
+  ]
+ },
+ {
+  "id": "r413-h606",
+  "title": "长期停牌复牌首日的次日承接：停牌 ≥20 交易日后复牌，R+1 开盘买持 1 天",
+  "status": "done",
+  "dependsOn": [
+   "r412-h605"
+  ],
+  "action": "",
+  "evidence": [
+   "连续停牌 ≥5/≥10/≥20 日事件 587/309/66；初稿把 is_suspended（复牌首日标记，1,151 行全部 amount>0、中位 1.13 亿元）当排除条件、误剔 42/66 ⇒ 过滤后仅 3 笔、36 候选 WF 只有 2 笔成交（每笔 −8.26%/mdd −21.13%）、诊断候选 3 笔/−7.06%/t −4.41",
+   "审计推翻「样本不足、无法检验」的全局外推：放宽后 ≥5 日 59/247、≥10 日 32/115 个信号过 30 笔可检验线、方向可测（本轮未测，转 r414-h607）；逐级流失 66→24(误剔)→24(涨停)→13(ST)→3(成交额)",
+   "security_suspensions 不能替代缺行法（94.8% 同源推断、resume_date 仅 7 行）；available_at 晚于 R+1 的比例 10.6%（≥5 日）/27.3%（≥20 日）；复牌日 close/pre_close 有除权跳变（中位 −0.77、19 个）⇒ 重测须复权、网格改 gap{5,10,20}；执行未独立复核（LON-85 租约占满），代码层无 T+0、exit_marked=0（lenses/ev414/r606.json；spec.r414_corrections；README R414-1）"
+  ]
+ },
+ {
+  "id": "r418-h612",
+  "title": "月末倒数第 2 个交易日的定向检验（单候选，不做网格）",
+  "status": "done",
+  "dependsOn": [
+   "r417-h611"
+  ],
+  "action": "",
+  "evidence": [
+   "审计直接收口、未单独开跑：me2 的 40,239 笔只有 39 个事件日，中位 −0.188%、胜率 47.4%、只有 2024 年正",
+   "单事件 2024-09-27（09-30 买、10-08 卖）+20.39%/963 笔主导，前 5 日合计 +341.3 > 全部 +181.8，剔除后累计 +17.7%→约 −2.3%，top5pct_days_share 0.424",
+   "是当日池 beta（池毛 +0.7546% vs me2 毛 +0.7519%、超额 −0.0028%/t −0.70）；me2−me1 配对 +1.228%/t 1.61 <2 ⇒ 不开定向检验、falsified 收口（spec.r418_corrections.me2；README R418-2）"
+  ]
+ },
+ {
+  "id": "r423-h618",
+  "title": "竞价缺口：T+1 开盘缺口（open/pre_close−1）分档 × 高流动性池的当日承接",
+  "status": "done",
+  "dependsOn": [
+   "r422-h617"
+  ],
+  "action": "",
+  "evidence": [
+   "池 806,613 行/780 日、每 hold 成交 805,447（未成交 1,166：一字 914/无 bar 228/停牌 20/缺 adj 4）；五档 × hold1/2 十格全部净负（−0.030%~−0.647%）；毛 −0.347%~+0.270%（最高 ≥+2% h2 +0.270% 仍 <0.30% 成本）；2× 后 −0.330%~−0.947%",
+   "剔最好 3 个交易日后十格全负（−0.322%~−0.838%）；同日同池超额 −0.198%~+0.059%；分年 ≥+2% h2 2023 −0.83%/2024 +0.68%/2025 +0.07%/2026 −0.40%、≤−2% h1 四年全负（−0.49/−0.65/−0.22/−0.11%）",
+   "翻案检查 20 分位+14 子样本+6 阈值仅 up2∩ret20>0 h1 +0.099%/h2 +0.047%（毛 +0.35~0.40%、t≈0）与 dn2∩ret20<0 h1 −0.005%（毛 +0.295%、t −0.02），均噪声；未复权缺口含 0.70% 除权假缺口（按复权重分档仍全负）、2,311 行 gap 跨 ≥2 天；10 格已 record_scan、未走 WF/PBO，只称「这 10 个固定格无正效应」；执行 execution_issues 两次均空、无 T+0、amount 千元中位 6.2 亿/日（lenses/ev424/r618.json；spec.r424_corrections；README R424-1）"
+  ]
+ },
+ {
+  "id": "r429-h624",
+  "title": "振幅分档：(high−low)/pre_close 四档 × 成交额前 20% 池的 T+1 承接",
+  "status": "done",
+  "dependsOn": [
+   "r428-h623"
+  ],
+  "action": "",
+  "evidence": [
+   "池 805,865 行（只留 A 股四板）；hold1 净/毛/月 t：≤2% 73,525 笔 −0.355%/毛 −0.055%/−10.44（2× −0.655%）、2–4% 249,952 笔 −0.316%/毛 −0.016%/−5.01、4–7% 272,609 笔 −0.292%/毛 +0.008%/−3.41、≥7% 208,603 笔 −0.357%/毛 −0.057%/−2.10；四档 2× −0.59%~−0.66%、剔最好 3 个交易日 −0.34%~−0.47%",
+   "4–7% 的毛 +0.008% 是噪声（毛月 t +0.09、40 月 19 正、十分位无单调）；净收益分年 2023–2026 全负（毛有 2025 正年但 ≪0.30% 成本）；两个最接近成本的格已查：4–7%×cpos 最低五分位 54,679 笔毛 +0.249%/净 −0.051%、4–7%×炸板 948 笔毛 +0.3017%/净 +0.0017% ⇒ 都不足成本",
+   "作用域：只对非涨停池成立（被剔 29,092 信号净 −1.033%/毛 −0.733%/t −7.71）；volume>0 只去 416 行零成交、停牌由缺 bar+simulate 处理；ST 过滤近乎空操作（池内 is_st 0 行、st_wide 5 行）；第一版池含 5,149 行 board='other'（23 笔成交）已加四板过滤重跑 r624b.json，结论不变、no_adj_factor 从 5,083 降到 1（lenses/ev430/r624b.json；spec.r430_corrections；README R430-1）"
+  ]
+ },
+ {
+  "id": "r404-h595",
+  "title": "h593 双创高开低走的 24 候选 WF",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "该 ready 的 24 候选 WF（dd60 修正池：gap×跌幅×hold×dd60 阈值 + PER-TRADE/固定 k/分年/PIT 剔除版）已由 R405-1 完成并审计（audit round 405：h593 24 候选 WF 成立）",
+   "结果 70 笔 / 每笔 +0.81% / 年化 −7.31% / mdd −42.82% / PBO 0.4625（n_eff 4.50）/ fixed k 全负 / PIT 剔除版 128 笔 −0.13% ⇒ falsified",
+   "本轮 14 项覆盖核对 PASS：lenses/ev436/r631_h595.py、r631_h595.json（数字逐位、24 候选定义、dd60 修正、README/audit 出处）"
+  ]
+ },
+ {
+  "id": "r438-h635",
+  "title": "收口第四轮：把行业广度 / 极化度闸门 / 缩量新高并入 finalized_dimensions",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "finalized_dimensions 增补 r435-h630（行业广度）、r435-h631（极化度闸门）、r437-h632（缩量新高）三条 falsified ⇒ 15 条（13 falsified + 2 weak）",
+   "README 最终状态节加 R439 增补行；spec.closure.finalized_dimensions_summary 同步；closure 脚本不产生交易；check_all 七组全 PASS"
+  ]
+ },
+ {
+  "id": "r441-h641",
+  "title": "收口第五轮：把池子/状态口径固化进 methodology_notes 与 check 脚本",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "spec.methodology_notes 固化六条：①池子排除北交所（920xxx 与 430/83x/87x/88x）与 ETF/LOF；②max_weight 取首折 attrs 的全局常数；③n_lu_prior20 前 20 行不含当日、hi60/hi120 需 min_periods；④状态分位 250 日历日 ffill；⑤同日基准必须按每笔 entry/exit 匹配（SQL 单日聚合 ≠ same_day_excess）；⑥right_tail 两种口径用途",
+   "补四条披露项：候选数按实际网格（h639 实为 16）、WF 交易表 hold 分布、exit_marked 笔数、PBO/wf_variants 未落盘即不可独立复算",
+   "README 最终状态节补 R442 增补行；只整理已有结论、未重跑交易；check_all 七组全 PASS"
+  ]
+ },
+ {
+  "id": "r444-h647",
+  "title": "把 excess_scan 扩到 finalized_dimensions 全表：对 15 条结论逐条标可复核/不可复核并补落盘交易表",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "excess_scan --check 升级为恒等式/范围校验：matched+excluded+bench_missing==filled（parquet 计数）、excess∈±5%；不重算超额、不连快照，K5 的 6 笔静默剔除仍 PASS",
+   "「可复核条数」此前是硬编码 set(items)&{r437-h632}；审计指出 r435-h630 表（lenses/ev437/trades_r630_breadth.parquet，14,321 笔/+0.1194%）与 r437-h632 主表（ev438/trades_r632.parquet，2,082 笔/+0.4954%）都在盘上但未登记 universe ⇒ 真实缺口是登记，已登记 r445-h649",
+   "产物：lenses/ev444/excess_scan.py、excess_table.json；check_all 步骤随之改为数值比对；审计 round 445"
+  ]
+ },
+ {
+  "id": "r447-h653",
+  "title": "把「交易表 + universe 定义」做成交付必检项并接入 check_all",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "excess_scan registry 每条加 universe_sql + source_script 并做存在性/源脚本校验；未登记扫描输出 81 张",
+   "审计限制：81 是文件名计数、会随 audit/ 临时 parquet 漂移（+1 文件即 82）、无轮次归属；universe_sql 与 UNIVERSES 双写未被比较（变异测试可矛盾仍 PASS）；pending filled 未与盘上对账；recheckable 只从 REGISTRY 取 id、pending 永不参与",
+   "只算形式成果，限制已写入 spec；check_deliverables 的「新增结论落表」检查留给 r448-h655；审计 round 448"
+  ]
+ },
+ {
+  "id": "r450-h659",
+  "title": "把「新增结论必须落表并登记」接进 check_deliverables",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "第 11 项：最新 rNNN_ 结论必须有 lenses/evN（.py+.json）且含 tables（list[dict]，每个有 id 且含 matched/excess）或 no_table_reason（≥5 字符、非 n/a）；本轮 11/11 通过",
+   "限制：只查最新一轮（429 条历史 rNNN_ 键多数无 tables/reason）；其他项仍含已作废的 cost2x/PBO 判据 ⇒ 11/11 不是当前口径证书；另修掉输出 ⇒ 的 GBK UnicodeEncodeError（提交 353ff2bf）"
+  ]
+ },
+ {
+  "id": "r453-h665",
+  "title": "换方向：注册正表（K5/true、breadth、n_lu0）的近期段（2026-07-22 起）同日超额复核",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "官方 E.same_day_excess + 登记 universe（n_lu20 由 limit_pool_full 现算）、universe 从 2026-06-01、entry≥2026-07-22：K5/true −0.086%（63 笔，t −0.30/−0.24，marked 2）、breadth +0.073%（1,558 笔，t 0.73/0.69，marked 46=3.0%）、n_lu0 −0.123%（464 笔，t −0.36/−0.71，marked 5）",
+   "原实现 universe 从 07-22 起算导致信号日 07-21 的 13 笔（n_lu0 10 笔）被静默剔除、n_lu0 误报 −0.000%/454 笔；已修正为 universe 从 2026-06-01，三表 matched=trades",
+   "结论：三腿近期均无显著同日超额，但窗口仅 3.4 个月、K5 仅 63 笔，不足以判衰减/失效；trials 补记 3 个检验"
+  ]
+ },
+ {
+  "id": "r456-h671",
+  "title": "把「非涨停池 × 持有 5–10 天」整块的结论收口进最终状态节：已测维度、结论、剩余可测项",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "README 最终状态节新增「### 非涨停池 × 持有 5–10 天」：已测 21 格（hold=5 全 15 + hold=10 中间 6）、无正 alpha 证据（不显著为负）、9 格未测、剩余换因子/换池",
+   "check_deliverables 第 13 项校验该小节与结论，本轮 13/13；已注明为纯子串校验、不验数字"
+  ]
+ },
+ {
+  "id": "r459-h677",
+  "title": "把「池位阶差」写成方法论约束：任何分档结论必须同时报「相对池均值」与「相对全 A」，并加 check",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "硬规则写入 spec.closure.methodology_notes（原误放 signal_spec，已补写）：分档/分池结论必须同时报相对池均值与相对全 A，且同口径复权",
+   "check_deliverables 第 15 项校验最新 spec.tables 含 excess_pool/excess_allA，本轮 15/15；局限已披露（只查字段名、2 条表、excess_pool 有硬编码 0.0、未验复权）⇒ r460-h680 落实"
+  ]
+ },
+ {
+  "id": "r462-h685",
+  "title": "补做 round 462 反方审计：独立复算 small 档两种选股方式、核对 WF 与 verdict 报错、审方法论检查项",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "两档 per-trade 逐位复现：流动性 top3 −0.696781%（1,763 笔）、最小市值 top3 +0.549144%（1,764 笔）",
+   "同窗口全档 38,030 笔 / +1.319%/笔、日度等权 +0.588% ⇒ 每笔只放大 2.24 倍；R462 把 R461 的 22,107/+1.53%（另一口径）并列，已改",
+   "分年流动性档三年全负、最小市值档三年全正（+0.232/+0.811/+0.460%）；近 1/3 月最小市值档 −0.445%/−0.111%；exit_marked 各 15 笔（0.85%）",
+   "+0.549% 无产出脚本（审计独立重跑复现）；DSR/PBO 由 R463 补算（PBO 0.188/DSR 0.00/n_eff 4.64<15 不算数）⇒ 判 weak、论据换成「实际买法为负 + 选股方式事后挑」"
+  ]
+ },
+ {
+  "id": "r464-h689",
+  "title": "换方向：既然小市值档相对全 A 只有 +7bp，转去测「同池内剔除 beta」的中性化版本（按市值/行业中性后取残差 top3）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "每笔 +0.116%（1,755 笔，审计复算），相对当日合格池 **−0.405%**（t −1.66；自建池 −0.485%/t −1.99）；2024 −2.05%/2025 −0.26%/2026 +0.32%",
+   "反向（残差最小 3）+0.203%/t 0.99、K=1/3/5 全负（−1.07/−0.41/−0.37%）、剔除 2024 仅 +0.008%/t 0.02 ⇒ falsified 稳健；账户 capital_skip 26.95%、回撤 −54.6%、去最好 30 日 −87.4%",
+   "定位 ret5 bug：lag(close,5) 与 WHERE 同层 ⇒ 61.5% 行不是真 5 日收益、8.7% 选股不可复现；h691 前必须先修"
+  ]
+ },
+ {
+  "id": "r467-h697",
+  "title": "补做 round 467 反方审计：独立复算持池 excess/t、笔数、容量，核 pool_baseline 与第 18 项",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "R492 复核：由 R467 审计（audit.json round=467，12 items）完成——复算 38,030 笔 / 每笔 +1.3193% / marked 211 / execution_issues=[]；容量三档 1%/0.5%/0.1% 中位 1.32M/660k/132k；pool_baseline 字段与第 18 项落地",
+   "本轮 audit/r492_verify.json 复查一致（by_year +1.508/+1.370/+0.202%）；excess 结论已由 R467 审计用全 A bench 推翻并更正为 +0.346%"
+  ]
+ },
+ {
+  "id": "r469-h704",
+  "title": "补做 round 469 反方审计：top5% 日贡献与去最好 5% 日、随机 3 只 excess/t、dd-7 改判",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "9 成立 / 4 削弱 / 1 推翻；数字逐位复现（116.2%/184.1%、−56.4%/−138.8%、1,768/+0.476%/−0.012%），但口径被纠正",
+   "**推翻**「随机 3 只捕捉不到池均值」：+0.346% 是笔加权同日超额（池每笔 +1.3193%）；同口径日等权全池 +0.5884% vs 随机 3 只 +0.4588%（差 −0.13pp、t −0.73）⇒ 随机 3 只复现池均值",
+   "right_tail 官方口径：双创去最好 30 日 −62.49%、主板 −60.13%（最好 3 笔持平通过）；cohort 算术和只作描述；集中度 2024-09/10 的 13 天占全和 48.8%"
+  ]
+ },
+ {
+  "id": "r471-h708",
+  "title": "把第 19/20 项升级为独立复算校验：脚本内用真实数据重算 remove_best30/share，而非只验自报数值",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "第 20 项 cohort share 从 lenses/ev469/h700_conc_rand.json 独立重算并与 spec 比对（容差 0.01），不一致即 FAIL",
+   "official 加 source（ev469/official_source.json）并拒绝 0/NaN/bool；第 19 项要求 dd-7 唯一且 verdict/evidence 非空；本轮 20/20；局限：official 仍无账户曲线可二次复算"
+  ]
+ },
+ {
+  "id": "r474-h714",
+  "title": "把「池类结论必报右尾两口径」与「快照语义两字段」写进 README 最终状态节并由 check 钉住",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "README 最终状态节新增「右尾两口径」与「快照两字段」两个固定子节（官方去最好 30 日 + 最好 3 笔持平取更严；snapshot_id 主曲线 / fetch_snapshot 本轮取数）",
+   "check_deliverables 第 21 项校验其存在（右尾两口径/去最好 30 日/最好 3 笔持平/快照两字段/snapshot_id/fetch_snapshot），本轮 21/21",
+   "当前右尾：双创 −62.77%（最好 3 笔 +61.08%）、主板 −61.12%（+15.05%）⇒ 均 FAIL"
+  ]
+ },
+ {
+  "id": "r477-h720",
+  "title": "回到挖掘主线：测大市值/高流动性池持池（total_mv>100 亿）对全 A 的 excess，与 small 池对照",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "974,282 笔 / 每笔 +0.184%，相对全 A −0.201%（t_day −4.64、t_month −1.89），分年 −0.42/−0.20/−0.10%；容量 0.1% 中位 337k、日均 1,650 只 ⇒ 大市值池显著跑输 ⇒ 池溢价各市值层均不成立，falsified",
+   "trades 已落盘 lenses/ev478；README/report 第 478 轮；spec.r478_large_pool"
+  ]
+ },
+ {
+  "id": "r480-h727",
+  "title": "补做 round 479/480 反方审计：R480 封板质量三档复算与第 25 项复核",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "全 A bench 独立复算：worse 13,060 笔 / −0.032%（t −0.16）、worst 2,768 笔 / +0.286%（t 0.77）、best_lock 1,794 笔 / −2.289%（t −9.29，逐位一致）",
+   "R480 用 E.load_bars(symbols=池内) 导致全 A bench 只剩池成分股；改传全 A symbols 后两档数字变化，证伪结论不变",
+   "audit.json 追加 round=480（2 成立 / 1 削弱 / 0 推翻）；第 25 项仍通过；产出 lenses/ev485/h727_recheck.py|json、spec.r485_seal_fix"
+  ]
+ },
+ {
+  "id": "r482-h732",
+  "title": "把新判定口径（近 1/3/6 月绝对为主、相对全 A 为诊断）写进 README 主口径节并加 check",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "README 新增「判定口径（2026-11-22 起固定）」节：绝对毛收益为主判据、相对全 A 同日超额为诊断、只有近 1–3 月绝对 ≤0 且相对不为正才判证伪",
+   "check_deliverables 新增第 27 项校验最新结论含 1m/3m/6m/all 四窗口，本轮 27/27"
+  ]
+ },
+ {
+  "id": "r485-h739",
+  "title": "把「bench 必须传全 A symbols」写成通用检查并扫历史 spec 同类写法",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "扫描 lenses 下 13 处 E.load_bars 调用：仅 ev480/h723_seal.py 用池内 symbols（已改为全 A symbols 并注释）；ev467/ev474 的 pool symbols 属持池测试",
+   "check_deliverables 新增第 28 项静态拦截 `symbols=…lp[`，本轮 28/28"
+  ]
+ },
+ {
+  "id": "r488-h745",
+  "title": "补做 round 488 反方审计：dd-7 重验、空仓期加腿的账户与回撤归因、第 28 项 AST 检查",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "R492 复核：R491 已落盘（accae9f0）——audit.json 三条 round=488、audit/a488_*.py|json、README 第 491 轮节与「R491 审计更正」块均在",
+   "本轮注入复验确认第 28 项仍恒为 True（池内 bench 文件只进 suspects）⇒ 该审计对第 28 项的推翻仍成立，登记 r491-h749"
+  ]
+ },
+ {
+  "id": "r493-h750",
+  "title": "把「涨停家数低档」条件过滤作为腿放进主口径账户复核",
+  "status": "done",
+  "dependsOn": [
+   "r469-h702"
+  ],
+  "action": "",
+  "evidence": [
+   "每日取 N 只（hold=5）后可交易化：成交额规则 cond N3 −1.112%/t −2.12 vs uncond −1.146%/t −4.14（条件优势 +0.03pp）、N10 −0.679 vs −0.675；市值最小规则 cond +0.837%/t 1.91 vs uncond +0.087%（+0.75pp，随机对照 +0.40pp）",
+   "固定权重双 sleeve（w=0.2）四格全部变差：cond_mv_N3 1/3/6 月 −3.17/−6.57/−21.64pp、cond_amt_N3 −3.99/−11.44pp、uncond_mv_N3 −2.17/−4.97pp、uncond_N10 −2.36/−8.74pp；共享现金 compare_accounts 同样全部变差",
+   "overlap：同日同票 0、新增持有日 348/并集 419、日收益相关 +0.031（低重合达标但腿不赚钱）；腿自身 cond_amt_N3 1 月 −18.87%/3 月 −24.09%",
+   "lenses/ev494/{h750_leg.py,h750b_rules.py,h750c_mv.py,*.json}；spec.r494_h702_tradeable；README 第 494 轮；audit round 494"
+  ]
+ },
+ {
+  "id": "r496-h756",
+  "title": "把「低成交额层 + 小市值」做成带容量上限的腿，按随机篮子对照复核",
+  "status": "done",
+  "dependsOn": [
+   "r495-h755"
+  ],
+  "action": "",
+  "evidence": [
+   "容量下限 ¥30/50/100M × 市值最小 N{3,10} × hold{3,5}：¥50M 档 N3/hold5 每笔 +1.173%（t 4.263、1,757 笔）vs 同池随机 N10 +0.432%（0.390–0.472）⇒ 选择差 +0.741pp；N10 +1.017%（+0.585pp）；¥30M +0.952%、¥100M +0.779%",
+   "腿自身近 1/3/6 月 −11.19%/−2.89%/−15.86%（全样本 +201.06%、回撤 −43.33%）；共享现金 compare_accounts 3 月 −29.19pp、固定权重 w=0.2 1/3/6 月 −3.14/−6.97/−26.45pp ⇒ 组合口径全部变差；重合度低（同日同票 0、新增持有日 537、日相关 0.082）",
+   "lenses/ev497/{h756_leg.py,h756_leg.json}；spec.r497_capacity_leg；audit round 497（8 成立/1 削弱/1 推翻）"
+  ]
+ },
+ {
+  "id": "r499-h762",
+  "title": "随机篮子对照的 n 敏感性 + 把「旧全 A bench」标记为废弃口径",
+  "status": "done",
+  "dependsOn": [
+   "r498-h761"
+  ],
+  "action": "",
+  "evidence": [
+   "n{3,10,30,100,200}×hold{1,5}×8 种子：基线均值随 n 稳定（hold1 +0.108→+0.094%、hold5 +0.545→+0.489%），种子 sd 由 0.182（n3）→0.082（n10）→0.031（n30）→0.022pp（n200）⇒ 检 +0.3pp 用 n=10、检 +0.05pp 需 n≥100",
+   "随机篮子比 pivot 全池等权稳定高 +0.18pp（hold1）/+0.32pp（hold5）且 n=200 不收敛 ⇒ 管线系统差；methodology_notes 记「旧全 A bench 降为诊断口径」，check_deliverables 第 33 项校验（sd 不收缩 / 删规则两注入均 FAIL、基线还原 PASS）",
+   "lenses/ev500/{h762_nsens.py,h762_nsens.json}；spec.r500_randbasket_n；audit round 500（独立复算 n10 0.5198/sd 0.0824、n200 0.4893/sd 0.022）"
+  ]
+ },
+ {
+  "id": "r502-h768",
+  "title": "主腿闸门的独立贡献：把随机篮子限定在 seal>=2 子池内再对照",
+  "status": "done",
+  "dependsOn": [
+   "r501-h767"
+  ],
+  "action": "",
+  "evidence": [
+   "主腿无排名（把当天全部过闸门的票都买）：82 笔 +2.6779%（t 3.53）vs 复现全闸门 82 笔 +2.491%（t 3.259），84 个信号中 80 个与主腿重合 ⇒ 排名贡献 +0.19pp≈0",
+   "同日池等权 4,266 笔 +0.3105% ⇒ 闸门贡献约 +2.2pp；主板涨停池无条件买入 34,734 笔 −0.743%/笔（t −6.22）；6 个单条件各自全负（−0.130/−0.251/−1.113/−0.603/−0.708/−0.749）⇒ 边来自合取",
+   "lenses/ev503/{h768_gate_decomp.py,h768_baseline_check.py,*.json}；spec.r503_gate_decomp；audit round 503（独立重跑一致）"
+  ]
+ },
+ {
+  "id": "r505-h774",
+  "title": "主腿 + `brk+dist+seal` 的权重扫描与 leave_one_out（找让 1 月不恶化的配比）",
+  "status": "done",
+  "dependsOn": [
+   "r504-h772"
+  ],
+  "action": "",
+  "evidence": [
+   "权重扫描 w0.1–0.5 方向一致：w0.2 → 3 月 +0.5373pp/6 月 +9.2327pp/1 月 −0.4237pp；w0.5 → +1.2352/+23.2331/−1.0815pp ⇒ 没有 1 月不恶化的配比（该问题关闭）",
+   "只在主腿空仓日开仓（144 笔）反而 3 月 −5.2434pp、6 月 −9.1738pp ⇒ 该腿价值在与主腿同期分散、不是填空仓；leave_one_out：去掉 bds 组合 3 月 +0.4397pp（组合变差 ⇒ status「改善」）、去掉主腿 status「待观察」",
+   "lenses/ev506/{h774_h775.py,h774_h775.json}；spec.r506_bds_portfolio；audit round 506（独立复算一致）"
+  ]
+ },
+ {
+  "id": "r508-h782",
+  "title": "重建主腿 trade 表为 COST=0 口径（ret = gross），并把所有用到主腿的组合结论重算",
+  "status": "done",
+  "dependsOn": [
+   "r507-h779"
+  ],
+  "action": "",
+  "evidence": [
+   "按 COST=0 重新 simulate（不是改 ret）：lenses/main243/main_trades_cost0.parquet = 82 笔、每笔 +2.491%、ret 与 gross 逐行相等、execution_issues 空；旧表 82 笔 +2.6779%、ret +2.3779%、issues 报「ret rewritten」；两表交易集合差 2 笔",
+   "组合定稿（重建主腿+ bds，w=0.2）：1/3/6 月差 −1.1388pp/+0.0770pp/+9.0420pp；LOO bds「改善」、main「待观察」⇒ bds 贡献是「3 月持平、6 月 +9pp」",
+   "lenses/ev509/{{h782_rebuild.py,h782_rebuild.json}}；spec.r509_cost0_rebuild；audit round 509（独立重建一致）"
+  ]
+ },
+ {
+  "id": "r510-h786",
+  "title": "loose(0.1/0.2) 主腿的月度健康度与分年验证，确认 6 月 +105.95% 不是 2026 年集中",
+  "status": "done",
+  "dependsOn": [
+   "r509-h784"
+  ],
+  "action": "",
+  "evidence": [
+   "用全 A qp 重做五档：base 82 笔 +2.6779%、3/6 月 +28.6395%/+93.9194%（更正 R510 的 +2.491%/+23.63%/+76.33%）；loose 91 笔 +2.1886%、+31.9326%/+106.4533%；half(0.2/0.2) 87 笔 +2.6081%、+30.0644%/+109.7970%；no_regime 114 笔、1 月 −5.7918%",
+   "分年：loose 的 6 月增益来自笔数（2026 44→51 笔）而每笔略降（+1.851% vs +2.014%）；月度差有正有负（2026-07 +9.20pp 为主，2025-01 −17.78pp）⇒ 有近期窗口依赖，不是整段稳定增强",
+   "lenses/ev511/{{h786_regime.py,h786_regime.json}}；audit round 511（独立复现一致）"
+  ]
+ },
+ {
+  "id": "r513-h792",
+  "title": "复核 +14.14% 那笔（000636.SZ 2026-07-29）的成交真实性",
+  "status": "done",
+  "dependsOn": [
+   "r512-h789"
+  ],
+  "action": "",
+  "evidence": [
+   "T+1 07-30 开盘 48.67 vs 前收 47.51（+2.442%，涨停价 52.26）⇒ 非涨停开盘、买得进；T+2 07-31 开盘 55.55 vs 前收 50.50（+10.0% = 涨停价）⇒ 卖方向在涨停开盘可成",
+   "gross +14.136% = 两段隔夜缺口（+2.44% + 10.0%）；idealized=false、exit_marked=false、execution_issues 空 ⇒ 真实成交、非数据假象；但 5 笔增量仍完全绑在该笔上 ⇒ 第 39 项禁止据此提升状态正确",
+   "lenses/ev514/{{h792_trade.py,h792_trade.json}}；audit round 514（独立复现 bars/价/涨跌停关系）"
+  ]
+ },
+ {
+  "id": "r516-h798",
+  "title": "把「随机选择对照」做成所有排序类结论的必报项（deliverables 第 41 项）",
+  "status": "done",
+  "dependsOn": [
+   "r515-h796"
+  ],
+  "action": "",
+  "evidence": [
+   "rank_claims.jsonl 登记 r516-h796-cap1（z 1.72/1.26/−0.04/−0.03）与 r517-h797-seal（z 1.72/1.26/0.66/0.28），字段含 rule/n/z/d_pp/verdict",
+   "check_deliverables 第 41 项（41/41 PASS）：z 四窗口齐全且为数字、verdict ∈ {promising,adopted,rejected}、adopted 需 max z≥2、README 必须提及",
+   "注入测试：删 z 窗口 + 把 seal 改成 adopted ⇒ problems 非空、rc=1；恢复 ⇒ 通过。tools/rank_claim_guard.py；audit round 517"
+  ]
+ },
+ {
+  "id": "r519-h804",
+  "title": "把 cap1_seal 用到信号更多的闸门（half / loose）上，看排序价值是否随候选池变大而提高",
+  "status": "done",
+  "dependsOn": [
+   "r518-h802"
+  ],
+  "action": "",
+  "evidence": [
+   "half 池 90 信号/69 天：top1 66 笔 +2.9619% vs 全买 87 笔 +2.6081%，compare 判「改善」（1 月 +3.6938pp、3 月 +3.9363pp、6 月 +15.4906pp）",
+   "loose 池 94 信号/73 天：top1 70 笔 +2.3963% vs 全买 91 笔 +2.1886%，compare 判「改善」⇒ 排序在大池子仍有效，但 z（1.27/0.93/0.80/0.39）不优于 base（1.48/1.17/0.81），没有随池子变大而提高",
+   "**未解释异常已如实标注**：两池 z 完全相同（1.2713/0.9268/0.8034/0.3867）而 top1 窗口与随机均值不同；复核显示分子与 sd 按同一比例 k 缩放（k=1.000/1.0144/0.9841/0.7416）⇒ 本轮不据此下结论，登记 r520-h805",
+   "lenses/ev520/{{h803_h804.py,h803_h804.json}}；audit round 520"
+  ]
+ },
+ {
+  "id": "r522-h810",
+  "title": "同上但用纯仓位对照：A 全买 vs 多信号日只买 1 个（随机 100 种子）的账户差异",
+  "status": "done",
+  "dependsOn": [
+   "r521-h807"
+  ],
+  "action": "",
+  "evidence": [
+   "把「全买」换成「每日随机挑 1 个」，账户变化均值只有 −0.1526/−0.4263/+1.5108pp（全样本 +6.44pp，sd 2.59–54.79）⇒ **「只买 1 个」的仓位/集中度规则本身不产生收益**",
+   "登记为校准基线：以后凡声称「集中持仓带来改善」的结论，先过这条基线再谈名次",
+   "独立种子 424242 复算：+0.00/+0.16/+0.88/−2.96pp，结论一致。lenses/ev523/{{h809_h810.py,h809_h810.json}}；audit round 523"
+  ]
+ },
+ {
+  "id": "r525-h816",
+  "title": "seal 与其他封板质量字段的两端对照：first_limit_up_at 早/晚、break_times 多/少",
+  "status": "done",
+  "dependsOn": [
+   "r524-h813"
+  ],
+  "action": "",
+  "evidence": [
+   "break_times 两端方向与「越少越好」先验**相反**：≤5 端 52 信号/49 笔每笔 +2.1886%（1/3/6 月 +0.35%/+34.89%/+39.08%）；≥10 端 18 信号/18 笔每笔 **+5.4019%**（但 1/3 月 −2.92%/−11.32%）⇒ 不能当单调质量分",
+   "**口径披露**：本轮 z 栏把「全买篮子」与「每日 1 个」随机臂比较，仓位口径不匹配，只作分布参考、不作证据（登记 r526-h817 用匹配口径重做）",
+   "first_limit_up_at 这一臂**本轮未完成**：该字段实为带时区完整时间戳（空值 0.15%），我先用 %H:%M:%S 强解析导致 85/85 变 NaT、误报「全为空」并写错数据需求（已撤回），改用正确解析后脚本在索引上仍报错 ⇒ 首封时间对照留给 r526-h817。lenses/ev526/{{h815_h816.py,h816_first_fixed.py,h816_first_fixed2.py,h815_h816.json}}；audit round 526"
+  ]
+ },
+ {
+  "id": "r528-h822",
+  "title": "给随机臂加「笔数匹配」约束：随机只取与该档同数目的日子，重估 break≤5 的 z",
+  "status": "done",
+  "dependsOn": [
+   "r527-h819"
+  ],
+  "action": "",
+  "evidence": [
+   "**日匹配**（只在策略出手日买、名字在当日全部信号里随机，100 种子）：3 月随机均值 +36.08% vs 策略 +36.36%，**z 仅 0.05**（胜 47/100）、1 月 1.19、6 月 0.49、全样本 1.14",
+   "**笔数匹配**（随机挑同样多交易日 + 随机名字）：z 1.35/1.30/−0.17/−0.36、胜 48/91/46/38",
+   "⇒ 把出手日子对齐后随机挑名字几乎同样好 ⇒ **这条腿的可交易价值主要是「哪些天有这类票」（择时），不是「在这些票里挑谁」**；R527 的 3 月 z 1.78 在笔数对齐后消失。lenses/ev529/{{h821_h822.py,h821_h822.json}}；audit round 529（独立种子 424242 复现 0.05→−0.09 与 1.30→1.14）"
+  ]
+ },
+ {
+  "id": "r531-h828",
+  "title": "把「同等频率 +17.15pp」按 3 个月内的月份拆开，看是否集中在单月",
+  "status": "done",
+  "dependsOn": [
+   "r530-h826"
+  ],
+  "action": "",
+  "evidence": [
+   "3 月窗口内：2026-09 **+13.659pp**（择时 +20.78pp vs 下采样 +7.12pp）、2026-08 −4.517pp、2026-11 −0.187pp",
+   "审计把统计扩到**全部 21 个可比月份**：**正 9 / 负 10 / 零 2**，最好 2024-02 +13.17pp、最差 **2026-07 −20.52pp** ⇒ **月度层面没有稳定的择时优势**",
+   "⇒ R531 的「+17.15pp、86% 种子为正」只是**种子维度**稳定、**时间维度单月支撑** ⇒ 降级为「单月现象、待更长样本」（spec.status_note / spec.closure / README 均已更正）。lenses/ev532/{{h827_h828.py,h827_h828.json}}；audit round 532"
+  ]
+ },
+ {
+  "id": "r534-h834",
+  "title": "按 T+1 当日涨幅分档决定卖点（涨得多 → T+2 收盘卖，否则开盘卖）",
+  "status": "done",
+  "dependsOn": [
+   "r533-h832"
+  ],
+  "action": "",
+  "evidence": [
+   "T+1 收盘相对入场 ≥ +5% 的 **14 笔**改到 T+2 收盘卖（该组每笔 **+10.496%**），其余开盘卖；整臂 82 笔 **+2.1669%**、1/3/6 月 −0.737%/+7.7828%/+52.6599%、全样本 +246.6651%",
+   "相对纯开盘卖判**「待观察」**（1 月 0、3 月 −25.5361pp、6 月 −42.0454pp）⇒ **分档晚卖没有增量**，与 R534「第二天起无漂移」一致。lenses/ev535/{{h833_h834.py,h833_h834.json}}；audit round 535"
+  ]
+ },
+ {
+  "id": "r537-h840",
+  "title": "盘中卖出：T+2 的 10:00 / 11:30 卖（仅用快照已覆盖的分钟线区间），与 T+2 开盘卖比",
+  "status": "done",
+  "dependsOn": [
+   "r536-h838"
+  ],
+  "action": "",
+  "evidence": [
+   "**覆盖率核查通过**：82 笔成交的 (symbol, T+2) 全部能在 minute_bars_packed 找到 09:55–10:30 抽样价（82/82 = 100%，本轮取 5198 行）",
+   "该表是「每天约 20 个随机分钟」的抽样而非连续 1 分钟线，但对「T+2 10 点附近卖」够用 ⇒ 之前「分钟线覆盖不足」的判断在这个用法上不成立",
+   "规则化卖出测试（simulate_rule 的 price 通道）登记为 r538-h841，下一轮做。lenses/ev538/{h839_h840.py,h839_h840.json}；audit round 538"
+  ]
+ },
+ {
+  "id": "r540-h846",
+  "title": "把「入场日日内」拆到 30 分钟粒度：T+1 的 09:30–10:00 / 10:00–11:30 / 13:00–15:00 哪段贡献最大",
+  "status": "done",
+  "dependsOn": [
+   "r539-h844"
+  ],
+  "action": "",
+  "evidence": [
+   "用 feat_minute_daily 固定时刻价算相对入场价（=当日开盘）累计：10:00 **+1.1949%**（中位 +1.4591%）、10:30 +1.5202%、13:00 +1.6957%、14:30 **+2.0528%**、收盘 +1.9160%",
+   "逐段：09:30→10:00 **+1.1949%**、10:00→10:30 +0.3357%、10:30→13:00 +0.1776%、13:00→14:30 +0.3474%、**14:30→15:00 −0.1224%（尾盘回吐）**",
+   "⇒ **62% 的日内涨幅在开盘后 30 分钟完成**，可交易窗口很窄；T+1 不允许当天卖，解释了 R540「隔夜既必要又要付 −0.76pp」。lenses/ev541/{h846_buckets.py,h846_buckets.json}；audit round 541"
+  ]
+ },
+ {
+  "id": "r544-h518",
+  "title": "30 分钟漂移的前置样本复核（2021-11..2023-12）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "2021-11..2023-12（529 天 × 4,840 只、2,560,229 股票日）09:30→10:00 +0.0289%/日（t 1.25、为正 45.3%）、10:00→15:00 +0.0350%（t 0.87）",
+   "分年 2021 +0.112% / 2022 +0.034% / 2023 +0.008%，与 2024-2025 的 +0.074%/日（t 1.22）同向 ⇒ 市场级漂移存在但小且不显著，不构成可交易方向",
+   "lenses/ev545/{unfilled_and_presample.py,unfilled_presample.json}；audit/r545_append.py；提交 6fadfb80"
+  ]
+ },
+ {
+  "id": "r547-h524",
+  "title": "缺口分档过滤的账户诊断：只买「跌开>3% + 高开>3%」两档 vs 全 82 笔",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "两极端档 33 笔每笔 +4.19%、1/3/6 月 +2.96/+39.00/+97.03%、全样本 +210.89%（回撤 −9.78%）",
+   "compare_accounts 对全 82 笔判「改善」（1 月 +3.69pp、3 月 +15.55pp、6 月 +3.17pp，回撤略深 1.5–1.7pp）；但属事后分档、6 月只 +3.17pp ⇒ 只作诊断，需时间外验证",
+   "lenses/ev548/{weakbucket_robust_filter.py,weakbucket_robust_filter.json}；audit/r548_append.py；提交 5b677f82"
+  ]
+ },
+ {
+  "id": "r550-h530",
+  "title": "主腿信号日的「收盘相对 VWAP 偏离」分档与 T+2 开盘卖收益（feat_minute_daily.vwap）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "close/vwap−1 三分位（1.01%/1.51%）：低 28 笔 +1.83%（中位 +1.84%、3 月 +20.92%）、中 27 笔 +2.18%、高 27 笔 +4.06%（中位 +3.23%）⇒ 逐笔单调，低-高差 −2.22pp",
+   "但 3 月窗口高档 −2.36% vs 低档 +20.92% ⇒ 逐笔与近端方向相反，优势集中在较早的笔，不能做过滤",
+   "lenses/ev551/{minute_feature_buckets.py,minute_feature_buckets.json}；audit/r551_append.py；提交 5f352f21"
+  ]
+ },
+ {
+  "id": "r553-h536",
+  "title": "观察项月度重算脚本：缺口极端档过滤（R547–R549）与 VWAP 高低档（R551–R552）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "极端档过滤全样本 33 笔 +4.19% vs 全部 82 笔 +2.68%，最近 3 个月增量 +3.59/+1.19/+3.69pp（仍正）",
+   "VWAP 高低档最近 3 个月 +0.31/−2.95/−5.54pp ⇒ 最近两个月转负，与 2024/2025–26 段「高优于低」相反；逐月表已落盘（25 个有成交月）",
+   "lenses/ev554/{idle_fill_observation.py,idle_fill_observation.json}；audit/r554_append.py；提交 fd9cd0f8"
+  ]
+ },
+ {
+  "id": "r556-h542",
+  "title": "把 R541–R556 发现但本单不做的方向汇总进 directions.md（对外移交清单）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "directions.md 新增 6 条：弱市补位挑月份、月度无候选预警、空仓月机会成本监控、弱市 α 稳定性、circ_mv（需新数据）、研报/两融（需新数据）",
+   "每条含依据（R553–R557）与预计补的差距项（持仓日/单笔收益），本单不再重复做；清单共 19 条",
+   "提交 cb2d8f09"
+  ]
+ },
+ {
+  "id": "r559-h548",
+  "title": "收口修正：2026-05 更正与修正后的 idle/active 聚合写进 README 最终状态 + 只读校验",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "README「月度互补表」说明补 2026-05 更正（原误标有仓）与修正后聚合：空仓 5 个月 +2.50pp/月、有仓 20 个月 +9.70pp/月",
+   "check_monthly_table.py 增「kind=idle ⇔ 主腿笔数 0」校验并通过；spec.closure.monthly_table.kind_rule 落盘；提交 b13efc68"
+  ]
+ },
+ {
+  "id": "r562-h554",
+  "title": "极端缺口档改成「加仓」而非过滤：高开>3%/跌开>3% 的笔用 weight=2",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "33/82 笔（40.2%）极端档，逐笔均值 +4.19% vs 普通 +1.66%；weight=2 后加权 +4.364% vs 全 1 的 +2.678%",
+   "但 compare_accounts 判待观察：1m 0.00pp、3m −1.17pp、6m +7.19pp、全样本 +38.96pp、回撤 +0.44pp ⇒ 不作现役，登记 spec.closure.observation_watch_extra；lenses/ev563/{gap_weight.py,gap_weight.json}；提交 1f9d3d19"
+  ]
+ },
+ {
+  "id": "r565-h560",
+  "title": "主腿日历分档：月初/月末与星期几对每笔收益的影响",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "月初3日 20 笔 +3.365%（中位 +1.923%、正 60%）、月中 52 笔 +2.447%、月末3日 10 笔 +2.503%；星期最好周三 17 笔 +5.04%/82.4%、最差周五 12 笔 +1.198%/58.3%",
+   "置换检验 2000 次：极差 3.842pp vs null 均值 4.076pp、p95 6.851pp、p=0.525 ⇒ 完全在噪声内，无可用效应；lenses/ev566/{calendar_buckets.py,calendar_buckets.json,calendar_perm.py,calendar_perm.json}；提交 ab1cdcda"
+  ]
+ },
+ {
+  "id": "r568-h566",
+  "title": "主腿近期样本体检：1m 3 笔、3m 18 笔是否已衰减到需要收口",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "分年 2024 18 笔 +4.277%（t1.98）、2025 20 笔 +2.699%（t3.06）、2026 44 笔 +2.014%（t2.19）；窗口 1m 3 笔 −0.737%（t−0.4）、3m 18 笔 +3.22%（t2.12）、6m 32 笔 +2.604%（t2.24）、全 82 笔 +2.678%（t3.75）",
+   "⇒ 3m/6m 每笔仍显著为正、2026 全年仍 +2.01%/笔；1 个月仅 3 笔属样本少 ⇒ 继续挖、主判定看 3 个月（spec.closure.main_health）；lenses/ev569/{main_health.py,main_health.json}；提交 07f72d9a"
+  ]
+ },
+ {
+  "id": "r571-h572",
+  "title": "50/50 与基准的月度收益分解：哪几个月贡献/拖累",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "34 个月 17 正/13 负/4 零；按主腿笔数 ≤1 +0.26pp、2–3 +0.88pp、4+ +4.79pp；corr(差,笔数)=+0.373、corr(差,基准月收益)=−0.606",
+   "最好 2024-02 +15.62pp、2026-07 +14.87、2026-08 +12.62；最差 2025-12 −9.95pp（主腿 1 笔）、2026-01 −9.62、2026-03 −9.38 ⇒ 50/50 只在活跃月有正贡献；提交 d52851da"
+  ]
+ },
+ {
+  "id": "r574-h578",
+  "title": "leave_one_out 正式报「去掉主腿会怎样」（组合口径合规项）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "固定资金口径：去掉主腿（50/50→纯基准）1m +9.51/3m +1.89/6m −29.30/全样本 −150.94pp；去掉基准（50/50→纯主腿）1m −9.42/3m −6.60/6m +21.33/全样本 +171.73pp",
+   "⇒ 主腿全样本挣位置、近期不挣；字面 combine 口径 main「改善」/baseline「待观察」但会摊薄低频腿；spec.closure.leave_one_out；提交 f263bbf5"
+  ]
+ },
+ {
+  "id": "r577-h584",
+  "title": "容量表并入 README 最终状态与 directions 的 LON-96 条目（收口）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "README 组合层最终结论增「容量（R577–R578）」条目（容量上界约 1 亿、1 亿下 >5% 剔除后 3m −15pp/全样本 −98pp、小资金优先）",
+   "directions.md 的 LON-96 条目加容量说明；portfolio_final_state 增 capacity 子块；check_portfolio_final 扩展校验（PASS）；提交 090a9d52"
+  ]
+ },
+ {
+  "id": "r580-h590",
+  "title": "容量结论最终收口：README 最终状态 ↔ spec.closure 一致性核对",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "R581 已完成：lenses/ev581/check_consistency.py 核对 README 最终状态 / portfolio_final_state / capacity_curve / handoff 四处关键数字；本轮 check_all consistency PASS"
+  ]
+ },
+ {
+  "id": "r583-h595",
+  "title": "把权重决策表导出为机器可读 JSON（供 LON-96 直接消费）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/ev584/lon96_tables.json（决策表 8 行、容量 6 行、可行区间 6 行）；spec.closure.lon96_tables 指路",
+   "check_lon96_handoff 扩展校验 JSON 与 closure 逐项一致（PASS）；提交 618dc8d3"
+  ]
+ },
+ {
+  "id": "r586-h601",
+  "title": "0.5 亿 × 5% 上限的逐年 3m 窗口与回撤：可行规模的近期体检",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "0.5 亿 × 5% 全样本 258.74%/−12.27%；近 1/3/6 月 7.90/34.24/71.24%（回撤 −3.82/−6.02/−9.50%），3m 只比无约束 35.24% 少 0.99pp",
+   "逐年 2024/2025/2026 36.96/19.60/119.02%（年末 trailing 3m 22.80/12.39/34.24% 全正、回撤 −8.20/−10.18/−9.50% 都 <10.5%）；spec.closure.feasible_recent；lenses/ev587/{feasible_recent.py,feasible_recent.json}；提交 a94db0bf"
+  ]
+ },
+ {
+  "id": "r589-h607",
+  "title": "把 cap_binding（约束比例/腿分布/最大减仓）并入 lon96_tables.json 并校验",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lon96_tables.json 增 cap_binding（63/1904、主腿 0/82、最小权重 0.4029）与 capacity_stress（×1/×2/×4）",
+   "check_lon96_handoff 校验（PASS）；提交 363b68fc"
+  ]
+ },
+ {
+  "id": "r592-h613",
+  "title": "把容量研究收口小结压成 handoff 首屏三行",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "handoff 顶部「三行速览」：可行规模（0.1–0.5 亿/≤5%）、容量形态（3.31% 生效/削峰/×2 触发 −4.27pp/规模不是年份）、禁止误读（三条）",
+   "check_lon96_handoff 校验三行（PASS）；提交 7678cb68"
+  ]
+ },
+ {
+  "id": "r595-h619",
+  "title": "把容量层收口记录并入 LON-96 首屏与 README 索引",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "handoff「三行速览」后加「容量层已收口（R595）：文档与校验链已冻结，数字只随新快照复核」；README 交接索引同步",
+   "check_lon96_handoff 校验该句（PASS）；提交 9a29ce00"
+  ]
+ },
+ {
+  "id": "r597-h625",
+  "title": "50/50 的 block bootstrap 置信区间：34% 的 3m 有多少是运气",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "block=10、2000 次：3m −6.78/11.22/36.09%、6m −3.32/24.78/64.63%、全样本 89.89/258.89/599.39%、回撤 −23.71/−14.81/−9.96%；实际 3m 33.22% 接近 p95",
+   "审计换 block=7/seed=7/800 次独立复算得 3m −7.03/11.52/38.11%，量级一致；lenses/ev599/bootstrap_dd.json；提交 642d1d96"
+  ]
+ },
+ {
+  "id": "r600-h631",
+  "title": "基准跌日加配主腿的事后规则测试（基准 T−1 收益决定 T 日权重）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "1m +18.19/+20.61/+22.75%、3m +37.13/+40.57/+42.53%、6m +48.48/+27.33/+7.19%、全样本 +117.44/+105.25/+84.68%（k=0/0.5/1）；六变体安慰剂最高 88.4% 分位；逐月 10/25；2026 -42.3pp；近 1 月靠 2026-10-12 单日；触发日次日超额 -0.08pp（t=-0.42）⇒ 不采纳（无稳定增量）",
+   "lenses/ev601/switch_final.py|json、switch_rule.py|json、switch_diag.py|json；spec.closure.switch_rule（verdict=weak）；handoff 九之五；audit.json round 601"
+  ]
+ },
+ {
+  "id": "r603-h637",
+  "title": "用可执行的固定权重口径重算权重前沿 8 行与近期最优 w（交给 LON-96 实际可用的权重表）",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "精确开盘→开盘 8 行：3m 36.52/36.51/36.32/35.95/34.69/32.75/31.53/28.64%，全样本 117.44/139.57/162.26/185.28/231.26/275.24/295.73/332.23%，回撤 w=0.8 -8.33% 最优",
+   "审计更正：全样本最高是 w=1.0；3m 无稳健最优（差 0.01pp、由 2026-11-10 一天撑起，去掉后最优 w=0.5）；精确 vs 收盘合成 3m -0.28~-0.65pp、全样本 0.00~+2.40pp；combine 加权两条路都不可用（258.09% / 100.10%）",
+   "lenses/ev604/exact_frontier.py|json、executable_frontier.py|json、weighted_combine.py|json；spec.closure.executable_frontier_604 / weighted_combine_604；handoff 九之十一"
+  ]
+ },
+ {
+  "id": "r606-h643",
+  "title": "派发器版本：按主腿当日成交额占比分层做仓位上限（backlog 同 id 已 done，标题不一致）",
+  "status": "done",
+  "dependsOn": [
+   "r605-h641"
+  ],
+  "action": "",
+  "evidence": [
+   "backlog.jsonl：r606-h643 status=done（R607 w 单调结论），该假设已由 r620-h685 容量上限版覆盖并在 R621–R622 完成"
+  ]
+ },
+ {
+  "id": "r607-h647",
+  "title": "925-caliber restatement of the R604 frontier, R606 three paths and handoff tables 1 and 2-2",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "Same window 930 to 925: main 3m 32.15% to 18.69%, full 332.23% to 213.83%; base 25.24% to 8.14%, 112.51% to 134.17%; w=0.5 synthetic 30.94% to 14.68%, 225.14% to 187.38%.",
+   "Old tables void with three banners; main dominance holds, mixing cuts drawdown only for w≥0.5; audit A1 valuation fix applied, endpoints unchanged.",
+   "spec.closure.restate_925_608 and rebalance_fix_608; audit/a608/."
+  ]
+ },
+ {
+  "id": "r609-h653",
+  "title": "把重合/LOO/逐月写进交接页表一与二之二并加四地一致 check",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/ev610/check_handoff_tables.py：handoff ↔ spec.closure ↔ README ↔ 源 json 四处对账 201 项全过，已接入 check_all 第 20 组",
+   "表一增交付/重合/LOO/逐月补充表 + 25 行逐月表（同日同票 1 笔、新增持有日 431/484、日相关 −0.0991、LOO 去主腿 待观察/去基准腿 变差）；二之二增交付 w / 与主腿日相关 / 925 周频三列 / LOO",
+   "顺带修掉 R609 更正漏落的三处旧数字（closure post_closure 463/517 与 −0.0983、backlog r608-h650 463/517、handoff 九之十七③ 残留 89.6%）；spec.closure.handoff_tables_610"
+  ]
+ },
+ {
+  "id": "r611-h659",
+  "title": "2026-09 最差月逐日归因 + 单测「只用基准腿 dd60 ≤ −3%」的触发",
+  "status": "done",
+  "dependsOn": [
+   "r610-h655"
+  ],
+  "action": "",
+  "evidence": [
+   "归因（以上月末为基）：纯主腿 2026-09 −0.29%/MTD −10.61%、纯基准 +14.19%（−10.49%）、w=0.5 +7.40%（−4.57%）；最差日 2026-09-15 −7.06%、负收益 86.4% 来自最差 3 天；7 个信号成交 6 笔（000980.SZ 未成交）、6 笔合计 −0.29%、NAV 贡献 +0.66% ⇒ 最差月是盯市路径不是亏损",
+   "规则：dd60≤−3%→w=0.7 锁 5 天，触发 421/491 天（8 簇、最长 235 天）、3m 13.98%、6m 37.91%、全 179.40%、MDD −9.61%、换手 576.7%、规则下 2026-09 +1.49%/−5.60%、安慰剂 200 次 32.0 分位 ⇒ 不采纳",
+   "审计更正：最差月 −10.61→−8.28 是平均仓位降到 74.1%，同交付常数 w=0.741 全面更好（日频 16.34/193.19/−9.11）；−5%/−8% 两格不作成果",
+   "产出 dd611.py|json、prereg_dd611.json、fix_attr612.py、closure.pure_dd_trigger + worst_month_attribution_612、trials r611-h659_pure_dd_trigger（7 变体）"
+  ]
+ },
+ {
+  "id": "r613-h665",
+  "title": "最差 MTD 最小常数前沿（w 0.60–1.00）并拟合静态映射 w←dd60",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "最差月 MTD 单调 −10.61%→−7.46%（w0.80）→−6.85%（w0.60）",
+   "同交付 w=0.75：3m 15.96/全 204.23/最差 MTD −7.27%，对 dd60 13.98/179.40/−8.32 三项全胜；w=0.60–0.85 六档都赢",
+   "分段映射 13.47/178.19、换手 1346.8% 反更差；审计限制：支配只在 925 只搬现金口径成立",
+   "closure.pool_rules_614.h665_mtd_frontier；audit A3"
+  ]
+ },
+ {
+  "id": "r615-h671",
+  "title": "连续映射的参数随基准腿波动分位切换（外生两套参数）",
+  "status": "done",
+  "dependsOn": [
+   "r613-h664"
+  ],
+  "action": "",
+  "evidence": [
+   "按登记口径（60 日波动分位 + 60 日映射）：switch 16.66/224.83、mirror 10.29/226.96 ⇒ 切换没有增量",
+   "原 σ20 版 20.11/242.47 与 24.64/261.09 不复现；3m 窗口内切换与单一 b 的 w 相差 0 天；低波动占比实测 44.4%",
+   "closure.pool_rules_616.h671_regime_switch；audit/a616/verdict.json A2"
+  ]
+ },
+ {
+  "id": "r617-h677",
+  "title": "用「波动分位 × 动量分位」二维四格分段 b 替代连续 b_t",
+  "status": "done",
+  "dependsOn": [
+   "r616-h675"
+  ],
+  "action": "",
+  "evidence": [
+   "四格跨 floor 变号（+0.13/+5.40pp vs -1.78/-2.36pp），同平均常数也变号 ⇒ 不成立；两格 3/1 只作线索（2025≈0、2026 集中、top5 日 65/71%），移交 r618-h679",
+   "lenses/ev618/rules618.json(h677)、prereg_h677.json、audit/a618/verdict.json"
+  ]
+ },
+ {
+  "id": "r619-h683",
+  "title": "两格映射改月频再平衡（月末定权重、月内不动）",
+  "status": "done",
+  "dependsOn": [
+   "r618-h679"
+  ],
+  "action": "",
+  "evidence": [
+   "backlog 已标 falsified（月频再平衡未跑出增量），本轮不重做",
+   "backlog.jsonl r619-h683"
+  ]
+ },
+ {
+  "id": "r621-h688",
+  "title": "基准腿行业口径第二版：行业内按 total_mv 加权",
+  "status": "done",
+  "dependsOn": [
+   "r620-h686"
+  ],
+  "action": "",
+  "evidence": [
+   "6 构造同一 30 候选：eq_eq 22.85/80.86（−0.19/−2.70pp）、eq_mv 21.80/79.86（−4.97/−13.95pp）、mv_eq 27.43/90.02（+1.78/−3.35pp）、mv_mv 32.49/111.16（+4.82/+10.23pp、PBO 0.426）",
+   "审计更正：mv_mv 与整篮子 total_mv 加权到 2 位小数相同（行业分组被约掉，权重最大差 2.2e-16），基准腿自身 3m 仅 0.37% ⇒ 增量来自波动结构；登记 r622-h691 复核"
+  ]
+ },
+ {
+  "id": "r623-h696",
+  "title": "整篮子市值加权增量的逐日/分层归因：是集中度还是波动结构",
+  "status": "done",
+  "dependsOn": [
+   "r622-h691"
+  ],
+  "action": "",
+  "evidence": [
+   "混合账户（含主腿）：等权 0.95/8.48/26.60/144.87%（MDD −14.21%）、total_mv −4.43/−7.15/6.18/143.20%（MDD −23.19%）、剔最大 1 只 −0.03/19.80/41.91/155.39%、只买最小 1 只 16.78/37.42/53.39/206.97%（MDD −57.54%）、前 1 大 mv −3.34/−6.03/1.64/124.46%",
+   "纯基准腿（1826 笔）eq 104.58% / mv 106.94%（+2.36pp）⇒ mv−eq 符号随口径翻转；mv 与 eq 逐笔平均毛收益同为 0.363% ⇒ 集中度是唯一通道而非被排除通道",
+   "「只买最小 1 只」缩回等权单票名义金额后全样本只剩 100.37%（MDD −11.36%）< eq 144.87%，同规模空假设 3m z 1.29、全样本 z 0.00；MDD −57.54%、正收益月 14/25 vs 18/25 ⇒ 不是增量",
+   "退化：每天 4 只 388 天 / 3 只 90 天 / 2 只 2 天 ⇒ top10_rest ≡ mv_all、drop5 ≡ drop20 ≡ 只买最小 1 只；backlog 标 falsified，closure.r626_mv_attr"
+  ]
+ },
+ {
+  "id": "r626-h702",
+  "title": "当日信号只数 n 是不是因子：n=2/3/4 分档 + 账户口径条件化 + 精确空假设",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "n=4/3/2 = 388/90/2 天；n=3 每笔 +1.452% vs n=4 +0.175%（t 2.33）；4 条规则 3m |z|≤2.12（Holm(4)=2.50 全不过），n3_half 全样本 −46.36 与 3m +5.86 方向相反 ⇒ weak",
+   "lenses/ev701/res702.json；spec.closure.r627_n_factor"
+  ]
+ },
+ {
+  "id": "r629-h711",
+  "title": "R627 三条滚动曲线在 half_rotation 下重算",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "single 逐位复现（0.00pp）；half eq −7.20/106.53、neutral 7.98/19.64、non-neutral 9.32/102.66；同段 eq 96.87/86.82 ⇒ 倾斜 +33.75/+15.84pp；翻面恒等式，session 锚定 1.52pp",
+   "lenses/ev704/res706.json、res710_samespan.json；spec.closure.r630_half_rotation_curves"
+  ]
+ },
+ {
+  "id": "r632-h719",
+  "title": "无信号日现金买基准腿：量化 cash 与 engine622 的部署率差距",
+  "status": "done",
+  "dependsOn": [],
+  "action": "",
+  "evidence": [
+   "lenses/ev706/r719_721.py + res719_721.json（h719 段）",
+   "exposure 是持仓日占比（98.97/99.18/10.55%），原推断被 A633 推翻撤回；实测平均资金占用 44.43/20.87/4.78% NAV、峰值 84.92/38.90/52.27 ⇒ R632「w=0.5 只部署 21–25%」成立",
+   "cap 0.5→1.0 只是仓位翻倍（3m 2.40→8.48、MDD −7.65→−14.21）；纯基准腿 3m 5.26→2.39、570/1826 笔不足一手；真卡点 09:25 现金时点（1 日持有上限约 50%）",
+   "同批基准腿 11:30 卖 3m +5.26/all +104.92 vs 开盘卖 −11.22/−22.57（逐笔 48.8% 为正 ⇒ 账户口径）",
+   "spec.closure.r632_h719 + audit 第 4–6 条（1 推翻 / 1 削弱 / 1 成立）"
+  ]
+ },
+ {
+  "id": "r634-h725",
+  "title": "早盘止盈的滚动检验 + 主系统 LON-221 两条卖法基准 compare_accounts",
+  "status": "ready",
+  "dependsOn": [],
+  "action": "下一轮：把「10:00 看、10:30 卖」做成 ≥20 候选滚动检验（k 网格 × 触发条件），并用 compare_accounts 对 LON-221 原线上 T+2 11:30 与现行卖法各比一次，改善了才交研究主管另开单。",
+  "evidence": [
+   "R634 h724：k=0.5% single 3m 5.26→9.46、all 104.92→119.77、half −7.20→−4.73；但 n_eff≈1、增量集中 top10 天"
+  ]
+ }
+]

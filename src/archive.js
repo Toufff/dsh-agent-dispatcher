@@ -10,6 +10,7 @@ import { writeJson } from './store.js';
  *   tasks/<id>.json        full task at the time it left the hot state
  *   index.jsonl            one stub per archived task (lineage, issue, sessions) - kept in memory
  *   rounds/<taskId>.jsonl  automatic-round results older than the latest few, by sequence number
+ *   work-items/<taskId>.jsonl  completed workItems folded out of the hot ledger (src/work-items.js)
  *   outbox.jsonl           finished Linear write-backs (their ids stay known as this host's own comments)
  *
  * Nothing is ever deleted or rewritten in place. Every append is fsynced before the hot state drops the
@@ -20,6 +21,7 @@ export class ArchiveStore {
   async open() {
     await mkdir(path.join(this.directory, 'tasks'), { recursive: true });
     await mkdir(path.join(this.directory, 'rounds'), { recursive: true });
+    await mkdir(path.join(this.directory, 'work-items'), { recursive: true });
     const stubs = await this.lines('index.jsonl');
     this.index = new Map(stubs.map(stub => [stub.id, stub]));
     this.log = stubs.filter((stub, i) => stubs.findLastIndex(s => s.id === stub.id) === i);
@@ -88,6 +90,23 @@ export class ArchiveStore {
   async archiveRounds(taskId, first, rounds) {
     await this.append(path.join('rounds', `${taskId}.jsonl`), rounds.map((round, i) => ({ seq: first + i, round })));
     this.cache.delete(`rounds:${taskId}`);
+  }
+  /** Completed workItems folded out of a task's hot ledger, appended per task (never rewritten). */
+  async archiveWorkItems(taskId, items, at = new Date().toISOString()) {
+    if (!/^[\w-]+$/.test(taskId || '')) throw new Error(`Task id ${JSON.stringify(taskId)} cannot be archived`);
+    await this.append(path.join('work-items', `${taskId}.jsonl`), items.map(item => ({ ...item, archivedAt: at })));
+    this.cache.delete(`work-items:${taskId}`);
+  }
+  /** Folded workItems of a task, oldest first (last line per id wins, so a repeated append is harmless). */
+  workItems(taskId) {
+    if (!/^[\w-]+$/.test(taskId || '')) return [];
+    return this.cached(`work-items:${taskId}`, () => {
+      let text = '';
+      try { text = readFileSync(path.join(this.directory, 'work-items', `${taskId}.jsonl`), 'utf8'); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      const byId = new Map(parseLines(text).filter(line => line?.id).map(line => [line.id, line]));
+      return [...byId.values()];
+    });
   }
   async archiveOutbox(items, at = new Date().toISOString()) {
     const lines = items.map(item => ({ ...item, archivedAt: at }));

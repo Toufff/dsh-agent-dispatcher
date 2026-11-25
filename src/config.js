@@ -20,6 +20,12 @@ export const projectSchema = z.object({
     reviewComments: z.boolean().optional(),
     // Audit rounds (fresh session, new wake-up count) allowed after maxWakeups; then comments are held.
     maxAudits: z.number().int().min(0).max(20).optional(),
+    // Completed workItems are history: once a task carries more than `threshold` done entries (default 200),
+    // the oldest ones are folded to id + one-line title + one evidence line, and the complete entries move to
+    // the archive (src/work-items.js). enabled=false keeps the whole ledger in the task, as before.
+    workItemArchive: z.object({ enabled: z.boolean().optional(),
+      threshold: z.number().int().min(1).max(100000).optional(), keep: z.number().int().min(0).max(100000).optional(),
+      evidenceChars: z.number().int().min(20).max(1900).optional() }).strict().optional(),
     // Owner shares the receiver's Linear account: its comments after a settled round also continue.
     trustReceiverComments: z.boolean().optional(),
     selfCommentPrefix: z.string().max(40).optional(),
