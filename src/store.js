@@ -51,13 +51,5 @@ export async function retrying(write, delay = ms => new Promise(resolve => setTi
   }
 }
 
-/** Cross-process exclusion. Stale locks require explicit recovery after confirming the owner is gone. */
-export async function acquireLease(directory) {
-  await mkdir(directory, { recursive: true });
-  const file = path.join(directory, 'host.lock');
-  let handle;
-  try { handle = await open(file, 'wx', 0o600); }
-  catch (e) { if (e.code === 'EEXIST') throw new Error('Dispatcher host lock exists. Stop the other host or recover its stale lock before restarting.'); throw e; }
-  await handle.writeFile(JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
-  return async () => { await handle.close(); await unlink(file); };
-}
+// Cross-process exclusion (host.lock, with stale-owner takeover and PID-reuse detection) lives in host-lease.js.
+export { acquireLease } from './host-lease.js';

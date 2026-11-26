@@ -6,6 +6,21 @@ const pending = agent => [...agent.inbox.nextTurn, ...agent.inbox.nextStep];
 // Work that keeps a Session from accepting a new round. Non-user next-step context (for example a
 // background-subagent failure notice) never starts a turn on an idle Agent, so it must not block.
 const blocking = agent => [...agent.inbox.nextTurn, ...agent.inbox.nextStep.filter(m => m.source?.kind === 'user')];
+
+/**
+ * DSH message sources that are host-generated context notices, never work: background job completions
+ * (dsh-tool-jobs; in `quiet` delivery they wait in the queue of an idle agent "until something else wakes it"),
+ * the request clock, runtime context, working-directory transitions and the repeated-tool reminder. Each is a
+ * `ContextFormed` source of its plugin (MessageSourceMap). Deliberately excluded because they carry or start
+ * work: user prompts (any `user` kind, dispatcher or manual), approval and question replies, schedule, tool-goal,
+ * cordis-host-runner, and every kind not listed here.
+ */
+export const SYSTEM_NOTICE_KINDS = new Set(['tool-jobs', 'time-context', 'runtime-context', 'working-directory', 'repeat-tool-reminder']);
+/** Provably a system notice: a listed kind, with no prompt correlation and no submitting principal. */
+export const isSystemNotice = message => SYSTEM_NOTICE_KINDS.has(message?.source?.kind)
+  && message.source.rpcId === undefined && message.source.principal === undefined;
+// How long an idle session may be held busy only by queued items before the residual check acts (default).
+const RESIDUAL_MINUTES = 10;
 function coldPending(events) {
   const queues = new Map();
   for (const event of events) if (event.type === 'agent/inbox/spliced') {
@@ -43,7 +58,31 @@ export function askedQuestion(events = []) {
 const HISTORY_PAGE = 1000;
 
 export class DshAdapter {
-  constructor(ctx, config = {}) { this.ctx = ctx; this.config = config; }
+  constructor(ctx, config = {}, { now = Date.now } = {}) { this.ctx = ctx; this.config = config; this.now = now; this.residualSince = new Map(); }
+
+  /**
+   * A busy attempt whose session is idle (no active turn) but still has queued items. Only after the session has
+   * looked like that for residualNoticeMinutes (config, default 10) in this host: when every queued item is a
+   * provable system notice they are removed (the in-memory form of session/updateQueue remove) and the attempt is
+   * ready, with the removed items reported as `cleared`. Anything ambiguous is left in place and reported as `stuck`.
+   */
+  residual(attempt, agent, items) {
+    const sessionId = attempt.sessionId, now = this.now();
+    if (!this.residualSince.has(sessionId)) this.residualSince.set(sessionId, now);
+    const since = this.residualSince.get(sessionId);
+    const minutes = Number.isFinite(this.config.residualNoticeMinutes) ? this.config.residualNoticeMinutes : RESIDUAL_MINUTES;
+    if (now - since < minutes * 60_000) return { status: 'busy' };
+    const describe = m => ({ id: m.id, kind: m.source?.kind ?? 'unknown', target: agent.inbox.nextTurn.includes(m) ? 'nextTurn' : 'nextStep' });
+    const ambiguous = items.filter(m => !isSystemNotice(m));
+    const stuck = extra => ({ status: 'busy', stuck: { since: new Date(since).toISOString(), items: items.map(describe), ...extra } });
+    if (ambiguous.length || typeof agent.inbox.remove !== 'function') return stuck({ reason: ambiguous.length ? 'ambiguous-queued-items' : 'queue-removal-unavailable' });
+    const cleared = items.map(describe);
+    try { for (const message of items) agent.inbox.remove(message.id); }
+    catch { return stuck({ reason: 'queue-removal-failed' }); }
+    if (agent.status !== 'idle' || blocking(agent).length) return stuck({ reason: 'queue-not-empty-after-removal' });
+    this.residualSince.delete(sessionId);
+    return { status: 'ready', cleared };
+  }
 
   /**
    * Durable session events (and the session header when cheaply known).
@@ -177,7 +216,13 @@ export class DshAdapter {
   async reconcile({ attempt }) {
     const agent = this.ctx.agents?.get(attempt.sessionId);
     // A detached Agent is not in memory; let start() re-resolve it instead of waiting forever.
-    if (attempt.status === 'busy') return { status: !agent || (agent.status === 'idle' && !blocking(agent).length) ? 'ready' : 'busy' };
+    if (attempt.status === 'busy') {
+      const items = agent ? blocking(agent) : [];
+      if (!agent || (agent.status === 'idle' && !items.length)) { this.residualSince.delete(attempt.sessionId); return { status: 'ready' }; }
+      // An active turn is real work: the residual clock only runs while the session is idle.
+      if (agent.status !== 'idle') { this.residualSince.delete(attempt.sessionId); return { status: 'busy' }; }
+      return this.residual(attempt, agent, items);
+    }
     // Cheap answers first: reading the whole session history every pass for every running task was the bulk of
     // a reconcile. The prompt still queued in the live inbox proves admission; a live running Agent whose
     // admission this adapter already confirmed is still on the round.

@@ -39,7 +39,8 @@ export default class AgentDispatcher extends TypertRemoteService {
   constructor(ctx, config = {}) {
     super(ctx, 'agentDispatcher');
     const directory = config.directory || path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'agent-dispatcher');
-    this.ready = acquireLease(directory).then(async release => {
+    const leaseLog = message => { try { ctx.logger?.('agent-dispatcher')?.warn?.(message); } catch { /* logging is optional */ } };
+    this.ready = acquireLease(directory, { log: leaseLog }).then(async release => {
       this.release = release;
       const log = message => { try { ctx.logger?.('agent-dispatcher')?.warn?.(message); } catch { /* logging is optional */ } };
       const archive = await new ArchiveStore(path.join(directory, 'archive')).open();

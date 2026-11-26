@@ -255,6 +255,10 @@ export class Runtime {
       return t.attention && !dormantHistory && !(t.wait?.status === 'invalid' || t.wait?.status === 'expired');
     })
       .map(t => `${t.issue?.identifier || t.title}: ${t.attention.reason}；下一责任：${t.attention.owner}。`);
+    // A session held busy by queued items that are not provably system notices (left in place, see DshAdapter.residual).
+    const residualErrors = state.tasks.filter(t => currentTask(t, state) && t.status === 'busy' && t.attempts?.at(-1)?.stuck)
+      .map(t => { const s = t.attempts.at(-1).stuck; const kinds = [...new Set((s.items || []).map(i => `${i.kind}@${i.target}`))].join(', ');
+        return `${t.issue?.identifier || t.title}: 会话空闲但队列里有无法确认为系统通知的条目（${kinds || '未知'}，自 ${s.since}，${s.reason}），未自动清除；请人工检查会话队列。`; });
     // Archived history is listed by stub; the full task and its older rounds are fetched on demand.
     const archived = archivedStubs(state).map(({ id, title, status, projectId, issue, createdAt, endedAt, supersededBy, archivedAt }) =>
       ({ id, title, status, projectId, issue, createdAt, endedAt, supersededBy, archivedAt }));
@@ -264,7 +268,7 @@ export class Runtime {
     const identityErrors = linearIdentity.filter(c => c.error).map(c => `Linear 凭据 ${c.id || c.mode}：${c.error}`);
     return { ...state, tasks, archived, drain, restart: restartReadiness(state), focus: focusView(state), linearSync: undefined, syncStatus, linearIdentity, health: this.health,
       // Settings fields this bundle does not understand (kept, no effect until a rebuild/restart).
-      settingsUnknownKeys: unknownSettingKeys(state.settings), errors: [...this.errors, ...identityErrors, ...reportErrors, ...monitorErrors, ...expired, ...attentionErrors, ...notificationErrors, ...reviewLimits] };
+      settingsUnknownKeys: unknownSettingKeys(state.settings), errors: [...this.errors, ...identityErrors, ...reportErrors, ...monitorErrors, ...expired, ...attentionErrors, ...notificationErrors, ...reviewLimits, ...residualErrors] };
   }
   sharedRead(key, operation, ttl = 0) {
     const old = this.reads.get(key);
