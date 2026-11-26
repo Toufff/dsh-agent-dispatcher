@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { cp, mkdtemp } from 'node:fs/promises';
+import { cp, mkdtemp, rm } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -15,10 +15,12 @@ const source = process.env.DSH_ACCEPT_STORE_COPY, base = process.env.DSH_ACCEPT_
 const here = path.dirname(fileURLToPath(import.meta.url)), code = path.resolve(here, '..', '..');
 const run = async root => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'dispatch-copy-'));
-  await cp(source, dir, { recursive: true });
-  const { stdout } = await promisify(execFile)(process.execPath, [path.join(here, 'store-copy.mjs'), '--run', '--code', root,
-    '--copy', path.join(dir, 'agent_dispatcher_v2'), '--archive', path.join(dir, 'archive'), '--cycles', '6'], { maxBuffer: 64 << 20 });
-  return JSON.parse(stdout);
+  try {
+    await cp(source, dir, { recursive: true });
+    const { stdout } = await promisify(execFile)(process.execPath, [path.join(here, 'store-copy.mjs'), '--run', '--code', root,
+      '--copy', path.join(dir, 'agent_dispatcher_v2'), '--archive', path.join(dir, 'archive'), '--cycles', '6'], { maxBuffer: 64 << 20 });
+    return JSON.parse(stdout);
+  } finally { await rm(dir, { recursive: true, force: true }); }   // the copy holds real task data: never leave it behind
 };
 
 test('(g) a copy of the real store loads with the new code and behaves exactly like main', { skip: !source || !base }, async () => {

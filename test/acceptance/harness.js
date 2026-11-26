@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { TaskStore } from '../../src/state-store.js';
 import { ArchiveStore } from '../../src/archive.js';
 import { openTaskDomain, RecordDomainBackend, TASK_DOMAIN } from '../../src/migration.js';
@@ -189,7 +189,7 @@ export async function world({ settings = s => s, focusJudge, env = ENV, linear =
   w.snap = () => w.runtime.snapshot();
   w.tasks = async identifier => (await w.snap()).tasks.filter(t => t.issue?.identifier === identifier);
   w.last = async identifier => (await w.tasks(identifier)).at(-1);
-  w.close = async () => { await w.runtime.notifications.pending?.catch(() => {}); };
+  w.close = async () => { await w.runtime.notifications.pending?.catch(() => {}); await rm(directory, { recursive: true, force: true }).catch(() => {}); };
   await w.boot();
   return w;
 }
