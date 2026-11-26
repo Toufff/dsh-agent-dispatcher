@@ -328,7 +328,7 @@ export class Dispatcher {
       // Residual system notices the adapter removed from an idle session's queue (see DshAdapter.residual).
       if (Array.isArray(result.cleared) && result.cleared.length)
         task.events.push({ action: 'residual-notices-cleared', attemptId: attempt.id, sessionId: attempt.sessionId,
-          items: result.cleared.slice(0, 20).map(({ id, kind, target }) => ({ id, kind, target })), at: new Date().toISOString() });
+          items: result.cleared.slice(0, 20).map(({ id, kind, target, text }) => ({ id, kind, target, ...(typeof text === 'string' && text ? { text: text.slice(0, 2000) } : {}) })), at: new Date().toISOString() });
       task.attempts.pop(); task.status = 'queued';
     } else {
       this.#apply(task, attempt, result);
