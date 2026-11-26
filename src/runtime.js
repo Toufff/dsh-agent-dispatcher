@@ -5,6 +5,8 @@ import { Dispatcher, terminal, globalLimit, startLimit } from './dispatcher.js';
 import { is, statusesWith, TASK_STATES, RESUMABLE_ATTEMPT, LIVE_WAIT, WATCHED_WAIT } from './states.js';
 import { automaticBlock, blockError, clearHold, restartReadiness, AUTOMATIC, HOLD_ERROR, DRAIN_ERROR } from './hold.js';
 import { explainTask, effectiveFollowup, migrateUserStops } from './explain.js';
+import { focusActions, applyFocusActions, focusCommand, recordJudgement, focusView, judgeInput, localCandidate, relatedByRules, focusHeld } from './focus.js';
+import { commandJudge } from './focus-judge.js';
 import { outcomeProtocol, parseOutcome, inspectOutcome, outcomeReports } from './outcome.js';
 import { parseSettings, unknownSettingKeys } from './config.js';
 import { CliAdapter } from './adapters/cli.js';
@@ -155,9 +157,12 @@ export function issuePrompt(issue) {
   return `${id}${issue.title}${link}\n\n${issue.description ?? ''}\n\nReturn a concise implementation and verification summary.`;
 }
 
+const FOCUS_COMMANDS = new Set(['focus-set', 'focus-add', 'focus-remove', 'focus-clear', 'focus-approve', 'focus-reject']);
+
 export class Runtime {
-  constructor({ store, ctx = {}, directory, linearFactory = token => new LinearClient(token), env = process.env, registry, commentSweepMs = COMMENT_SWEEP_MS }) {
+  constructor({ store, ctx = {}, directory, linearFactory = token => new LinearClient(token), env = process.env, registry, commentSweepMs = COMMENT_SWEEP_MS, focusJudge = commandJudge }) {
     this.store = asStateStore(store); this.ctx = ctx; this.directory = directory; this.env = env; this.commentSweepMs = commentSweepMs;
+    this.focusJudge = focusJudge; this.focusJudging = null; this.focusContexts = { revision: null, map: new Map() };
     this.linearFactory = linearFactory; this.adapters = {}; this.health = {}; this.errors = [];
     this.sync = new LinearSync(this); this.reads = new Map(); this.notifications = new Notifications(this);
     this.registry = registry || new AdapterRegistry();
@@ -245,7 +250,7 @@ export class Runtime {
     const archived = archivedStubs(state).map(({ id, title, status, projectId, issue, createdAt, endedAt, supersededBy, archivedAt }) =>
       ({ id, title, status, projectId, issue, createdAt, endedAt, supersededBy, archivedAt }));
     const drain = state.drain?.on ? state.drain : { on: false };
-    return { ...state, tasks, archived, drain, restart: restartReadiness(state), linearSync: undefined, syncStatus, health: this.health,
+    return { ...state, tasks, archived, drain, restart: restartReadiness(state), focus: focusView(state), linearSync: undefined, syncStatus, health: this.health,
       // Settings fields this bundle does not understand (kept, no effect until a rebuild/restart).
       settingsUnknownKeys: unknownSettingKeys(state.settings), errors: [...this.errors, ...reportErrors, ...monitorErrors, ...expired, ...attentionErrors, ...notificationErrors, ...reviewLimits] };
   }
@@ -385,6 +390,10 @@ export class Runtime {
         task.events.push({ action: 'clear-resume', previous, expiry: Boolean(request.expiry), at: new Date().toISOString() });
       }, { durable: true });
     }
+    else if (FOCUS_COMMANDS.has(request.action)) {
+      await this.dispatcher.update(state => { focusCommand(state, request); }, { durable: true });
+      this.focusContexts = { revision: null, map: new Map() };
+    }
     else if (request.action === 'drain' || request.action === 'undrain') {
       await this.dispatcher.update(state => {
         if (request.action === 'drain') state.drain = { on: true, at: new Date().toISOString(), ...(request.reason ? { reason: String(request.reason).slice(0, 300) } : {}) };
@@ -518,6 +527,9 @@ export class Runtime {
     }
     else if (request.action === 'retry') await this.retry(request.id);
     else await this.dispatcher.action(request.id, request.action, { confirmedIdle: request.confirmedIdle, reason: request.reason });
+    // Focus mode: an owner's own retry / continue / unhold of an issue puts that issue in focus (it is what the owner
+    // asked to run). Runtime-made continuations (AUTOMATIC) never do.
+    if (!request[AUTOMATIC] && ['retry', 'continue', 'unhold'].includes(request.action) && request.id) await this.focusOwnerAdd(request.id, request.action);
     // A command's changes are durable before it returns, even when it ran inside a deferred cycle.
     await this.dispatcher.flush();
     return this.snapshot();
@@ -1222,6 +1234,68 @@ export class Runtime {
       return { tasks: plan.tasks.length, rounds: plan.rounds.reduce((n, r) => n + r.count, 0), outbox: plan.outbox.length };
     }, { durable: true });
   }
+  async focusOwnerAdd(id, by) {
+    const state = await this.store.read();
+    const identifier = findTask(state, id)?.issue?.identifier;
+    if (!state.focus?.enabled || !identifier || state.focus.issues.includes(identifier.toUpperCase())) return;
+    await this.dispatcher.update(s => { focusCommand(s, { action: 'owner-add', issues: [identifier], by }); }, { durable: true });
+  }
+  /**
+   * Focus pass (each cycle, before tick): sets / releases focus holds and audits related decisions, then starts at
+   * most one asynchronous relatedness evaluation (single-flight). Never waits for the judge.
+   */
+  async focusPass() {
+    const read = await this.store.read();
+    if (!read.focus?.enabled && !read.tasks.some(focusHeld)) return;
+    const { actions, judge } = focusActions(read);
+    if (actions.length) await this.dispatcher.update(state => { applyFocusActions(state); });
+    if (this.focusJudging || !judge.length) return;
+    const item = judge[0];
+    this.focusJudging = this.focusEvaluate(item)
+      .catch(error => this.dispatcher.update(state => { recordJudgement(state, item, { verdict: 'error', by: 'judge', reason: String(error?.message || error).slice(0, 300) }); }).catch(() => {}))
+      .finally(() => { this.focusJudging = null; });
+  }
+  /** Bounded Linear read for focus rules; null when unavailable (rules then use local data only). */
+  async focusLinear(state, task, ref) {
+    if (state.settings.focus?.linearContext === false) return null;
+    const project = state.settings.projects.find(p => p.id === task.projectId);
+    if (!project?.linear) return null;
+    let client;
+    try { client = this.client(project.linear); } catch { return null; }
+    if (typeof client.focusContext !== 'function') return null;
+    let timer;
+    try {
+      return await Promise.race([client.focusContext(ref), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), 20000); })]);
+    } catch { return null; } finally { clearTimeout(timer); }
+  }
+  /** One relatedness evaluation: rules on Linear context, then the judge. Result recorded per (issue, revision). */
+  async focusEvaluate(item) {
+    const state = await this.store.read();
+    const task = state.tasks.find(t => t.id === item.taskId);
+    if (!task || state.focus?.revision !== item.revision || !state.focus.enabled) return;
+    const local = localCandidate(task, state);
+    const remote = await this.focusLinear(state, task, task.issue?.id || item.identifier);
+    const candidate = { ...local, ...(remote ? { title: remote.title || local.title, description: [remote.description, local.description].filter(Boolean).join('\n\n').slice(0, 24000),
+      parent: remote.parent, children: remote.children, comments: [...(remote.comments || []), ...local.comments] } : {}) };
+    if (this.focusContexts.revision !== item.revision) this.focusContexts = { revision: item.revision, map: new Map() };
+    const contexts = {};
+    for (const f of state.focus.issues.slice(0, 30)) {
+      if (!this.focusContexts.map.has(f)) this.focusContexts.map.set(f, await this.focusLinear(state, task, f));
+      contexts[f] = this.focusContexts.map.get(f);
+    }
+    const rule = relatedByRules({ focus: { issues: state.focus.issues, contexts }, candidate });
+    let decision;
+    if (rule) decision = { ...rule, by: 'rule' };
+    else {
+      const secretKeys = state.settings.projects.flatMap(p => p.linear ? [p.linear.tokenEnv] : []);
+      try {
+        const verdict = await this.focusJudge(judgeInput(state, candidate), { settings: state.settings, env: this.env, secretKeys });
+        if (!['related', 'unrelated', 'uncertain'].includes(verdict?.verdict)) throw new Error('判定结果无效');
+        decision = { verdict: verdict.verdict, by: 'judge', reason: String(verdict.reason || '').slice(0, 500) || '（判定未给理由）' };
+      } catch (error) { decision = { verdict: 'error', by: 'judge', reason: String(error?.message || error).slice(0, 300) }; }
+    }
+    await this.dispatcher.update(s => { recordJudgement(s, item, decision); });
+  }
   async cycle() {
     if (this.cycling) return;
     this.cycling = true;
@@ -1237,6 +1311,7 @@ export class Runtime {
       await phase('Local timers', () => this.monitor({ localOnly: true }));
       await phase('Linear sync', () => this.sync.run());
       // Queued rounds start before the (possibly long) comment pass, not after it.
+      await phase('Focus', () => this.focusPass());
       await phase('Execution', async () => { await this.dispatcher.tick(); await this.assess(); });
       await phase('Review comments', () => this.reviewComments());
       await phase('Data wakes', () => this.dataWakes());

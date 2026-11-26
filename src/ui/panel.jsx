@@ -4,6 +4,7 @@ import { waitView, formatTime, waitDraftFor } from './wait-view.js';
 import { WaitDetails } from './wait-details.jsx';
 import { ProjectSettings } from './project-settings.jsx';
 import { ConnectionStatus } from './connection-status.jsx';
+import { FocusControl } from './focus-control.jsx';
 import { projectGroups } from './project-view.js';
 import { has, property, WATCHED_WAIT } from '../states.js';
 const labels = { queued: '排队中', starting: '正在启动', running: '执行中', finishing: '执行完成，正在清理进程', waiting: '等待输入', busy: '会话忙碌', unknown: '状态待核对', review: '完成待验收', blocked: '等待外部条件', decision: '需要决策或授权', stalled: '续办已暂停：进展或次数限制', needs_result: '结果待分类', failed: '执行失败', exhausted: '无可用执行器', stopped: '已停止', stopping: '正在停止', manual: '人工接管', accepted: '已验收', 'auto-continue': '自动继续未完成事项', 'repair-result': '自动补全结果分类' };
@@ -82,7 +83,7 @@ export function Panel({ api }) {
         <label className="toggle"><input aria-label={`启用 ${agentLabel(executor)}`} type="checkbox" checked={executor.enabled} onChange={e => edit({ ...settings, executors: settings.executors.map(x => x.id === executor.id ? { ...x, enabled: e.target.checked } : x) })}/>启用</label>
         <div className="rank-controls"><button aria-label={`上移 ${agentLabel(executor)}`} disabled={index === 0 || busy} onClick={() => reorder(index, index - 1)}>上移</button><button aria-label={`下移 ${agentLabel(executor)}`} disabled={index === settings.executors.length - 1 || busy} onClick={() => reorder(index, index + 1)}>下移</button></div></li>)}</ol>
       {draft && <div className="actions"><button className="primary" disabled={busy} onClick={async () => { if (await run({ action: 'configure', settings: draft, revision })) setDraft(null); }}>保存顺序</button><button onClick={() => setDraft(null)}>撤销调整</button></div>}
-      <p className="muted">新顺序用于后续入队任务。已入队任务保留原顺序。</p><details className="local-task"><summary>新增本地任务</summary>
+      <p className="muted">新顺序用于后续入队任务。已入队任务保留原顺序。</p><FocusControl focus={data.focus} busy={busy} run={run}/><details className="local-task"><summary>新增本地任务</summary>
       <form onSubmit={async e => { e.preventDefault(); if (await run({ action: 'submit', ...newTask })) setTask({ ...newTask, title: '', prompt: '' }); }}>
         <label>本机映射<select required value={newTask.projectId} onChange={e => setTask({ ...newTask, projectId: e.target.value })}><option value="">选择本机映射</option>{data.settings.projects.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</select></label>
         <label>任务标题<input required maxLength={300} value={newTask.title} onChange={e => setTask({ ...newTask, title: e.target.value })}/></label>

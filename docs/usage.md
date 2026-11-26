@@ -94,6 +94,42 @@ Snapshot fields for operations (`agentDispatcher/snapshot`):
 - `restart`: `{ idleForRestart, idleExceptUncertain, executing: [{id, issue, status}], uncertain: [...], queued }`. `idleForRestart` is true when no task is in an executing status (starting, running, finishing, waiting, busy, stopping, unknown), i.e. a host restart interrupts no turn. `idleExceptUncertain` ignores `unknown` tasks (execution not confirmed). A restart script can `drain`, poll the snapshot until `restart.idleForRestart` (or, deliberately, `idleExceptUncertain`) is true, restart the host, then `undrain` (drain is persisted, so it is still on after the restart).
 - Per task, `autoRoundLimit` is the effective limit from current settings; `autoRoundLimitEvaluated` is the value the task cached at its last assessment.
 
+### 聚焦模式
+
+用途：让整个系统暂时只做你主动要求的单子，但不让系统停摆。开启后，**聚焦单和判定为相关的单照常全自动**（自动续办、评论唤醒、定时/条件唤醒、数据唤醒、换会话、新会话救援都不变）；**其他单不再启动，但不丢**：它们的下一轮照常排队，只是被冻结在队列里（`task.hold = {by:'focus', reason, revision, at}`），退出聚焦后自动恢复原来的行为。
+
+**命令**（都走 `agentDispatcher/command`；面板左栏「聚焦模式」有对应按钮）：
+
+| 命令 | 作用 |
+| --- | --- |
+| `{action:'focus-set', issues:['LON-35','LON-160'], intent:'今天只推进…'}` | 开启聚焦（或整体替换清单与意图）。`intent` 是给模型判定看的自由文本。 |
+| `{action:'focus-add', issues:[...]}` / `{action:'focus-remove', issues:[...]}` | 追加 / 移出聚焦单（需已开启）。 |
+| `{action:'focus-clear'}` | 退出聚焦：释放全部聚焦冻结，各单回到原来的行为。 |
+| `{action:'focus-approve', issue:'LON-48'}` | 把待确认的单（连同它续办链上的单号）加入聚焦，按相关处理。 |
+| `{action:'focus-reject', issue:'LON-48'}` | 判定为不相关：保持冻结，直到聚焦清单重设（`focus-set`）或退出聚焦。 |
+
+每次聚焦变化都把 `revision` 加一，旧的判定结果作废、按新清单重判。聚焦状态存在 `state.focus`（持久化，宿主重启后仍在），快照的 `focus` 字段给出 `{enabled, issues, intent, revision, since, pending, decisions, held, rejected}`；`pending` 是待你确认的单及原因，`held` 是被聚焦冻结的任务。所有命令记入 `state.opsLog`。
+
+**什么算相关**（任何要启动的任务都会判一次；续办、唤醒、新接的单最终都变成排队的一轮，只在启动这一步把关）：
+
+1. 先用确定规则（不调模型，`src/focus.js` 的 `relatedByRules`）：在聚焦清单里；续办链（continuationOf / supersededBy / 同一 rootTask）上有聚焦单；Linear 父单或子单是聚焦单（读 Linear 的 parent / children，只读）；单子标题、描述、最近评论里写了「移交 / 接管 / 转交 / 拆单 / split_issue」到某个聚焦单，或聚焦单里写了移交 / 拆单到这张单；标题、描述、评论里提到了聚焦单号（按单号边界匹配，`LON-3` 不会命中 `LON-35`）。本机手动提交、没有 Linear 单的任务算相关；宿主重启打断的那一轮允许跑完。
+2. 规则判断不了的，交给模型判定（异步、同一时间只判一张、从不阻塞调度循环；结果按「单号 + revision」缓存并带理由持久化）。判定程序只能在本机设置里配，不能来自单子：
+
+   ```json
+   "focus": { "judge": { "command": "node", "args": ["D:/dsh-agent-dispatcher/scripts/focus-judge.mjs", "--key-env", "LEIHUO_API_KEY", "--gateway", "https://<网关>/v1/chat/completions", "--model", "deepseek-flash"], "timeoutMs": 60000 } }
+   ```
+
+   程序从 stdin 读 `{focus:{issues,intent}, candidate:{identifier,title,description 节选,parent,children,最近评论节选}}`，在 stdout 输出 `{"verdict":"related|unrelated|uncertain","reason":"…"}`。参考实现 `scripts/focus-judge.mjs` 调 OpenAI 兼容网关，密钥和网关地址都只写**环境变量名**（`--key-env`、`--gateway-env`），不会出现在设置或日志里；派发器启动它时会去掉 Linear 令牌环境变量。`settings.focus.linearContext: false` 可关闭 Linear 读取（只用本地任务信息判断）。
+3. **失败保守**：判定出错、超时、或回答 `uncertain`，这张单**不启动**，进「待确认」列表（快照 `focus.pending`，面板可点「算相关」/「不相关」）。没配判定程序时，规则判断不了的单也都进待确认。
+
+**冻结与释放**：
+
+- 已经在跑的不相关任务不会被打断，这一轮跑完；它的下一轮（自动续办、评论续办等）排队后被聚焦冻结。
+- `focus-clear`、`focus-approve`、`focus-add` 让任务变成相关时，聚焦冻结自动释放；**用户停止（`hold.by:'user'`）不受聚焦变化影响**，仍需重试 / 继续 / 解除冻结。
+- 聚焦开启时，你对某张单的**重试、继续、解除冻结**会把这张单加入聚焦（这就是你主动要求的单）；派发器自己发起的评论 / 数据续办不会。
+- 每个决定都是任务事件：`focus-related`、`focus-judged`（判定结果与理由）、`focus-held`、`focus-pending` / `focus-judging`、`focus-start`（启动时用的规则或判定理由）、`focus-release`。`explain` 的 `focus` 段给出当前判定、是否被聚焦冻结和最近的聚焦事件，`runnable.reasons` 里会写明「聚焦模式：…」。
+- 研究主管（quant-mining 的 `research-director.mjs propose`）在聚焦开启时不再提新单，日志写明原因；review / coverage / daily 不受影响。
+
 CLI print mode cannot host every interactive approval UI. If the tool exits for approval, the task is failed and requires manual intervention; if it stays running, the dispatcher keeps its slot occupied. DSH approvals remain in the native session.
 
 ## Persistence and recovery

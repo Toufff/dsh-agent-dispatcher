@@ -77,7 +77,13 @@ export const settingsSchema = z.object({ executors: z.array(executorSchema), pro
   // beyond the latest keepRounds, finished Linear write-backs after outboxDays. Archived data stays readable.
   archive: z.object({ taskDays: z.number().min(0.01).max(3650).optional(), keepRounds: z.number().int().min(1).max(1000).optional(),
     outboxDays: z.number().min(0.01).max(3650).optional() }).strict().optional(),
-  notifications: z.object({ channels: z.array(notificationChannelSchema).max(10) }).strict().optional() })
+  notifications: z.object({ channels: z.array(notificationChannelSchema).max(10) }).strict().optional(),
+  // Focus mode (src/focus.js). The model judge is a local command, configured here only: never taken from an issue.
+  // It reads the candidate as JSON on stdin and prints {verdict, reason}. The focus list itself is state, not settings.
+  focus: z.object({ judge: z.object({ command: z.string().min(1).max(4096), args: z.array(z.string().max(4096)).max(50).default([]),
+    timeoutMs: z.number().int().min(1000).max(600000).default(60000) }).strict().optional(),
+    // Linear reads for a candidate's parent/children/comments (default on).
+    linearContext: z.boolean().optional() }).strict().optional() })
   .strict().superRefine((value, ctx) => {
     for (const key of ['executors', 'projects']) {
       if (new Set(value[key].map(v => v.id)).size !== value[key].length)

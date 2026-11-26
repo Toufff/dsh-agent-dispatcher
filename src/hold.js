@@ -12,6 +12,7 @@
  * nothing is executing.
  */
 import { TASK_STATES } from './states.js';
+import { focusBlock } from './focus.js';
 
 export const HOLD_ERROR = 'TASK_HELD';
 export const DRAIN_ERROR = 'DISPATCH_DRAINING';
@@ -24,12 +25,13 @@ const DRAINED = new Set(['start', 'intake', 'wake', 'comment', 'data', 'output-r
 
 /**
  * Why automatic work on `path` must not act on this task now, or null. path: start | requeue | continue | wake |
- * comment | data | output-retry | intake | interrupted-resume.
+ * comment | data | output-retry | intake | interrupted-resume. Focus mode gates only 'start' (src/focus.js).
  */
 export function automaticBlock(task, state, path) {
-  if (task?.hold) return { code: HOLD_ERROR, path, reason: `用户已停止并冻结（${task.hold.reason || '无说明'}），需显式重试、继续或解除冻结` };
+  // A focus hold (by: 'focus') is not a user stop: focus mode decides it afresh (focusBlock) on every start.
+  if (task?.hold && task.hold.by !== 'focus') return { code: HOLD_ERROR, path, reason: `用户已停止并冻结（${task.hold.reason || '无说明'}），需显式重试、继续或解除冻结` };
   if (state?.drain?.on && DRAINED.has(path)) return { code: DRAIN_ERROR, path, reason: '派发器正在排空（drain），不启动新执行' };
-  return null;
+  return task ? focusBlock(task, state, path) : null;
 }
 export function blockError(block) { return Object.assign(new Error(block.reason), { code: block.code }); }
 

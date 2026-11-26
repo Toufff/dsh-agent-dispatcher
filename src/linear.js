@@ -155,6 +155,16 @@ export class LinearClient {
     const nodes = await this.collection('comments', { issue: { project: { id: { eq: mapping.projectId } } }, updatedAt: { gte: since } }, 'id issue { id }');
     return new Set(nodes.map(c => c.issue?.id).filter(Boolean));
   }
+  /** Focus mode: what relatedness rules and the judge may read about one issue (read only, bounded). */
+  async focusContext(ref) {
+    const data = await this.query(`query($id:String!) { issue(id:$id) { identifier title description parent { identifier }
+      children(first:50) { nodes { identifier } } comments(last:15) { nodes { body createdAt } } } }`, { id: ref });
+    const issue = data?.issue;
+    if (!issue) return null;
+    return { identifier: issue.identifier, title: issue.title || '', description: String(issue.description || '').slice(0, 20000),
+      parent: issue.parent?.identifier || null, children: (issue.children?.nodes || []).map(c => c.identifier),
+      comments: (issue.comments?.nodes || []).map(c => String(c.body || '').slice(0, 4000)) };
+  }
   async activity(mapping, issueId, parentId) {
     const parent = await this.eligible(mapping, parentId);
     let cursor = null, comments = [], issue;

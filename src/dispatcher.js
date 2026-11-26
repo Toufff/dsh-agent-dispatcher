@@ -5,6 +5,7 @@ import { currentTask, issueKey, keyTaken, repairRound, deliverPendingComments, w
 import { asStateStore } from './state-store.js';
 import { terminal, is, STOP_CONFIRMING_RESULTS, ADOPTED_RESULTS } from './states.js';
 import { automaticBlock, blockError, setHold, clearHold } from './hold.js';
+import { focusDecision, focusHeld, focusOn, userHeld } from './focus.js';
 
 // The terminal set is declared in src/states.js; re-exported for existing importers.
 export { terminal };
@@ -84,7 +85,7 @@ export class Dispatcher {
       // A user stop holds the issue: automatic paths (intake of a new round, comment/data continuations) may not
       // start new work on it. An explicit owner submit/continue (byUser) clears the hold instead.
       const held = [prior, ...(issueIdentity ? state.tasks.filter(t => issueKey(t, state) === issueIdentity && currentTask(t, state)) : [])]
-        .filter(t => t?.hold);
+        .filter(t => userHeld(t));
       if (!byUser) for (const t of held) { const block = automaticBlock(t, state, continuationOf ? 'continue' : 'intake'); if (block) throw blockError(block); }
       if (issueIdentity && state.tasks.some(t => issueKey(t, state) === issueIdentity &&
           (!terminal.has(t.status) || t.owner === 'human')))
@@ -148,6 +149,13 @@ export class Dispatcher {
           picked.push(t);
       }
       if (!picked.length) return;
+      for (const t of picked) {
+        // Audit why a task starts under focus mode; a stale focus hold (focus changed since) goes with the start.
+        const last = t.events.at(-1);
+        if (focusOn(state) && !(last?.action === 'focus-start' && last.revision === state.focus.revision)) { const d = focusDecision(t, state);
+          t.events.push({ action: 'focus-start', by: d.by, rule: d.rule, reason: d.reason, revision: state.focus.revision, at: new Date().toISOString() }); }
+        if (focusHeld(t)) { t.events.push({ action: 'focus-release', hold: t.hold, reason: 'started', at: new Date().toISOString() }); delete t.hold; }
+      }
       const ids = picked.map(t => t.id);
       const ready = picked.filter(task => {
         if (!task.resumeWindow?.expiresAt || Date.now() < Date.parse(task.resumeWindow.expiresAt)) return true;
@@ -193,6 +201,7 @@ export class Dispatcher {
             ...(task.session?.executor === executor ? { sessionId: task.session.id, resume: true } : {}) };
           task.attempts.push(attempt);
           task.status = 'starting';
+          delete task.interruptedTurn;
           starts.push({ task, attempt, executor, extra });
         }
         // Never call start until its intent is durable.
@@ -233,6 +242,8 @@ export class Dispatcher {
       task.autoRounds = 0;
       task.continuationIdleRounds = 0;
       task.lastProgress = '';
+      // Focus mode lets the interrupted turn finish even if the task is no longer related (src/focus.js).
+      task.interruptedTurn = attempt.id;
       task.events?.push({ action: 'interrupted', at: new Date().toISOString(), attemptId: attempt.id,
         reason: String(result?.reason || '').slice(0, 300) });
     } else if (status === 'needs_input') {
@@ -299,8 +310,8 @@ export class Dispatcher {
     // A turn that died with the host (interrupted) while a stop was pending, or on a held task, is a confirmed
     // termination: it settles as the stop, never as a resumable interruption (3.5: stopped tasks restarted after
     // a host restart because 'interrupted' requeued them).
-    const settlesStop = STOP_CONFIRMING_RESULTS.has(result?.status) || (result?.status === 'interrupted' && (task.pendingStop || task.hold));
-    if (settlesStop && (task.pendingStop || task.hold)) {
+    const settlesStop = STOP_CONFIRMING_RESULTS.has(result?.status) || (result?.status === 'interrupted' && (task.pendingStop || userHeld(task)));
+    if (settlesStop && (task.pendingStop || userHeld(task))) {
       const action = task.pendingStop || 'stop';
       if (result.status === 'interrupted') task.events.push({ action: 'interrupted-while-stopping', at: new Date().toISOString(), attemptId: attempt.id });
       attempt.status = 'stopped'; task.status = action === 'takeover' ? 'manual' : 'stopped';

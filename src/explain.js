@@ -6,6 +6,7 @@
  */
 import { TASK_STATES, terminal } from './states.js';
 import { automaticBlock, setHold } from './hold.js';
+import { focusDecision } from './focus.js';
 import { currentTask, keyTaken } from './workflow.js';
 import { globalLimit, startLimit, projectLimit, hasSlot } from './dispatcher.js';
 
@@ -85,6 +86,9 @@ export function explainTask(task, state, { now = Date.now(), archived = false, a
     },
     lastEvaluated: { autoRoundLimit: task.autoRoundLimit ?? null, note: 'copied onto the task at its last assessment; behaviour uses settings above' },
     holds: { hold: task.hold || null, pendingStop: task.pendingStop || null, manualParked: Boolean(task.manualParked) },
+    focus: { enabled: Boolean(state.focus?.enabled), revision: state.focus?.revision ?? 0, issues: state.focus?.issues || [],
+      decision: focusDecision(task, state), heldByFocus: task.hold?.by === 'focus',
+      events: (task.events || []).filter(e => String(e.action).startsWith('focus-')).slice(-10) },
     pending: {
       wait: task.wait ? { kind: task.wait.kind, status: task.wait.status, notBefore: task.wait.notBefore, recheckAt: task.wait.recheckAt,
         expiresAt: task.wait.expiresAt, notBeforeInFuture: future(task.wait.notBefore, now), errorCount: task.wait.errorCount || 0 } : null,
