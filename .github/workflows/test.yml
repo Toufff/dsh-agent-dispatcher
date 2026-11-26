@@ -1,19 +1,25 @@
+# Minimal cloud check, only when something lands on main. Full tests (npm test, browser and
+# settings-UI smokes) run on ULTRATOUF before merging. touf 2026-11-26: no CI on pull requests
+# or other branches, and only the most basic check on main, to save GitHub Actions minutes.
 name: Kernel tests
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: kernel-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  test:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm ci
-      - run: npm test
       - run: npm run check
       - run: npm run build
