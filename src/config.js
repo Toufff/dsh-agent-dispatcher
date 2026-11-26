@@ -107,7 +107,8 @@ export const settingsSchema = z.object({ executors: z.array(executorSchema), pro
   linearBatch: z.object({ flushIntervalMs: z.number().int().min(0).max(3600000).optional(),
     flushPending: z.number().int().min(1).max(1000).optional(), maxPerRequest: z.number().int().min(1).max(100).optional(),
     hourlyBudget: z.number().int().min(1).max(100000).optional(), warnFraction: z.number().min(0.05).max(1).optional(),
-    cacheMaxAgeMs: z.number().int().min(0).max(3600000).optional(), maxTries: z.number().int().min(1).max(100).optional() }).strict().optional(),
+    cacheMaxAgeMs: z.number().int().min(0).max(3600000).optional(), maxTries: z.number().int().min(1).max(100).optional(),
+    maxRequestBytes: z.number().int().min(10000).max(5000000).optional(), workspaceCheckMs: z.number().int().min(0).max(86400000).optional() }).strict().optional(),
   // Focus mode (src/focus.js). The model judge is a local command, configured here only: never taken from an issue.
   // It reads the candidate as JSON on stdin and prints {verdict, reason}. The focus list itself is state, not settings.
   focus: z.object({ judge: z.object({ command: z.string().min(1).max(4096), args: z.array(z.string().max(4096)).max(50).default([]),

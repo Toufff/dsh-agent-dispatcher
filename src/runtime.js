@@ -12,7 +12,7 @@ import { parseSettings, unknownSettingKeys } from './config.js';
 import { CliAdapter } from './adapters/cli.js';
 import { DshAdapter } from './adapters/dsh.js';
 import { LinearClient, linearMapping, receiverAllowed, syncKey, replyExcludedId, validWaitTarget, WaitTargetError } from './linear.js';
-import { IssueCache, LinearUsage, batchPolicy, enqueueExternal, externalResults, flushBatched, cacheComment } from './linear-outbox.js';
+import { IssueCache, LinearUsage, batchPolicy, enqueueExternal, externalResults, flushBatched, cacheComment, readyItems } from './linear-outbox.js';
 import { LinearCredentials, credentialEnvNames, credentialKey } from './linear-auth.js';
 import { botTrust } from './comment-trust.js';
 import { AdapterRegistry } from './adapters/registry.js';
@@ -267,6 +267,14 @@ export class Runtime {
     const identityErrors = linearIdentity.filter(c => c.error).map(c => `Linear 凭据 ${c.id || c.mode}：${c.error}`);
     // Linear requests this clock hour, per caller / purpose; over warnFraction of the hourly budget is an error.
     const linearUsage = this.linearUsage.snapshot(batchPolicy(state.settings));
+    // Writes that stopped for good (Linear kept refusing them, state stayed unknown, unsendable) stay visible for a day.
+    const dayAgo = Date.now() - 86400000;
+    for (const i of state.outbox.filter(i => i.status === 'failed' && Date.parse(i.finishedAt || 0) >= dayAgo).slice(-20)) {
+      const ref = i.external ? `${i.caller}:${i.op?.issue || i.op?.input?.title || i.op?.kind}` : state.tasks.find(t => t.id === i.taskId)?.issue?.identifier || i.issueId;
+      identityErrors.push(`Linear 写入已停止重试（${ref}）：${i.lastError || 'failed'}`);
+    }
+    for (const i of state.outbox.filter(i => i.external && i.status === 'pending' && i.lastError && i.tries < 3)) identityErrors.push(`Linear 外部写入未发出（${i.caller}:${i.op?.issue || i.op?.kind}）：${i.lastError}`);
+    for (const message of this.linearWriteBlocked?.values() || []) identityErrors.push(`Linear 写入暂停：${message}`);
     if (linearUsage.over) identityErrors.push(`Linear 请求本小时已 ${linearUsage.total} 次，超过预算 ${linearUsage.hourlyBudget} 的告警线 ${linearUsage.warnAt}；按调用方：${Object.entries(linearUsage.byCaller).map(([k, n]) => `${k} ${n}`).join('，')}`);
     const linearOutbox = { pending: state.outbox.filter(i => i.status === 'pending').length, external: state.outbox.filter(i => i.external && i.status === 'pending').length,
       lastFlushAt: this.lastFlushAt ? new Date(this.lastFlushAt).toISOString() : null };
@@ -394,7 +402,17 @@ export class Runtime {
       const state = await this.store.read();
       const include = Array.isArray(request.include) && request.include.length ? request.include.filter(k => ['issues', 'comments'].includes(k)) : ['issues', 'comments'];
       const botIds = new Set([...(state.settings.linear?.credentials || []).map(c => c.botUserId), ...this.credentials.status().map(c => c.botUserId || (c.mode === 'clientCredentials' ? c.viewer?.id : null))].filter(Boolean));
-      return this.linearCache.view({ projectId: request.projectId, since: request.since, include }, { ownIds: new Set(ownCommentIds(state)), botIds });
+      const view = this.linearCache.view({ projectId: request.projectId, since: request.since, include }, { ownIds: new Set(ownCommentIds(state)), botIds });
+      // cacheAt is the last ISSUE sync; comments reach the cache only from the comment sweep. A caller that advances a
+      // comment cursor must bound it by commentsCoveredUntil (null: no sweep has covered these projects yet, or none
+      // is configured — do not advance) and treat comments older than commentsCoveredFrom as not in the cache.
+      const keyOf = linear => JSON.stringify([linear.workspaceId, linear.tokenEnv, linear.projectId]);
+      const swept = state.settings.projects.filter(p => p.linear?.enabled && (!request.projectId || p.linear.projectId === request.projectId));
+      const covers = swept.map(p => p.followup?.enabled && p.followup.reviewComments && p.linear.projectId ? this.commentCovered?.get(keyOf(p.linear)) || null : null);
+      const complete = covers.length && covers.every(Boolean);
+      view.commentsCoveredUntil = complete ? new Date(Math.min(...covers.map(c => c.until))).toISOString() : null;
+      view.commentsCoveredFrom = complete ? new Date(Math.max(...covers.map(c => c.from))).toISOString() : null;
+      return view;
     }
     if (request.action === 'explain') {
       // Read-only: the decision inputs in force for one task right now (current settings, not cached fields).
@@ -672,7 +690,7 @@ export class Runtime {
     for (const project of (batch?.projects || state.settings.projects.filter(p => p.linear?.enabled))) {
       try {
       if (!isDeepStrictEqual(project, (await this.store.read()).settings.projects.find(p => p.id === project.id))) continue;
-      const client = this.client(project.linear), mapping = await this.resolveMapping(linearMapping(project, state.settings));
+      const client = this.client(project.linear, { purpose: 'intake' }), mapping = await this.resolveMapping(linearMapping(project, state.settings));
       for (const issue of batch ? batch.issues.filter(i => i.project?.id === mapping.projectId && receiverAllowed(i, mapping) && i.state?.id === mapping.readyStateId && i.updatedAt >= mapping.since) : await client.issues(mapping)) {
         // A user-held issue takes no new automatic round (one held issue must not fail the project's intake).
         await this.submit({ projectId: project.id, title: `${issue.identifier} · ${issue.title}`,
@@ -742,19 +760,30 @@ export class Runtime {
       }
     }, { durable: true });
     const state = await this.store.read();
-    const due = state.outbox.filter(i => i.status === 'pending' && (!i.nextAt || i.nextAt <= Date.now()));
+    // Per-issue FIFO: only the oldest pending item of each issue, once due (src/linear-outbox.js readyItems).
+    const due = readyItems(state.outbox, Date.now(), this.linearCache);
     // Merged exit: items whose client sends aliased batches wait for the flush window (flushIntervalMs) unless
-    // flushPending of them are waiting; then all of them leave together (src/linear-outbox.js).
-    const batched = [], legacy = [];
+    // flushPending of them are due; then all of them leave together (src/linear-outbox.js).
+    const batched = [], legacy = [], unsendable = [];
     for (const item of due) {
       const project = state.settings.projects.find(p => p.id === item.projectId);
-      let client = null;
-      try { client = project?.linear ? this.rawClient(project.linear) : null; } catch { /* missing credential: legacy path records the failure */ }
-      (typeof client?.batchWrite === 'function' ? batched : item.external ? null : legacy)?.push(item);
+      let client = null, clientError = null;
+      try { client = project?.linear ? this.rawClient(project.linear) : null; } catch (error) { clientError = error; }
+      if (typeof client?.batchWrite === 'function') batched.push(item);
+      else if (!item.external) legacy.push(item);
+      // External writes only leave through the merged exit: never silently left pending.
+      else unsendable.push([item, client ? '该项目的 Linear 客户端不支持合批写入，无法发送' : project?.linear ? `Linear 凭据不可用：${String(clientError?.message || '').slice(0, 120)}` : '目标项目已不存在或未启用 Linear', Boolean(client || !project?.linear)]);
     }
+    if (unsendable.length) await this.dispatcher.update(s => {
+      for (const [item, message, permanent] of unsendable) {
+        const entry = s.outbox.find(i => i.id === item.id); if (!entry || entry.status !== 'pending') continue;
+        entry.lastError = message;
+        if (permanent) { entry.status = 'failed'; entry.finishedAt = new Date().toISOString(); }
+      }
+    }, { durable: true });
     const policy = batchPolicy(state.settings);
-    const waiting = state.outbox.filter(i => i.status === 'pending').length;
-    if (batched.length && (this.lastFlushAt === undefined || Date.now() - this.lastFlushAt >= policy.flushIntervalMs || waiting >= policy.flushPending)) {
+    // Only DUE items count toward flushPending: items backing off must not turn every tick into a flush.
+    if (batched.length && (this.lastFlushAt === undefined || Date.now() - this.lastFlushAt >= policy.flushIntervalMs || batched.length >= policy.flushPending)) {
       this.lastFlushAt = Date.now();
       await flushBatched(this, state, batched);
     }
@@ -996,7 +1025,7 @@ export class Runtime {
         }
         const supplied = options.activities?.get(old.id);
         if (remote && supplied?.error) throw supplied.error;
-        const activity = remote ? supplied ? supplied.value : await this.client(project.linear).activity(linearMapping(project, snapshot.settings), old.wait.issueId, old.issue.id) : null;
+        const activity = remote ? supplied ? supplied.value : await this.client(project.linear, { purpose: 'wait' }).activity(linearMapping(project, snapshot.settings), old.wait.issueId, old.issue.id) : null;
         let event = old.wait.kind === 'task' ? localEvent : wakeEvent(observing ? { ...old.wait, kind: 'linear', notBefore: undefined, expiresAt: undefined, recheckAt: undefined,
           seen: [...(old.wait.seen || []), ...(old.wait.observedRevisions || [])] } : old.wait,
           activity, await this.waitPolicy(project, snapshot.settings), Date.now(), ownCommentIds(snapshot));
@@ -1106,25 +1135,31 @@ export class Runtime {
       const key = keyOf(project.linear);
       if (modes.has(key)) continue;
       let client;
-      try { client = this.client(project.linear); } catch { modes.set(key, 'skip'); continue; }
+      try { client = this.client(project.linear, { purpose: 'comment-sweep' }); } catch { modes.set(key, 'skip'); continue; }
       // Clients without the batched query (and mappings without a project) keep the per-issue reads.
       if (typeof client.commentedIssues !== 'function' || !project.linear.projectId) { modes.set(key, 'all'); continue; }
       const last = this.commentSweptAt.get(key), started = Date.now();
-      if (last === undefined) { this.commentSweptAt.set(key, started); modes.set(key, 'all'); continue; }
       // Between sweeps only issues already known to have new comments are read.
-      if (started - last < this.commentSweepMs) { modes.set(key, 'dirty'); continue; }
+      if (last !== undefined && started - last < this.commentSweepMs) { modes.set(key, 'dirty'); continue; }
+      // One minute of overlap covers clock skew and comments written while the previous pass ran. Without any cursor
+      // (first start) the sweep still runs, over the last hour, so the cache (linear-view) holds those comments too;
+      // the follow-up pass then reads every issue once ('all') as before.
+      const since = last === undefined ? started - 3600000 : last - 60000;
       try {
-        // One minute of overlap covers clock skew and comments written while the previous pass ran.
         this.usagePurpose(client, 'comment-sweep');
-        const commented = await client.commentedIssues(project.linear, new Date(last - 60000).toISOString());
+        const commented = await client.commentedIssues(project.linear, new Date(since).toISOString());
         for (const id of commented) this.commentDirty.add(id);
         for (const c of commented.comments || []) this.linearCache.putComment(cacheComment(c, project.linear.projectId));
-        this.commentSweptAt.set(key, started); modes.set(key, 'dirty'); this.commentSweepError = null;
+        this.commentSweptAt.set(key, started); modes.set(key, last === undefined ? 'all' : 'dirty'); this.commentSweepError = null;
+        // linear-view coverage: every comment created in [from, until] is in the cache. `from` is the first sweep of
+        // this process (the cache is in memory); `until` lags the sweep start by the overlap.
+        const covered = (this.commentCovered ||= new Map()).get(key);
+        this.commentCovered.set(key, { from: covered?.from ?? since, until: started - 60000 });
       } catch (error) {
         // The cursor stays put, so nothing is missed; a rate limit also pauses the per-issue reads.
         this.commentSweepError = error.message;
         if (error.code === 'RATE_LIMITED') this.commentPauseUntil = Date.now() + (error.retryAfterMs || 60000);
-        modes.set(key, 'skip');
+        if (last === undefined) { this.commentSweptAt.set(key, started); modes.set(key, 'all'); } else modes.set(key, 'skip');
       }
     }
     return project => project.linear ? modes.get(keyOf(project.linear)) || 'skip' : 'skip';

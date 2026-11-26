@@ -108,7 +108,7 @@ test('the comment sweep cursor and unread issues survive a restart: no full re-r
   calls.flagged = [];
   runtime = await sweepRuntime(store, calls);
   await runtime.reviewComments();
-  assert.equal(calls.sweep, 2, 'the persisted cursor is used');
+  assert.equal(calls.sweep, 3, 'the persisted cursor is used');
   assert.equal(calls.activity, 3, 'only the still-dirty issue is read');
   assert.deepEqual((await store.load()).commentSweep.dirty, []);
 });

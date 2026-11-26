@@ -534,10 +534,10 @@ test('review comment checks read only issues the project-wide sweep reports', as
   let flagged = [];
   const { runtime, calls } = await sweepFixture({ commented: () => new Set(flagged) });
   await runtime.reviewComments();                     // first pass after start: one full read of every issue
-  assert.equal(calls.sweep, 0); assert.equal(calls.activity, 1);
+  assert.equal(calls.sweep, 1, 'the first pass sweeps the last hour too (linear-view coverage)'); assert.equal(calls.activity, 1);
   runtime.reviewCheckedAt.clear();
   await runtime.reviewComments();                     // nothing new: one cheap query, no per-issue read
-  assert.equal(calls.sweep, 1); assert.equal(calls.activity, 1);
+  assert.equal(calls.sweep, 2); assert.equal(calls.activity, 1);
   flagged = ['other-issue'];
   runtime.reviewCheckedAt.clear();
   await runtime.reviewComments();                     // a comment elsewhere in the project does not read this issue
@@ -570,11 +570,11 @@ test('a rate-limited sweep reads no issue and pauses until Linear allows again',
   assert.ok(runtime.commentPauseUntil > Date.now() + 500000);
   limited = false; runtime.reviewCheckedAt.clear();
   await runtime.reviewComments();                     // still paused: not even the sweep runs
-  assert.equal(calls.sweep, 1); assert.equal(calls.activity, 1);
+  assert.equal(calls.sweep, 2); assert.equal(calls.activity, 1);
   runtime.commentPauseUntil = 0;
   await runtime.reviewComments();                     // the cursor did not move past the limited pass
   assert.equal(calls.activity, 2);
-  assert.equal(calls.since[1], calls.since[0]);
+  assert.equal(calls.since[2], calls.since[1]);
 });
 
 test('LinearClient.commentedIssues asks once for the whole project', async () => {
