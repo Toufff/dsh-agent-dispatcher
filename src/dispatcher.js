@@ -325,8 +325,22 @@ export class Dispatcher {
     if (result?.status === 'rejected' && attempt.accepted)
       result = { status: 'unknown' };
     if (attempt.status === 'busy' && result?.status === 'ready') {
+      // Residual system notices the adapter removed from an idle session's queue (see DshAdapter.residual).
+      if (Array.isArray(result.cleared) && result.cleared.length)
+        task.events.push({ action: 'residual-notices-cleared', attemptId: attempt.id, sessionId: attempt.sessionId,
+          items: result.cleared.slice(0, 20).map(({ id, kind, target }) => ({ id, kind, target })), at: new Date().toISOString() });
       task.attempts.pop(); task.status = 'queued';
-    } else this.#apply(task, attempt, result);
+    } else {
+      this.#apply(task, attempt, result);
+      // Busy only because of queued items the adapter cannot prove to be system notices: left alone, shown.
+      if (attempt.status === 'busy') {
+        if (result?.stuck && !attempt.stuck)
+          task.events.push({ action: 'residual-queue-ambiguous', attemptId: attempt.id, reason: result.stuck.reason, at: new Date().toISOString() });
+        if (result?.stuck) attempt.stuck = { since: result.stuck.since, reason: result.stuck.reason,
+          items: (result.stuck.items || []).slice(0, 20).map(({ kind, target }) => ({ kind, target })) };
+        else delete attempt.stuck;
+      }
+    }
     await this.#save(state, false, [task.id]);
   }
 
