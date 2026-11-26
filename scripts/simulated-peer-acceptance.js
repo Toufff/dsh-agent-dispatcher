@@ -44,6 +44,13 @@ export async function runSimulatedPeer({ directory, adapter, pollMs = 500, onSta
           remote.state = input.stateId; data[alias] = { success: true, issue: { id: 'parent', identifier: 'SIM-1', state: { type: 'started' } } };
         }
       }
+    } else if (query.includes('issues(filter:$issues') && v.comments?.issue) {
+      // Batched activity read (LinearClient.activities): parent + wait target and the target's comments in one request.
+      if (remote.offline) return { ok: false, status: 503 };
+      const child = { id: 'child', identifier: 'SIM-2', project: { id: 'project' }, parent: { id: 'parent' }, state: { type: 'started' } };
+      const since = v.comments.updatedAt?.gte;
+      data = { organization: { id: 'workspace' }, issues: { nodes: [parentIssue, child].filter(i => v.issues.id.in.includes(i.id)) },
+        comments: { nodes: v.comments.issue.id.in.includes('child') ? remote.comments.filter(c => !since || c.updatedAt >= since).map(c => ({ ...c, issue: { id: 'child' } })) : [], pageInfo } };
     } else if (query.includes('issues(filter:')) data = { organization: { id: 'workspace' }, issues: { nodes: [parentIssue], pageInfo } };
     else if (query.includes('comments(filter:$comments')) data = { comments: { nodes: [...remote.reports.keys()].filter(id => v.comments.id.in.includes(id)).map(id => ({ id })) } };
     else if (query.includes('organization')) data = { organization: { id: 'workspace' } };

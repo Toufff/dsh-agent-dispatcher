@@ -82,6 +82,9 @@ const delegateField = mappings => mappings.some(m => m?.intakeBy === 'delegate')
 const focusShape = issue => issue ? { identifier: issue.identifier, title: issue.title || '', description: String(issue.description || '').slice(0, 20000),
   parent: issue.parent?.identifier || null, children: (issue.children?.nodes || []).map(c => c.identifier),
   comments: (issue.comments?.nodes || []).map(c => String(c.body || '').slice(0, 4000)) } : null;
+/** Bounds of one batched activity read (LinearClient.activities). */
+export const ACTIVITY_MAX_PAIRS = 100, ACTIVITY_MAX_COMMENTS = 5000;
+const boundsError = detail => Object.assign(new Error(`Linear 合批读取超出上限（${detail}），本次不使用部分结果`), { code: 'LINEAR_READ_BOUNDS' });
 const authFailure = () => Object.assign(new Error('Linear 认证失败'), { code: 'LINEAR_UNAUTHENTICATED' });
 
 /**
@@ -356,6 +359,51 @@ export class LinearClient {
     const data = await this.query(`query($id:String!) { issue(id:$id) { identifier title description parent { identifier }
       children(first:50) { nodes { identifier } } comments(last:15) { nodes { body createdAt } } } }`, { id: ref });
     return focusShape(data?.issue);
+  }
+  /**
+   * Activity of many (issueId, parentId) pairs — parent eligibility, the wait target and the target's comments — in
+   * ONE read: organization check, every parent and target by id, and the comments of all targets updated at or after
+   * the earliest `since` (a pair without `since` reads full history). Comment pages continue on the same connection.
+   * Bounds (never truncated silently): at most ACTIVITY_MAX_PAIRS pairs per call and ACTIVITY_MAX_COMMENTS comments;
+   * beyond either the whole read throws `LINEAR_READ_BOUNDS` (fail closed). Returns Map `${issueId}|${parentId}` ->
+   * { value } (the shape of activity()) or { error } (that pair only: closed, reassigned, invalid target).
+   */
+  async activities(pairs) {
+    if (!pairs.length) return new Map();
+    if (pairs.length > ACTIVITY_MAX_PAIRS) throw boundsError(`一次读取最多 ${ACTIVITY_MAX_PAIRS} 个工单`);
+    const resolved = await Promise.all(pairs.map(p => this.resolve(p.mapping)));
+    const issueIds = [...new Set(pairs.flatMap(p => [p.parentId, p.issueId]).filter(Boolean))];
+    const targetIds = [...new Set(pairs.map(p => p.issueId))];
+    const sinces = pairs.map(p => p.since ? Date.parse(p.since) : NaN);
+    const since = sinces.every(Number.isFinite) ? new Date(Math.min(...sinces)).toISOString() : null;
+    const commentFilter = { issue: { id: { in: targetIds } }, ...(since ? { updatedAt: { gte: since } } : {}) };
+    const commentFields = 'comments(filter:$comments, first:250, after:$after) { nodes { id body createdAt updatedAt user { id } issue { id } } pageInfo { hasNextPage endCursor } }';
+    const first = await this.query(`query($issues:IssueFilter!, $comments:CommentFilter!, $after:String) { organization { id }
+      issues(filter:$issues, first:250, includeArchived:true) { nodes { id identifier title url updatedAt archivedAt project { id } parent { id } assignee { id } delegate { id } state { id type } ${relationFields} } }
+      ${commentFields} }`, { issues: { id: { in: issueIds } }, comments: commentFilter, after: null });
+    if (first.organization?.id !== pairs[0].mapping.workspaceId) throw new Error('Linear token belongs to another workspace');
+    const issues = new Map((first.issues?.nodes || []).map(i => [i.id, i]));
+    const comments = [...first.comments.nodes];
+    let page = first.comments.pageInfo;
+    while (page.hasNextPage) {
+      if (comments.length >= ACTIVITY_MAX_COMMENTS) throw boundsError(`评论超过 ${ACTIVITY_MAX_COMMENTS} 条`);
+      const after = page.endCursor;
+      if (!after) throw new Error('Linear pagination did not advance');
+      const data = await this.query(`query($comments:CommentFilter!, $after:String) { ${commentFields} }`, { comments: commentFilter, after });
+      if (data.comments.pageInfo.hasNextPage && data.comments.pageInfo.endCursor === after) throw new Error('Linear pagination did not advance');
+      comments.push(...data.comments.nodes); page = data.comments.pageInfo;
+    }
+    if (comments.length > ACTIVITY_MAX_COMMENTS) throw boundsError(`评论超过 ${ACTIVITY_MAX_COMMENTS} 条`);
+    const out = new Map();
+    pairs.forEach((pair, n) => {
+      const mapping = resolved[n], parent = issues.get(pair.parentId), target = issues.get(pair.issueId);
+      const key = `${pair.issueId}|${pair.parentId}`;
+      if (!parent || parent.project?.id !== mapping.projectId || !assigneeAllowed(parent, mapping) || ['completed', 'canceled'].includes(parent.state?.type))
+        return out.set(key, { error: new Error('Parent issue is closed, reassigned or outside the mapped project; local continuation remains stopped') });
+      if (!validWaitTarget(parent, target, mapping.projectId)) return out.set(key, { error: new WaitTargetError() });
+      out.set(key, { value: { ...target, comments: comments.filter(c => c.issue?.id === target.id), parentState: parent.state } });
+    });
+    return Object.assign(out, { issues: [...issues.values()], comments });
   }
   async activity(mapping, issueId, parentId) {
     const parent = await this.eligible(mapping, parentId);

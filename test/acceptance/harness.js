@@ -101,6 +101,12 @@ export class FakeLinear {
       }
       return reply(200, { data, ...(errors.length ? { errors } : {}) });
     }
+    if (query.includes('comments(filter:$comments, first:250, after:$after)')) {
+      // Batched activity read (LinearClient.activities): issues by id + the targets' comments, one connection.
+      data = { comments: { nodes: this.comments.map(c => this.commentView(c)).filter(c => matches(c, v.comments)), pageInfo } };
+      if (v.issues) Object.assign(data, { organization: org, issues: { nodes: [...this.issues.values()].filter(i => matches(i, v.issues)).map(i => this.view(i)) } });
+      return reply(200, { data });
+    }
     if (/^query(\(|\s*\{)/.test(query.trim()) && query.includes('organization { id }') && !query.includes('$filter') && !query.includes('viewer')) {
       // Merged-exit check read: workspace, comments / issues by id, and identifiers (r0..) in one query.
       data = { organization: org };
@@ -174,7 +180,8 @@ export class FakeExecutor {
         this.starts.push({ identifier, prompt: input.task.prompt, taskId: input.task.id });
         const mode = this.plan.get(identifier)?.shift() || 'done';
         if (mode === 'run') { this.live.set(identifier, { status: 'running' }); return { status: 'running', sessionId: `s-${identifier}` }; }
-        return { status: 'review', summary: mode === 'blocked' ? BLOCKED : DONE, sessionId: `s-${identifier}` };
+        // A mode may also be a full <dispatch-result> (e.g. a blocked result with a structured wait).
+        return { status: 'review', summary: mode === 'blocked' ? BLOCKED : String(mode).startsWith('<dispatch-result>') ? mode : DONE, sessionId: `s-${identifier}` };
       },
       reconcile: async ({ task }) => this.reconcileAll ? this.reconcileAll(task) : (this.live.get(task.issue?.identifier) || { status: 'running' }),
       stop: async () => { this.stops++; return { status: this.stopReply }; },

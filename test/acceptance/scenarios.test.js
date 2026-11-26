@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
 import { writeFile } from 'node:fs/promises';
-import { world, botLinear, forbidNetwork, restoreNetwork, sleep, FakeExecutor } from './harness.js';
+import { world, botLinear, forbidNetwork, restoreNetwork, sleep, FakeExecutor, result } from './harness.js';
 
 before(forbidNetwork);
 after(restoreNetwork);
@@ -313,4 +313,48 @@ test('(j) busy residue: an idle session held only by system notices is cleared a
     assert.ok(t2.events.some(e => e.action === 'residual-queue-ambiguous'));
     assert.ok((await w.snap()).errors.some(e => /user@nextTurn/.test(e)));
   } finally { await w.close(); }
+});
+
+// Owner goal (2026-11-26): all Linear access is batched through one exit. Per cycle the number of READ requests is
+// a constant that does not grow with the number of tasks (writes are aliased, 25 per request).
+test('(l) Linear requests per cycle stay bounded independent of task count (5 vs 50 tasks with new comments and waits)', async () => {
+  const waiting = result('blocked', { wait: { kind: 'linear', expectedAuthorIds: ['peer'], condition: '等 peer 回执' } });
+  const isRead = c => !c.query.startsWith('mutation(');
+  const perIssue = c => /issue\(id:\$id\)/.test(c.query);
+  const measure = async n => {
+    const w = await world({ settings: s => { s.concurrency = n; s.projects[0].maxConcurrent = n; return s; } });
+    try {
+      const ids = Array.from({ length: n }, (_, i) => `lx-${i + 1}`), waits = ids.slice(0, Math.max(1, Math.floor(n / 5)));
+      for (const id of ids) ready(w, id);
+      for (const id of waits) w.executor.script(id.toUpperCase(), waiting);
+      // Start throughput is limited per cycle: run cycles until every round settled (and every wait is watched).
+      for (let i = 0; i < 40; i++) {
+        const tasks = (await w.cycle(1)).tasks;
+        if (tasks.length === n && tasks.every(t => t.assessed && (t.status === 'review' || t.wait?.status === 'watching'))) break;
+      }
+      await sleep(5);
+      for (const id of ids) w.linear.comment(id, 'peer', `补充 ${id}`);
+      const perCycle = [];
+      for (let i = 0; i < 4; i++) {
+        const from = w.linear.calls.length;
+        await w.cycle(1);
+        const calls = w.linear.calls.slice(from);
+        perCycle.push({ total: calls.length, reads: calls.filter(isRead).length, perIssue: calls.filter(perIssue).length,
+          // Same query shape at most twice a cycle (the sync reads issues twice and comments twice; the sweep and the batched activity read once).
+          shapes: Math.max(0, ...Object.values(calls.filter(isRead).reduce((m, c) => { const k = c.query.slice(0, 60); m[k] = (m[k] || 0) + 1; return m; }, {}))) });
+      }
+      // Every comment was acted on: settled rounds continued, waits woke.
+      for (const id of ids) { const t = await w.tasks(id.toUpperCase()); assert.ok(t.length >= 2 || t[0].wakeups === 1, JSON.stringify([id, t.map(x => [x.status, x.assessed, x.events.map(e => e.action)])])); }
+      assert.deepEqual(w.linear.unknown, []);
+      return perCycle;
+    } finally { await w.close(); }
+  };
+  const small = await measure(5), large = await measure(50);
+  const max = (list, k) => Math.max(...list.map(c => c[k]));
+  assert.equal(max(large, 'perIssue'), 0, 'no per-issue read');
+  assert.ok(max(large, 'reads') <= 8, `reads per cycle (50 tasks): ${JSON.stringify(large)}`);
+  for (const list of [small, large]) assert.ok(max(list, 'shapes') <= 2, `a read repeats within a cycle: ${JSON.stringify(list)}`);
+  // The same constant holds for 5 and for 50 tasks (only how the work spreads over cycles differs).
+  assert.ok(max(small, 'reads') <= 8, `reads per cycle (5 tasks): ${JSON.stringify(small)}`);
+  assert.ok(max(large, 'total') <= 12, `requests per cycle (50 tasks): ${JSON.stringify(large)}`);
 });

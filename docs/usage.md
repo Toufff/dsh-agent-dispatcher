@@ -125,7 +125,10 @@ Classified completion queues a privacy-preserving comment and moves the issue to
 - 每次同步把排队任务的工单和待改状态的工单并进同一个 watched 读，所以正常情况下启动和改状态都不需要单独请求。
 - 专注判定一次评估需要的所有工单上下文合成**一个**别名查询（原来每个专注工单一次）。
 - `issue-context`（面板展示）只读缓存，不发请求；缓存里还没有时返回 `cached: false`。
-- 已知局限：缓存在内存里，重启后由下一次同步重新填；它只包含派发器本来就读到的工单（Ready 接单、在办任务和等待的工单、自己写过的工单）和评论扫描见到的评论，不是整个项目的镜像。评论里人手动回复后的完整评论读取（结构化等待和评论续办）仍按原有的「先全项目一次查哪些单有新评论、再只读这些单」进行；这几条仍是逐任务读：评论续办 / 轮次评论检查（`dispatcher/comments`，每个有新评论的单一次 `activity()`，含复核和评论两次请求）、条件监听（`dispatcher/wait`）、`arm-wait`、专注判定单个编号的回退读。它们的量在 `linearUsage.byPurpose` 里分别可见，受评论扫描（只读被标脏的单）和 `hourlyBudget` 告警约束，尚未合批。
+- 已知局限：缓存在内存里，重启后由下一次同步重新填；它只包含派发器本来就读到的工单（Ready 接单、在办任务和等待的工单、自己写过的工单）和评论扫描、合批活动读见到的评论，不是整个项目的镜像。
+- **评论 / 活动读合批**（`Runtime.readActivity` → `LinearClient.activities`）：评论续办 / 轮次评论检查、链上评论排队、条件监听（同步没带上的等待）、`arm-wait` 的目标校验，不再逐任务读。同一个时刻登记的所有读取（按凭据分组）合成**一个**请求：`organization { id }` + 所有父单和等待目标按 id（`issues(filter:{id:{in:[...]}})`）+ 这些目标的评论（`comments(filter:{issue:{id:{in:[...]}}, updatedAt:{gte: 最早 since}})`，评论续办的 since 是本轮任务创建时间，等待是 `armedAt`）。会在多个任务之间 await 的循环（评论续办一轮、`monitor()`）先把这一轮要读的任务一次性登记（`prefetchActivities`），所以一轮评论检查不论多少个被标脏的单都只发**一次**活动读（加评论扫描本身那一次）；`arm-wait`（owner 手动）也走同一个读取器，与同一时刻待发的其他读取合并。结果（工单和评论）写进同步缓存。专注判定只用一次别名查询（`focusContexts`），不再有单个编号的回退读；读不到时只用本地数据。
+  - **上限，不静默截断**：一个请求最多 `ACTIVITY_MAX_PAIRS`（100）个任务（更多时同一时刻按 100 个一块分成几个请求，每个都有结果）；评论按同一个连接翻页（每页 250），合计超过 `ACTIVITY_MAX_COMMENTS`（5000）条时整次读取失败（`LINEAR_READ_BOUNDS`），所有调用方按读失败处理（**关闭**：不续办、不唤醒；等待记在 `wait.error`，评论续办在快照 `errors` 里报一条），不使用部分结果。单个工单被关闭、改派或等待目标无效只让它自己的那一项失败，不影响同批其他任务。
+  - 同步本身（`dispatcher/sync`）仍按原样用一次 watched 读 + 一次评论读服务所有等待；评论扫描（`dispatcher/comment-sweep`）仍是一次全项目查询，只决定哪些单被标脏，活动读依赖它的结果，所以两者是前后两个请求，不能合成一个。
 
 **本机脚本接口**（经已有的认证 `command()` RPC，即 `zrstudio/dsh/command.mjs` / `snapshot.mjs` 那条通道）
 
@@ -135,7 +138,7 @@ Classified completion queues a privacy-preserving comment and moves the issue to
 
 **用量与告警**
 
-- 每个 Linear HTTP 请求按「调用方 / 用途」计数（`dispatcher/sync`、`dispatcher/write`、`dispatcher/write-check`、`dispatcher/eligibility`、`dispatcher/comment-sweep`、`dispatcher/comments`、`dispatcher/focus`、`dispatcher/catalog`、`dispatcher/wait`（条件监听）、`dispatcher/intake`、`dispatcher/arm-wait` 等），快照 `linearUsage` 给出本小时合计、按调用方和按用途的计数；合批写入一个请求只记一次（记在 `dispatcher/write`）。
+- 每个 Linear HTTP 请求按「调用方 / 用途」计数（`dispatcher/sync`、`dispatcher/write`、`dispatcher/write-check`、`dispatcher/eligibility`、`dispatcher/comment-sweep`、`dispatcher/comments`、`dispatcher/activity`（同一个合批活动读里混有不同用途时记在这里；只有一种用途时记该用途，如 `dispatcher/comments`、`dispatcher/wait`、`dispatcher/arm-wait`）、`dispatcher/focus`、`dispatcher/catalog`、`dispatcher/wait`（条件监听）、`dispatcher/intake`、`dispatcher/arm-wait` 等），快照 `linearUsage` 给出本小时合计、按调用方和按用途的计数；合批写入一个请求只记一次（记在 `dispatcher/write`）。
 - 本小时请求数超过 `hourlyBudget`（默认 2500，Linear 每小时额度）× `warnFraction`（默认 0.6）时，快照 `errors` 出现一条告警，列出各调用方的请求数。快照 `linearOutbox` 给出待发条数、其中外部写入条数和上次发送时间。
 
 设置（顶层，可选）：
@@ -146,7 +149,7 @@ Classified completion queues a privacy-preserving comment and moves the issue to
   "maxRequestBytes": 400000, "workspaceCheckMs": 3600000 }
 ```
 
-测试（`test/linear-batch.test.js`，真实 `LinearClient` + 假传输，按请求数断言）：30 条回写评论 + 5 次改状态 + 4 条研究主管写入 ≤ 3 个请求（一次核对读 + 两块写）；同工单先进先出；关单保护读实时状态；毒块二分隔离、限流停发并遵守 retry-after、按字节分块；`flushPending` 只算到期项；工作区校验与未知编号；崩溃后先核对；外部写入不静默回退项目；10 个任务同轮启动 ≤ 1 次复核读，缓存新鲜时 0 次；部分别名失败只重试失败的那条；结果不明时先核对再发、不重复；入队幂等且重启后仍在；`linear-view` 不发请求；用量超告警线出快照错误。验收场景 (g) 在真实周期里确认所有写入都是别名合批请求。
+测试（`test/linear-batch.test.js`，真实 `LinearClient` + 假传输，按请求数断言）：30 条回写评论 + 5 次改状态 + 4 条研究主管写入 ≤ 3 个请求（一次核对读 + 两块写）；同工单先进先出；关单保护读实时状态；毒块二分隔离、限流停发并遵守 retry-after、按字节分块；`flushPending` 只算到期项；工作区校验与未知编号；崩溃后先核对；外部写入不静默回退项目；10 个任务同轮启动 ≤ 1 次复核读，缓存新鲜时 0 次；部分别名失败只重试失败的那条；结果不明时先核对再发、不重复；入队幂等且重启后仍在；`linear-view` 不发请求；用量超告警线出快照错误。验收场景 (g) 在真实周期里确认所有写入都是别名合批请求。`test/linear-activity-batch.test.js`：10 个被标脏、有新评论的已结束任务 + 3 个等待在一个周期里只发 1 次活动读（加评论扫描），没有逐单读；`monitor()` 的 3 个等待 1 次；`arm-wait` 与同一时刻的等待读合成 1 次；关单只让自己那项失败、整次失败时所有调用方失败；评论超上限整次失败、150 个任务分 2 块。验收场景 (l)：5 个和 50 个任务（含等待）都有新评论时，每个周期的读请求数都不超过 8、同一种查询一个周期最多出现两次（同步的工单 / 评论各两次），没有逐单读，总请求数（含别名写）不超过 12。
 
 ## Sessions and intervention
 

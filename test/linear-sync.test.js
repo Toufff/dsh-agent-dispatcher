@@ -27,6 +27,14 @@ async function fixture({ count = 1 } = {}) {
         comments: { nodes: f.comments.filter(c => c.issue.id === v.id), pageInfo: { hasNextPage: false } }
       } : {}) } });
     }
+    if (v.comments) {
+      // Batched activity read: issues by id + comments of the targets, paged on the comments connection.
+      if (f.fail === 'comments') return response(null, 503);
+      const items = f.comments.filter(c => v.comments.issue.id.in.includes(c.issue.id) && (!v.comments.updatedAt || c.updatedAt >= v.comments.updatedAt.gte));
+      const start = Number(v.after || 0), nodes = items.slice(start, start + f.pageSize), end = start + nodes.length;
+      return response({ organization: { id: 'w' }, ...(v.issues ? { issues: { nodes: f.issues.filter(i => v.issues.id.in.includes(i.id)) } } : {}),
+        comments: { nodes, pageInfo: { hasNextPage: end < items.length, endCursor: String(end) } } });
+    }
     const kind = query.includes('CommentFilter') ? 'comments' : 'issues';
     if (f.fail === kind || f.fail === 'intake' && v.filter.or) return response(null, 503);
     let items;

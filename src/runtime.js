@@ -11,7 +11,7 @@ import { outcomeProtocol, parseOutcome, inspectOutcome, outcomeReports } from '.
 import { parseSettings, unknownSettingKeys } from './config.js';
 import { CliAdapter } from './adapters/cli.js';
 import { DshAdapter } from './adapters/dsh.js';
-import { LinearClient, linearMapping, receiverAllowed, syncKey, replyExcludedId, validWaitTarget, WaitTargetError } from './linear.js';
+import { LinearClient, linearMapping, receiverAllowed, syncKey, replyExcludedId, validWaitTarget, WaitTargetError, ACTIVITY_MAX_PAIRS } from './linear.js';
 import { IssueCache, LinearUsage, batchPolicy, enqueueExternal, externalResults, flushBatched, cacheComment, readyItems } from './linear-outbox.js';
 import { LinearCredentials, credentialEnvNames, credentialKey } from './linear-auth.js';
 import { botTrust } from './comment-trust.js';
@@ -171,7 +171,7 @@ export class Runtime {
     this.linearFactory = linearFactory; this.adapters = {}; this.health = {}; this.errors = [];
     this.sync = new LinearSync(this); this.reads = new Map();
     // Linear merged exit: the sync cache every per-task read uses, and request counters (src/linear-outbox.js).
-    this.linearCache = new IssueCache(now); this.linearUsage = new LinearUsage(now); this.admissionBatches = new Map(); this.notifications = new Notifications(this);
+    this.linearCache = new IssueCache(now); this.linearUsage = new LinearUsage(now); this.admissionBatches = new Map(); this.activityBatches = new Map(); this.notifications = new Notifications(this);
     this.registry = registry || new AdapterRegistry();
     if (!registry) {
       for (const type of ['codex', 'claude']) this.registry.register(type, (config, deps) => new CliAdapter(config, path.join(deps.directory, 'runs'), deps.secretKeys));
@@ -496,7 +496,8 @@ export class Runtime {
       if (wait.kind === 'linear') {
         if (!original?.issue?.id || !originalProject?.linear?.enabled) throw new Error('Linear mapping is required');
         // Read-only validation before replacing the existing wait/cursor.
-        await this.client(originalProject.linear, { purpose: 'arm-wait' }).activity(linearMapping(originalProject, before.settings), wait.issueId || original.issue.id, original.issue.id);
+        // Goes through the batched reader: coalesced with every other read pending this tick; no comments needed.
+        await this.readActivity(originalProject, before.settings, wait.issueId || original.issue.id, original.issue.id, { purpose: 'arm-wait', since: new Date().toISOString() });
       }
       await this.dispatcher.update(state => {
         const task = state.tasks.find(t => t.id === request.id);
@@ -656,6 +657,63 @@ export class Runtime {
     }
     batch.ids.add(issueId);
     return check((await batch.promise).get(issueId));
+  }
+  /**
+   * Comment / activity data of one task's issue (parent eligibility, wait target, comments). Every read registered
+   * in the same tick — comment follow-ups, chain comments, wait monitoring, arm-wait validation — leaves as ONE
+   * batched request per credential (LinearClient.activities); the issues and comments it sees go into the cache.
+   * Loops that await between tasks register all their reads up front (prefetchActivities). Fails closed: a failed
+   * or out-of-bounds read rejects every caller of that batch; nothing partial is used.
+   */
+  readActivity(project, settings, issueId, parentId, { purpose = 'activity', since } = {}) {
+    const mapping = linearMapping(project, settings);
+    const client = this.client(project.linear, { purpose });
+    // Clients without the batched read (test doubles) keep the single read.
+    if (typeof client.activities !== 'function') return client.activity(mapping, issueId, parentId);
+    const key = syncKey(mapping);
+    let batch = this.activityBatches.get(key);
+    if (!batch) {
+      batch = { pairs: new Map() };
+      this.activityBatches.set(key, batch);
+      batch.promise = new Promise(resolve => setImmediate(resolve)).then(async () => {
+        this.activityBatches.delete(key);
+        const pairs = [...batch.pairs.values()], out = new Map();
+        this.usagePurpose(client, new Set(pairs.map(p => p.purpose)).size === 1 ? pairs[0].purpose : 'activity');
+        // More pairs than one request may carry: further requests of at most ACTIVITY_MAX_PAIRS, never truncated.
+        for (let i = 0; i < pairs.length; i += ACTIVITY_MAX_PAIRS) {
+          const result = await client.activities(pairs.slice(i, i + ACTIVITY_MAX_PAIRS));
+          for (const [k, v] of result) out.set(k, v);
+          for (const issue of result.issues || []) this.linearCache.put(issue);
+          for (const c of result.comments || []) this.linearCache.putComment(cacheComment(c, pairs.find(p => p.issueId === c.issue?.id)?.mapping.projectId));
+        }
+        return out;
+      });
+      batch.promise.catch(() => {});
+    }
+    const id = `${issueId}|${parentId}`, old = batch.pairs.get(id);
+    // The same pair asked twice reads from the earlier `since` (no since = full history).
+    const earlier = !old ? since : old.since && since ? (old.since < since ? old.since : since) : undefined;
+    batch.pairs.set(id, { issueId, parentId, mapping, since: earlier, purpose: old && old.purpose !== purpose ? 'activity' : purpose });
+    return batch.promise.then(map => {
+      const result = map.get(id);
+      if (!result) throw new Error('Linear activity read returned no result');
+      if (result.error) throw result.error;
+      return result.value;
+    });
+  }
+  /** Registers many reads in this tick (one batched request); Map key -> promise (rejections are handled by the caller). */
+  prefetchActivities(entries) {
+    const out = new Map();
+    for (const { key, project, settings, issueId, parentId, purpose, since } of entries) {
+      let promise;
+      // Test doubles without the batched read are read one by one, when (and only if) the loop reaches them.
+      try { if (typeof this.rawClient(project.linear)?.activities !== 'function') continue; } catch { continue; }
+      try { promise = this.readActivity(project, settings, issueId, parentId, { purpose, since }); }
+      catch (error) { promise = Promise.reject(error); }
+      promise.catch(() => {});
+      out.set(key, promise);
+    }
+    return out;
   }
   /** The effective mapping (settings.linear binding merged) of a project.linear object passed by a caller. */
   boundMapping(linear) {
@@ -1002,6 +1060,7 @@ export class Runtime {
       }
     });
     const snapshot = await this.store.read();
+    const jobs = [];
     for (const old of snapshot.tasks.filter(t => currentTask(t, snapshot) && t.status === 'blocked' && t.owner !== 'human' && LIVE_WAIT.has(t.wait?.status))) {
       const [source] = JSON.parse(old.key);
       if (automaticBlock(old, snapshot, 'wake')) continue;
@@ -1018,6 +1077,13 @@ export class Runtime {
       if (observing && (!project.followup.observeAfterExpiry || !project.linear?.enabled || !old.issue?.id || !project.followup.commentAuthorIds.length)) continue;
       if (observing && old.wait.kind === 'task') continue;
       if (snapshot.tasks.some(t => t.owner === 'human' && t.cwd === old.cwd)) continue;
+      jobs.push({ old, source, project, observing, recheck, remote });
+    }
+    // Waits the sync did not supply are read together: one batched request for all of them (see readActivity).
+    const prefetched = this.prefetchActivities(jobs.filter(j => j.remote && !options.activities && j.project.linear?.enabled && j.old.issue?.id &&
+      isDeepStrictEqual(j.project, j.old.waitProject)).map(j => ({ key: j.old.id, project: j.project, settings: snapshot.settings,
+      issueId: j.old.wait.issueId || j.old.issue.id, parentId: j.old.issue.id, purpose: 'wait', since: j.old.wait.armedAt })));
+    for (const { old, source, project, observing, recheck, remote } of jobs) {
       try {
         if (!isDeepStrictEqual(project, old.waitProject)) throw waitFault('WAIT_CONFIGURATION_CHANGED');
         if (old.wait.kind === 'linear' && (!project.linear?.enabled || !project.followup.commentAuthorIds.length || !old.issue?.id))
@@ -1029,7 +1095,7 @@ export class Runtime {
         }
         const supplied = options.activities?.get(old.id);
         if (remote && supplied?.error) throw supplied.error;
-        const activity = remote ? supplied ? supplied.value : await this.client(project.linear, { purpose: 'wait' }).activity(linearMapping(project, snapshot.settings), old.wait.issueId, old.issue.id) : null;
+        const activity = remote ? supplied ? supplied.value : await (prefetched.get(old.id) || this.readActivity(project, snapshot.settings, old.wait.issueId || old.issue.id, old.issue.id, { purpose: 'wait', since: old.wait.armedAt })) : null;
         let event = old.wait.kind === 'task' ? localEvent : wakeEvent(observing ? { ...old.wait, kind: 'linear', notBefore: undefined, expiresAt: undefined, recheckAt: undefined,
           seen: [...(old.wait.seen || []), ...(old.wait.observedRevisions || [])] } : old.wait,
           activity, await this.waitPolicy(project, snapshot.settings), Date.now(), ownCommentIds(snapshot));
@@ -1168,6 +1234,28 @@ export class Runtime {
     }
     return project => project.linear ? modes.get(keyOf(project.linear)) || 'skip' : 'skip';
   }
+  /**
+   * The comment reads this pass will make (a superset is harmless: the read is shared): hot tasks whose issue the
+   * sweep marked dirty (or every one on the first pass), plus settled rounds carrying queued comments.
+   */
+  commentReadsDue(state, modeOf) {
+    const entries = [];
+    for (const task of state.tasks) {
+      if (!currentTask(task, state) || task.owner === 'human' || task.pendingStop || !task.issue?.id) continue;
+      const project = state.settings.projects.find(p => p.id === task.projectId), policy = project?.followup;
+      if (!policy?.enabled || !policy.reviewComments || !project.linear?.enabled) continue;
+      const settled = terminal.has(task.status);
+      if (settled && (!reviewStatuses.includes(task.status) || !task.assessed && task.status !== 'stopped' || automaticBlock(task, state, 'comment'))) continue;
+      if (settled && LIVE_WAIT.has(task.wait?.status) && !policy.trustReceiverComments && !linearMapping(project, state.settings)?.botMode) continue;
+      const [source] = JSON.parse(task.key);
+      if (keyTaken(state, JSON.stringify([source, `continue:${task.id}`]))) continue;
+      if (!(settled && task.pendingComments?.length) && !this.commentDue(task, modeOf(project))) continue;
+      if (Date.now() < (this.reviewCheckedAt?.get(task.id) || 0)) continue;
+      if (settled && task.reviewLimitNotified && (task.reviewWakeups || 0) >= (policy.maxWakeups || 8) && (task.reviewAudits || 0) >= (policy.maxAudits ?? 3)) continue;
+      entries.push({ key: task.id, project, settings: state.settings, issueId: task.issue.id, parentId: task.issue.id, purpose: 'comments', since: task.createdAt });
+    }
+    return entries;
+  }
   /** Whether this task's issue needs a full comment read now (see commentSweep). */
   commentDue(task, mode) {
     if (mode === 'skip' || Date.now() < (this.commentPauseUntil || 0)) return false;
@@ -1176,6 +1264,8 @@ export class Runtime {
   /** A rate-limited full read pauses the remaining reads of this pass and the next ones until Linear allows. */
   commentReadFailed(error) {
     if (error?.code === 'RATE_LIMITED') this.commentPauseUntil = Date.now() + (error.retryAfterMs || 60000);
+    // Over the batched read's bounds nothing was used (fail closed); say so instead of skipping silently.
+    if (error?.code === 'LINEAR_READ_BOUNDS' && !this.errors.includes(`Linear 评论读取：${error.message}`)) this.errors.push(`Linear 评论读取：${error.message}`);
   }
   /** Settled-round and chain comment pass; the sweep cursor and unread issues are persisted after it. */
   async reviewComments() {
@@ -1189,11 +1279,13 @@ export class Runtime {
     const own = new Set(ownCommentIds(state));
     this.reviewCheckedAt ||= new Map();
     const modeOf = await this.commentSweep(state);
+    // Every task due a comment read this pass is read in ONE batched request (registered before the loop awaits).
+    const prefetched = this.prefetchActivities(this.commentReadsDue(state, modeOf));
     for (const task of state.tasks) {
       if (Date.now() < (this.commentPauseUntil || 0)) return;
       // A chain that keeps continuing on its own never settles, so the settled-round path below would never
       // see an owner comment on it (LON-35, 2026-11-14: an "owner" comment waited through 7 automatic rounds).
-      if (!terminal.has(task.status)) { await this.queueChainComments(task, state, own, modeOf); continue; }
+      if (!terminal.has(task.status)) { await this.queueChainComments(task, state, own, modeOf, prefetched); continue; }
       // Rounds that ended waiting on people. Live structured waits stay with monitor(). A stopped round was never
       // assessed; it resumes on a comment like the others.
       if (!currentTask(task, state) || !reviewStatuses.includes(task.status) || !task.assessed && task.status !== 'stopped' ||
@@ -1234,7 +1326,7 @@ export class Runtime {
       this.reviewCheckedAt.set(task.id, Date.now() + reviewCommentInterval);
       let activity;
       // Closed, reassigned or moved issues are rejected by eligibility: nothing to continue.
-      try { activity = await this.client(project.linear, { purpose: 'comments' }).activity(linearMapping(project, state.settings), task.issue.id, task.issue.id); }
+      try { activity = await (prefetched.get(task.id) || this.readActivity(project, state.settings, task.issue.id, task.issue.id, { purpose: 'comments', since: task.createdAt })); }
       catch (error) { this.commentReadFailed(error); continue; }
       this.commentDirty.delete(task.issue.id);
       const since = Date.parse(task.createdAt || 0), seen = new Set(task.followupSeen || []);
@@ -1308,7 +1400,7 @@ export class Runtime {
    * keeps them in task.pendingComments for the next automatic round (see assess()), or, if the round settles
    * instead, keeps them queued for the settled-round comment path (reviewComments), which resumes the task.
    */
-  async queueChainComments(task, state, own, modeOf = () => 'all') {
+  async queueChainComments(task, state, own, modeOf = () => 'all', prefetched = new Map()) {
     if (!currentTask(task, state) || task.owner === 'human' || task.pendingStop || !task.issue?.id) return;
     const project = state.settings.projects.find(p => p.id === task.projectId);
     const policy = project?.followup;
@@ -1325,7 +1417,7 @@ export class Runtime {
     if (Date.now() < (this.reviewCheckedAt.get(task.id) || 0)) return;
     this.reviewCheckedAt.set(task.id, Date.now() + reviewCommentInterval);
     let activity;
-    try { activity = await this.client(project.linear, { purpose: 'comments' }).activity(linearMapping(project, state.settings), task.issue.id, task.issue.id); }
+    try { activity = await (prefetched.get(task.id) || this.readActivity(project, state.settings, task.issue.id, task.issue.id, { purpose: 'comments', since: task.createdAt })); }
     catch (error) { this.commentReadFailed(error); return; }
     this.commentDirty.delete(task.issue.id);
     const prefix = (policy.selfCommentPrefix ?? 'ZRSTUDIO').trim();
@@ -1461,25 +1553,19 @@ export class Runtime {
       .catch(error => this.dispatcher.update(state => { recordJudgement(state, item, { verdict: 'error', by: 'judge', reason: String(error?.message || error).slice(0, 300) }); }).catch(() => {}))
       .finally(() => { this.focusJudging = null; });
   }
-  /** Bounded Linear read for focus rules; null when unavailable (rules then use local data only). */
+  /** Bounded Linear read for focus rules (refs: array, one aliased query); null when unavailable. */
   async focusLinear(state, task, ref) {
     if (state.settings.focus?.linearContext === false) return null;
     const project = state.settings.projects.find(p => p.id === task.projectId);
     if (!project?.linear) return null;
     let client;
     try { client = this.client(project.linear, { purpose: 'focus' }); } catch { return null; }
-    if (Array.isArray(ref)) {
-      // Every context one evaluation needs, in ONE aliased query (was one request per focus issue).
-      if (typeof client.focusContexts !== 'function') return undefined;
-      let timer;
-      try { return await Promise.race([client.focusContexts(ref), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), 20000); })]); }
-      catch { return null; } finally { clearTimeout(timer); }
-    }
-    if (typeof client.focusContext !== 'function') return null;
+    // Every context one evaluation needs, in ONE aliased query; there is no per-issue read. A client without the
+    // batched read, or a failed read, gives no Linear context (the rules then use local data only).
+    if (typeof client.focusContexts !== 'function') return null;
     let timer;
-    try {
-      return await Promise.race([client.focusContext(ref), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), 20000); })]);
-    } catch { return null; } finally { clearTimeout(timer); }
+    try { return await Promise.race([client.focusContexts(ref), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), 20000); })]); }
+    catch { return null; } finally { clearTimeout(timer); }
   }
   /** One relatedness evaluation: rules on Linear context, then the judge. Result recorded per (issue, revision). */
   async focusEvaluate(item) {
@@ -1492,14 +1578,13 @@ export class Runtime {
     const missing = state.focus.issues.slice(0, 30).filter(f => !this.focusContexts.map.has(f));
     const many = await this.focusLinear(state, task, [ref, ...missing]);
     // A failed batched read leaves the contexts empty (rules then use local data) instead of reading one by one.
-    if (many !== undefined) for (const f of missing) this.focusContexts.map.set(f, many?.get(f) ?? null);
-    const remote = many !== undefined ? many?.get(ref) ?? null : await this.focusLinear(state, task, ref);
+    for (const f of missing) this.focusContexts.map.set(f, many?.get(f) ?? null);
+    const remote = many?.get(ref) ?? null;
     const candidate = { ...local, ...(remote ? { title: remote.title || local.title, description: [remote.description, local.description].filter(Boolean).join('\n\n').slice(0, 24000),
       parent: remote.parent, children: remote.children, comments: [...(remote.comments || []), ...local.comments] } : {}) };
     const contexts = {};
     for (const f of state.focus.issues.slice(0, 30)) {
-      if (!this.focusContexts.map.has(f)) this.focusContexts.map.set(f, await this.focusLinear(state, task, f));
-      contexts[f] = this.focusContexts.map.get(f);
+      contexts[f] = this.focusContexts.map.get(f) ?? null;
     }
     const rule = relatedByRules({ focus: { issues: state.focus.issues, contexts }, candidate });
     let decision;

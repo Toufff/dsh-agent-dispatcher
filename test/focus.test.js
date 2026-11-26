@@ -172,8 +172,8 @@ test('command judge: real child process, related / bad output / timeout; secrets
 });
 
 test('rules from Linear context (parent) relate a candidate without asking the judge', async () => {
-  const { runtime, starts, judged } = await fixture({ linear: { focusContext: async ref => ref === 'issue-2'
-    ? { identifier: 'EX-2', title: 'child', description: '', parent: 'EX-1', children: [], comments: [] } : null } });
+  const { runtime, starts, judged } = await fixture({ linear: { focusContexts: async refs => new Map(refs.map(ref => [ref, ref === 'issue-2'
+    ? { identifier: 'EX-2', title: 'child', description: '', parent: 'EX-1', children: [], comments: [] } : null])) } });
   await runtime.command({ action: 'focus-set', issues: ['EX-1'] });
   await submit(runtime, 2);
   await step(runtime); await step(runtime);
