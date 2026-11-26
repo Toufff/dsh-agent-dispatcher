@@ -27,6 +27,10 @@ Executor IDs identify configured instances; `type` selects the adapter. More tha
 
 The project directory must already exist. Issues cannot set it. The ordered executor list is captured when a task enters the queue. Changing priority affects future tasks; command and project changes are refused while affected tasks are unresolved. Configuration saves detect stale revisions from other windows.
 
+### Settings fields this build does not know
+
+`configure` validates every field the running bundle knows strictly (wrong types, ranges and enums are still rejected). A field it does not know — typically one added by a newer build whose `dist/` has not been reloaded yet, or left by an older one — is no longer rejected with `Unrecognized key`: it is stored verbatim, survives later `configure` calls and host restarts, and has no effect in this process. The snapshot (and therefore every command response, including `configure`) lists such fields in `settingsUnknownKeys`, as paths like `futureFlag`, `projects[<project id>].followup.<key>` or `executors[<executor id>].<key>`. A non-empty list means "this process does not understand these settings — rebuild/restart the host for them to take effect". The list sits beside `settings`, not inside it, so sending `snapshot.settings` back to `configure` does not store it. Changing an unknown field inside a project mapping still counts as a mapping change for running tasks (stop them first), because a later build will apply it.
+
 ## Linear
 
 The header has a separate **检查 Linear 连接** button. It reports the authenticated account/workspace, success or failure, and check time without taking in issues or launching agents. This checks identity/catalog read access, not write permission. The header also states the current API-key authentication and 30-second polling mode. OAuth and webhooks are not configured by this version; changing authentication alone would not enable push delivery.

@@ -3,7 +3,7 @@ import { stat, readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { Dispatcher, terminal } from './dispatcher.js';
 import { outcomeProtocol, parseOutcome, inspectOutcome, outcomeReports } from './outcome.js';
-import { settingsSchema } from './config.js';
+import { parseSettings, unknownSettingKeys } from './config.js';
 import { CliAdapter } from './adapters/cli.js';
 import { DshAdapter } from './adapters/dsh.js';
 import { LinearClient, linearMapping, assigneeAllowed } from './linear.js';
@@ -236,7 +236,9 @@ export class Runtime {
     // Archived history is listed by stub; the full task and its older rounds are fetched on demand.
     const archived = archivedStubs(state).map(({ id, title, status, projectId, issue, createdAt, endedAt, supersededBy, archivedAt }) =>
       ({ id, title, status, projectId, issue, createdAt, endedAt, supersededBy, archivedAt }));
-    return { ...state, tasks, archived, linearSync: undefined, syncStatus, health: this.health, errors: [...this.errors, ...reportErrors, ...monitorErrors, ...expired, ...attentionErrors, ...notificationErrors, ...reviewLimits] };
+    return { ...state, tasks, archived, linearSync: undefined, syncStatus, health: this.health,
+      // Settings fields this bundle does not understand (kept, no effect until a rebuild/restart).
+      settingsUnknownKeys: unknownSettingKeys(state.settings), errors: [...this.errors, ...reportErrors, ...monitorErrors, ...expired, ...attentionErrors, ...notificationErrors, ...reviewLimits] };
   }
   sharedRead(key, operation, ttl = 0) {
     const old = this.reads.get(key);
@@ -248,7 +250,7 @@ export class Runtime {
     return entry.promise;
   }
   async configure(settings, revision) {
-    settings = settingsSchema.parse(settings);
+    settings = parseSettings(settings);
     await this.dispatcher.update(state => {
       if (revision !== state.revision) throw new Error('Settings changed in another window; refresh first');
       const active = state.tasks.filter(t => !terminal.has(t.status));
