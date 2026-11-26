@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm, access } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { acquireLease, lockStaleness } from '../src/host-lease.js';
+import { acquireLease, lockStaleness, ownProcess } from '../src/host-lease.js';
 import { DshAdapter, isSystemNotice } from '../src/adapters/dsh.js';
 import { Dispatcher, MemoryStore } from '../src/dispatcher.js';
 
@@ -215,4 +215,35 @@ test('snapshot: a busy task with an ambiguous residual queue shows an error; a p
   await runtime.dispatcher.reconcile();
   const [error] = residual(await runtime.snapshot());
   assert.match(error, /user@nextTurn/); assert.match(error, /ambiguous-queued-items/);
+});
+
+// ---- review findings (accept3) ----
+
+test('lease: own start time comes from the same probe a later host uses; release never removes a lock it no longer owns', async () => {
+  const started = T0 + 5_000;
+  const me = await ownProcess(async pid => (assert.equal(pid, process.pid), { alive: true, startedAt: started }));
+  assert.equal(me.processStartedAt, new Date(started).toISOString());
+  // Probe unavailable: falls back to the uptime estimate.
+  assert.ok(Date.parse((await ownProcess(async () => { throw new Error('no ps'); })).processStartedAt) <= Date.now());
+  // A recorded start time within the widened tolerance (clock step) is still the same live process.
+  assert.equal((await lockStaleness({ pid: 9, processStartedAt: new Date(T0).toISOString() }, async () => ({ alive: true, startedAt: T0 + 3_000 }))).stale, false);
+  const d = await dir();
+  const release = await acquireLease(d, { self, probe: async () => assert.fail('no probe') });
+  const other = { pid: 5151, processStartedAt: new Date(T0).toISOString(), startedAt: new Date(T0).toISOString() };
+  await writeLock(d, other);                    // another host took the lock over meanwhile
+  await release();
+  assert.deepEqual(await readLock(d), other, 'the other host\'s lock is kept');
+  await rm(d, { recursive: true });
+});
+
+test('residual cleanup keeps the text of removed tool-jobs notices in the cleared record', async () => {
+  const c = clock();
+  const job = { id: 'j1', source: { kind: 'tool-jobs' }, content: [{ type: 'text', text: 'job 7 finished: 3 files written' }] };
+  const agent = fakeAgent({ nextTurn: [job] });
+  const adapter = new DshAdapter({ agents: { get: () => agent } }, { residualNoticeMinutes: 1 }, { now: c.now });
+  await adapter.reconcile(structuredClone(busy));
+  c.t += 2 * 60_000;
+  const result = await adapter.reconcile(structuredClone(busy));
+  assert.equal(result.status, 'ready');
+  assert.equal(result.cleared[0].text, 'job 7 finished: 3 files written');
 });

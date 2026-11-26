@@ -2,8 +2,9 @@ import { execFile } from 'node:child_process';
 import { appendFile, mkdir, open, readFile, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
-// Two process start times closer than this are the same process (clock rounding, reporting jitter).
-const SAME_PROCESS_MS = 2000;
+// Two process start times closer than this are the same process (clock rounding, reporting jitter). Both sides
+// now come from the OS (see ownProcess), so this only absorbs rounding; it is wide enough for a small clock step.
+const SAME_PROCESS_MS = 5000;
 // A takeover mutex older than this belongs to a host that died mid-takeover.
 const TAKEOVER_STALE_MS = 60_000;
 
@@ -13,6 +14,19 @@ const execText = (file, args) => new Promise(resolve =>
 /** This process: pid and process start time (not the lock time), so a later host can detect PID reuse. */
 export function selfProcess() {
   return { pid: process.pid, processStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString() };
+}
+/**
+ * This process with its start time read from the SAME source a later host's probe uses (the OS process table), so a
+ * wall-clock step or sleep between start and lease time cannot make a live host look like a reused pid. Falls back
+ * to the uptime estimate when the OS start time cannot be read.
+ */
+export async function ownProcess(probe = probeProcess) {
+  const fallback = selfProcess();
+  try {
+    const info = await probe(process.pid);
+    if (Number.isFinite(info?.startedAt)) return { pid: process.pid, processStartedAt: new Date(info.startedAt).toISOString() };
+  } catch { /* fall back */ }
+  return fallback;
 }
 
 /**
@@ -56,8 +70,9 @@ async function readLock(file) {
 
 async function create(file, self, now) {
   const handle = await open(file, 'wx', 0o600);
-  await handle.writeFile(JSON.stringify({ ...self, startedAt: new Date(now()).toISOString() }));
-  return handle;
+  const text = JSON.stringify({ ...self, startedAt: new Date(now()).toISOString() });
+  await handle.writeFile(text);
+  return { handle, text };
 }
 
 /**
@@ -66,14 +81,15 @@ async function create(file, self, now) {
  * re-read under the mutex and replaced only if it is still the record judged stale, so two starting hosts never
  * both win. Each takeover appends one JSON line to host-lock-audit.log. A live owner is refused as before.
  */
-export async function acquireLease(directory, { probe = probeProcess, self = selfProcess(), now = Date.now, log = () => {} } = {}) {
+export async function acquireLease(directory, { probe = probeProcess, self, now = Date.now, log = () => {} } = {}) {
+  self ??= await ownProcess(probe);
   await mkdir(directory, { recursive: true });
   const file = path.join(directory, 'host.lock');
   const mutexFile = `${file}.takeover`;
   const audit = path.join(directory, 'host-lock-audit.log');
-  let handle;
+  let handle, written;
   for (let tries = 0; !handle; tries++) {
-    try { handle = await create(file, self, now); break; }
+    try { ({ handle, text: written } = await create(file, self, now)); break; }
     catch (e) { if (e.code !== 'EEXIST') throw e; }
     if (tries >= 3) throw new Error('Dispatcher host lock is contended; retry the start.');
     let seen;
@@ -93,12 +109,17 @@ export async function acquireLease(directory, { probe = probeProcess, self = sel
       const current = await readLock(file).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
       if (current && current.text !== seen.text) continue;   // the lock changed since it was judged: judge again
       if (current) await unlink(file);
-      handle = await create(file, self, now);
+      ({ handle, text: written } = await create(file, self, now));
       const line = { at: new Date(now()).toISOString(), action: 'host-lock-takeover', reason: verdict.reason,
         previous: seen.lock, pid: self.pid, processStartedAt: self.processStartedAt };
       await appendFile(audit, `${JSON.stringify(line)}\n`, { mode: 0o600 });
       try { log(`agent-dispatcher: took over stale host.lock (${verdict.reason}, previous pid ${seen.lock.pid})`); } catch { /* optional */ }
     } finally { await mutex.close(); await unlink(mutexFile).catch(() => {}); }
   }
-  return async () => { await handle.close(); await unlink(file); };
+  // Release removes host.lock only while it is still the record this host wrote (another host may have taken over).
+  return async () => {
+    await handle.close();
+    const current = await readFile(file, 'utf8').catch(() => null);
+    if (current === written) await unlink(file).catch(e => { if (e.code !== 'ENOENT') throw e; });
+  };
 }

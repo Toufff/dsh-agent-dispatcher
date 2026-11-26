@@ -76,7 +76,11 @@ export class DshAdapter {
     const ambiguous = items.filter(m => !isSystemNotice(m));
     const stuck = extra => ({ status: 'busy', stuck: { since: new Date(since).toISOString(), items: items.map(describe), ...extra } });
     if (ambiguous.length || typeof agent.inbox.remove !== 'function') return stuck({ reason: ambiguous.length ? 'ambiguous-queued-items' : 'queue-removal-unavailable' });
-    const cleared = items.map(describe);
+    // tool-jobs notices carry background job completions and results: their text is kept in the cleared record
+    // (task event residual-notices-cleared) so the output is not lost with the removed notice.
+    const noticeText = m => { const c = m.content ?? m.message?.content ?? m.data?.content;
+      return Array.isArray(c) ? c.filter(p => p?.type === 'text').map(p => p.text).join('\n') : typeof c === 'string' ? c : ''; };
+    const cleared = items.map(m => { const d = describe(m); if (d.kind === 'tool-jobs') d.text = noticeText(m).slice(0, 2000); return d; });
     try { for (const message of items) agent.inbox.remove(message.id); }
     catch { return stuck({ reason: 'queue-removal-failed' }); }
     if (agent.status !== 'idle' || blocking(agent).length) return stuck({ reason: 'queue-not-empty-after-removal' });
