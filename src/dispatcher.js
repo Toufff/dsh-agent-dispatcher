@@ -4,7 +4,7 @@ import { waitFaults } from './followup.js';
 import { currentTask, issueKey, keyTaken, repairRound, deliverPendingComments, withHandover } from './workflow.js';
 import { asStateStore } from './state-store.js';
 
-export const terminal = new Set(['review', 'failed', 'exhausted', 'stopped', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result']);
+export const terminal = new Set(['review', 'failed', 'exhausted', 'stopped', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result', 'manual']);
 async function bounded(operation, ms = 15000) {
   let timer;
   try { return await Promise.race([Promise.resolve().then(operation), new Promise(resolve => {

@@ -617,7 +617,9 @@ export class Runtime {
         if (error) task.resultError = error; else delete task.resultError;
         const autoRoundLimit = state.settings.projects.find(p => p.id === task.projectId)?.followup?.maxAutoRounds || 40;
         task.autoRoundLimit = autoRoundLimit;
-        const continuation = outcome?.status === 'continue' ? continuationPolicy(task, outcome, autoRoundLimit, archivedRounds(task, state)) : null;
+        const continuation = outcome?.status === 'continue' ? continuationPolicy(task, outcome, autoRoundLimit, archivedRounds(task, state), {
+          minStagesPerRound: state.settings.projects.find(p => p.id === task.projectId)?.followup?.minStagesPerRound,
+        }) : null;
         task.outcome = outcome; task.assessed = true;
         const followupPolicy = state.settings.projects.find(p => p.id === task.projectId)?.followup || {};
         if (outcome?.workItems) {

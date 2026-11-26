@@ -289,3 +289,20 @@ test('archived rounds keep only ledger changes, and the budget decisions stay th
   // Compaction is idempotent, so a restart migration can run it over state that is already compact.
   assert.deepEqual(compactRound(compact.rounds.slice(0, 1), compact.rounds[1]), compact.rounds[1]);
 });
+
+test('minStagesPerRound: one closed stage per round is not progress', () => {
+  const items = [ready('a'), ready('b'), ready('c')];
+  const t = { autoRounds: 0, continuationIdleRounds: 0, workItems: items };
+  const outcome = list => ({ workItems: list, progress: 'same text' });
+  const one = continuationPolicy(t, outcome([done('a'), items[1], items[2]]), 40, [], { minStagesPerRound: 3 });
+  assert.equal(one.doneNow, 1); assert.equal(one.enough, false);
+  assert.equal(one.repeat, false); assert.equal(one.stop, 'no-progress'); assert.equal(one.idle, 1);
+  const three = continuationPolicy(t, outcome([done('a'), done('b'), done('c')]), 40, [], { minStagesPerRound: 3 });
+  assert.equal(three.doneNow, 3); assert.equal(three.repeat, true); assert.equal(three.idle, 0);
+  // 0 (the default) keeps the old one-stage behaviour
+  assert.equal(continuationPolicy(t, outcome([done('a'), items[1], items[2]])).repeat, true);
+  // Stages already done in an earlier round cannot be closed again to satisfy the quota
+  const again = continuationPolicy({ ...t, workItems: [done('a'), items[1], items[2]] },
+    outcome([done('a'), done('b'), done('c')]), 40, [], { minStagesPerRound: 3 });
+  assert.equal(again.doneNow, 2); assert.equal(again.repeat, false);
+});

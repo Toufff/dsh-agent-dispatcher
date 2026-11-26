@@ -34,6 +34,9 @@ export const projectSchema = z.object({
     dataVersionFile: z.string().refine(path.isAbsolute, 'Use an absolute local file').optional(),
     // Automatic continue rounds a task may run before it stalls for review (default 40).
     maxAutoRounds: z.number().int().min(1).max(500).optional(),
+    // A round counts as progress only when it closes at least this many ledger stages (0 = one stage is enough).
+    // Without it a long ledger comes back one stage per round, paying to rebuild the context every time.
+    minStagesPerRound: z.number().int().min(0).max(50).optional(),
     // Hand a stuck task to a fresh session (failed format repair, idle rounds, ledger left out twice); once per episode.
     freshRescue: z.boolean().optional(),
     // Rotate to a fresh session after this many automatic rounds in one session.

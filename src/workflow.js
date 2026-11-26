@@ -226,10 +226,20 @@ export function archiveRound(task, round, earlier = []) {
 }
 
 // Evidence remains an executor claim. Changing prose alone cannot renew a budget.
-/** earlier: archived rounds of the task; their ledger history counts like the rounds still kept. */
-export function continuationPolicy(task, outcome, maxAutoRounds = 40, earlier = []) {
+/**
+ * earlier: archived rounds of the task; their ledger history counts like the rounds still kept.
+ * options.minStagesPerRound: a round must close at least this many stages of the ledger to count as progress
+ * (0 disables the check). Without it one stage per round is enough, so a task with a long ledger comes back
+ * dozens of times, each round paying to rebuild the whole context.
+ */
+export function continuationPolicy(task, outcome, maxAutoRounds = 40, earlier = [], options = {}) {
   const normalize = value => value.trim().replace(/\s+/g, ' ');
   const history = [...[...earlier, ...(task.rounds || [])].flatMap(r => r.outcome?.workItems || []), ...(task.workItems || [])];
+  const minStages = Math.max(0, Math.trunc(Number(options.minStagesPerRound) || 0));
+  const opened = item => {
+    const old = history.filter(previous => previous.id === item.id);
+    return old.length > 0 && !old.some(previous => previous.status === 'done');
+  };
   const checkpoint = (outcome.workItems || []).some(item => {
     const old = history.filter(previous => previous.id === item.id);
     if (!old.length || old.some(previous => previous.status === 'done')) return false;
@@ -237,10 +247,12 @@ export function continuationPolicy(task, outcome, maxAutoRounds = 40, earlier = 
     const seen = new Set(old.flatMap(previous => previous.evidence).map(normalize));
     return item.evidence.some(value => !seen.has(normalize(value)));
   });
-  const idle = checkpoint ? 0 : (task.continuationIdleRounds ?? task.autoRounds ?? 0);
+  const doneNow = (outcome.workItems || []).filter(item => item.status === 'done' && opened(item)).length;
+  const enough = minStages === 0 || doneNow >= minStages;
+  const idle = checkpoint && enough ? 0 : (task.continuationIdleRounds ?? task.autoRounds ?? 0);
   const budget = (task.autoRounds || 0) >= maxAutoRounds || idle >= 3;
-  const progress = checkpoint || Boolean(outcome.progress.trim()) && outcome.progress !== task.lastProgress;
-  return { repeat: progress && !budget, idle: checkpoint ? 0 : idle + 1, checkpoint,
+  const progress = enough && (checkpoint || Boolean(outcome.progress.trim()) && outcome.progress !== task.lastProgress);
+  return { repeat: progress && !budget, idle: checkpoint && enough ? 0 : idle + 1, checkpoint, doneNow, enough,
     stop: budget ? 'budget' : 'no-progress' };
 }
 
