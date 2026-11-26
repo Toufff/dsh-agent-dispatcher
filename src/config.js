@@ -99,3 +99,44 @@ export const initialState = () => ({ version: 1, revision: 0, paused: true, task
     { id: 'dsh', label: 'DSH', type: 'dsh', enabled: true, args: [], sandbox: 'workspace-write', verified: false },
     { id: 'claude', label: 'Claude Code', type: 'claude', command: 'claude', enabled: false, args: [], sandbox: 'workspace-write', verified: false }
   ], projects: [] } });
+
+// Settings written by a newer (or older) bundle may carry fields this process does not know. They are kept
+// verbatim, round-trip through configure and the store, and have no effect here; known fields stay strictly
+// validated. unknownSettingKeys lists them so the UI can say a rebuild/restart is needed for them to apply.
+const unwrap = schema => {
+  let s = schema;
+  while (s?._zod?.def && ['optional', 'default', 'nullable', 'prefault', 'readonly'].includes(s._zod.def.type)) s = s._zod.def.innerType;
+  return s;
+};
+const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const label = (item, index) => plain(item) && typeof item.id === 'string' && item.id ? `[${item.id}]` : `[${index}]`;
+// Walks value against schema; returns [{ at: [...keys/indexes], key, value, path }] for every unknown key.
+function collectUnknown(schema, value, at = [], shown = '') {
+  const s = unwrap(schema), def = s?._zod?.def, found = [];
+  if (def?.type === 'object' && plain(value)) {
+    for (const [key, child] of Object.entries(value)) {
+      const path = shown ? `${shown}.${key}` : key;
+      if (!Object.hasOwn(def.shape, key)) found.push({ at, key, value: child, path });
+      else found.push(...collectUnknown(def.shape[key], child, [...at, key], path));
+    }
+  } else if (def?.type === 'array' && Array.isArray(value)) {
+    value.forEach((item, i) => found.push(...collectUnknown(def.element, item, [...at, i], `${shown}${label(item, i)}`)));
+  }
+  return found;
+}
+const reach = (root, at) => at.reduce((node, key) => node?.[key], root);
+export function unknownSettingKeys(settings) {
+  return collectUnknown(settingsSchema, settings).map(u => u.path);
+}
+// Strict parse of the known fields, then the unknown ones put back unchanged.
+export function parseSettings(raw) {
+  const unknown = collectUnknown(settingsSchema, raw);
+  const known = structuredClone(raw);
+  for (const u of unknown) delete reach(known, u.at)[u.key];
+  const parsed = settingsSchema.parse(known);
+  for (const u of unknown) {
+    const target = reach(parsed, u.at);
+    if (plain(target)) target[u.key] = structuredClone(u.value);
+  }
+  return parsed;
+}

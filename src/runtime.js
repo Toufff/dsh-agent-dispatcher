@@ -6,7 +6,7 @@ import { is, statusesWith, TASK_STATES, RESUMABLE_ATTEMPT, LIVE_WAIT, WATCHED_WA
 import { automaticBlock, blockError, clearHold, restartReadiness, AUTOMATIC, HOLD_ERROR, DRAIN_ERROR } from './hold.js';
 import { explainTask, effectiveFollowup, migrateUserStops } from './explain.js';
 import { outcomeProtocol, parseOutcome, inspectOutcome, outcomeReports } from './outcome.js';
-import { settingsSchema } from './config.js';
+import { parseSettings, unknownSettingKeys } from './config.js';
 import { CliAdapter } from './adapters/cli.js';
 import { DshAdapter } from './adapters/dsh.js';
 import { LinearClient, linearMapping, assigneeAllowed } from './linear.js';
@@ -245,7 +245,9 @@ export class Runtime {
     const archived = archivedStubs(state).map(({ id, title, status, projectId, issue, createdAt, endedAt, supersededBy, archivedAt }) =>
       ({ id, title, status, projectId, issue, createdAt, endedAt, supersededBy, archivedAt }));
     const drain = state.drain?.on ? state.drain : { on: false };
-    return { ...state, tasks, archived, drain, restart: restartReadiness(state), linearSync: undefined, syncStatus, health: this.health, errors: [...this.errors, ...reportErrors, ...monitorErrors, ...expired, ...attentionErrors, ...notificationErrors, ...reviewLimits] };
+    return { ...state, tasks, archived, drain, restart: restartReadiness(state), linearSync: undefined, syncStatus, health: this.health,
+      // Settings fields this bundle does not understand (kept, no effect until a rebuild/restart).
+      settingsUnknownKeys: unknownSettingKeys(state.settings), errors: [...this.errors, ...reportErrors, ...monitorErrors, ...expired, ...attentionErrors, ...notificationErrors, ...reviewLimits] };
   }
   sharedRead(key, operation, ttl = 0) {
     const old = this.reads.get(key);
@@ -257,7 +259,7 @@ export class Runtime {
     return entry.promise;
   }
   async configure(settings, revision) {
-    settings = settingsSchema.parse(settings);
+    settings = parseSettings(settings);
     await this.dispatcher.update(state => {
       if (revision !== state.revision) throw new Error('Settings changed in another window; refresh first');
       const active = state.tasks.filter(t => !terminal.has(t.status));
