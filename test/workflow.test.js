@@ -306,3 +306,16 @@ test('minStagesPerRound: one closed stage per round is not progress', () => {
     outcome([done('a'), done('b'), done('c')]), 40, [], { minStagesPerRound: 3 });
   assert.equal(again.doneNow, 2); assert.equal(again.repeat, false);
 });
+
+test('minStagesPerRound: a fresh task is not stopped on its first round', () => {
+  // Round 1 registers stages; nothing is in the ledger yet, so no stage can be closed by the quota rule.
+  const first = continuationPolicy({ autoRounds: 0, continuationIdleRounds: 0, workItems: [] },
+    { workItems: [ready('a'), ready('b')], progress: 'registered two hypotheses' }, 40, [],
+    { minStagesPerRound: 1 });
+  assert.equal(first.doneNow, 0); assert.equal(first.enough, true);
+  assert.equal(first.repeat, true);
+  // The quota still applies from round 2 on, when the ledger has something to close.
+  const later = continuationPolicy({ autoRounds: 1, continuationIdleRounds: 0, workItems: [ready('a'), ready('b')] },
+    { workItems: [ready('a'), ready('b')], progress: 'nothing done' }, 40, [], { minStagesPerRound: 1 });
+  assert.equal(later.doneNow, 0); assert.equal(later.enough, false); assert.equal(later.stop, 'no-progress');
+});
