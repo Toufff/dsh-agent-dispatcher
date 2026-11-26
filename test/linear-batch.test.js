@@ -23,6 +23,9 @@ function fakeLinear() {
     const ok = body => ({ ok: true, status: 200, headers: new Headers(), json: async () => body });
     if (f.down) return { ok: false, status: 503, headers: new Headers(), json: async () => ({}) };
     if (query.trim().startsWith('mutation(')) {
+      // A whole request refused (HTTP 400, as for a bad variable value or query complexity) when it carries a poison alias.
+      if (f.poison && Object.values(v).some(x => x && typeof x === 'object' && f.poison(x))) return { ok: false, status: 400, headers: new Headers(), json: async () => ({ errors: [{ message: 'bad input' }] }) };
+      if (f.limited) { f.limited--; return { ok: false, status: 429, headers: new Headers({ 'retry-after': '120' }), json: async () => ({}) }; }
       const data = {}, errors = [];
       for (const [, alias, kind] of query.matchAll(/(\w+): (commentCreate|issueCreate|issueUpdate)\(/g)) {
         const input = v[alias];
@@ -34,9 +37,11 @@ function fakeLinear() {
       if (f.applyThenFail) { f.applyThenFail = false; return { ok: false, status: 502, headers: new Headers(), json: async () => ({}) }; }
       return ok({ data, ...(errors.length ? { errors } : {}) });
     }
-    const data = { organization: { id: 'w' } };
+    const data = { organization: { id: f.org || 'w' } };
     if (v?.comments) data.comments = { nodes: [...f.comments.keys()].filter(id => v.comments.id.in.includes(id)).map(id => ({ id })) };
     if (v?.issues) data.issues = { nodes: v.issues.id.in.map(id => ({ id, identifier: id, state: { id: 's', type: f.closed?.has(id) ? 'completed' : 'started' } })) };
+    // writeCheck resolves identifiers the cache does not know with aliased issue(id:) reads.
+    for (const [k, ref] of Object.entries(v || {})) if (/^r\d+$/.test(k)) data[k] = f.missing?.has(ref) ? null : { id: `id-${ref}`, identifier: ref, state: { id: 's', type: f.closed?.has(ref) ? 'completed' : 'started' }, project: { id: 'lp' } };
     if (v?.filter?.id?.in) data.issues = { nodes: v.filter.id.in.map(id => ({ id, identifier: id.toUpperCase(), project: { id: 'lp' }, assignee: { id: 'owner' }, delegate: null, state: { id: 'ready', type: 'unstarted' } })),
       pageInfo: { hasNextPage: false, endCursor: null } };
     return ok({ data });
@@ -59,13 +64,13 @@ async function fixture({ store = new MemoryStore(), linearBatch = {}, f = fakeLi
 const roundItem = (n, extra = {}) => ({ id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, taskId: `t${n}`, projectId: 'p', roundReport: true,
   issueId: `issue-${n}`, body: `round ${n}`, status: 'pending', tries: 0, ...extra });
 
-test('30 report comments + 5 state updates + 4 director enqueues leave in at most 2 requests', async () => {
+test('30 report comments + 5 state updates + 4 director enqueues leave in at most 3 requests', async () => {
   const { runtime, f } = await fixture();
   await runtime.dispatcher.update(s => {
     for (let n = 0; n < 30; n++) s.outbox.push(roundItem(n));
     for (let n = 30; n < 35; n++) s.outbox.push(roundItem(n, { body: '', stateId: 'active' }));
   }, { durable: true });
-  // The sync already saw those issues' states (watched read): no guard read is needed.
+  // Even with the states cached, one check read (workspace, live states for the guard, identifiers) precedes the writes.
   for (let n = 30; n < 35; n++) runtime.linearCache.put({ id: `issue-${n}`, state: { id: 'review', type: 'started' } });
   const queued = [];
   for (let n = 0; n < 4; n++) queued.push(await runtime.command({ action: 'linear-enqueue', caller: 'director', idempotencyKey: `review-${n}`,
@@ -73,7 +78,8 @@ test('30 report comments + 5 state updates + 4 director enqueues leave in at mos
   assert.ok(queued.every(q => q.status === 'queued'));
   assert.equal(f.calls.length, 0, 'enqueue itself never calls Linear');
   await runtime.report();
-  assert.ok(f.calls.length <= 2, `requests: ${f.calls.length}`);
+  assert.ok(f.calls.length <= 3, `requests: ${f.calls.length}`);
+  assert.equal(f.calls.filter(c => !c.query.trim().startsWith('mutation(')).length, 1, 'one shared check read');
   assert.equal(f.mutations().reduce((n, c) => n + f.aliases(c), 0), 39);
   assert.ok(f.mutations().every(c => f.aliases(c) <= 25));
   const state = await runtime.store.load();
@@ -82,18 +88,19 @@ test('30 report comments + 5 state updates + 4 director enqueues leave in at mos
   assert.deepEqual(results.map(r => r.status), ['sent', 'sent', 'sent', 'sent']);
   assert.match(results[2].result.issueIdentifier, /^LP-/);
   assert.ok(results[0].result.commentId);
-  assert.equal(runtime.linearUsage.snapshot().byPurpose['dispatcher/write'], f.calls.length);
+  const usage = runtime.linearUsage.snapshot().byPurpose;
+  assert.equal(usage['dispatcher/write'] + usage['dispatcher/write-check'], f.calls.length);
 });
 
 test('flush waits for the interval unless enough items are pending', async () => {
   const { runtime, f } = await fixture({ linearBatch: { flushIntervalMs: 3600000, flushPending: 3 } });
   await runtime.dispatcher.update(s => { s.outbox.push(roundItem(1)); }, { durable: true });
-  await runtime.report(); assert.equal(f.calls.length, 1); // first flush after start
+  await runtime.report(); assert.equal(f.calls.length, 2); // first flush after start: workspace check + mutation
   await runtime.dispatcher.update(s => { s.outbox.push(roundItem(2)); }, { durable: true });
-  await runtime.report(); assert.equal(f.calls.length, 1, 'within the window one item waits');
+  await runtime.report(); assert.equal(f.calls.length, 2, 'within the window one item waits');
   await runtime.dispatcher.update(s => { s.outbox.push(roundItem(3), roundItem(4)); }, { durable: true });
-  await runtime.report(); assert.equal(f.calls.length, 2, 'flushPending reached: all leave in one request');
-  assert.equal(f.aliases(f.calls[1]), 3);
+  await runtime.report(); assert.equal(f.calls.length, 3, 'flushPending reached: all leave in one request (workspace already verified)');
+  assert.equal(f.aliases(f.calls[2]), 3);
 });
 
 test('a partial alias failure retries only the failed item, alone', async () => {
@@ -231,4 +238,130 @@ test('linearUsage counts requests per caller and purpose and warns over the budg
   assert.equal(snap.linearUsage.byCaller.dispatcher, f.calls.length);
   assert.ok(snap.linearUsage.over);
   assert.ok(snap.errors.some(e => /Linear 请求本小时/.test(e)));
+});
+
+// ---- Review findings (accept3) regression tests ----
+const due = async runtime => runtime.dispatcher.update(s => { for (const i of s.outbox) if (i.status === 'pending') i.nextAt = 0; });
+
+test('per-issue FIFO: a newer comment never overtakes an older one on the same issue that failed or backs off', async () => {
+  const { runtime, f } = await fixture();
+  f.reject = (kind, input) => kind === 'commentCreate' && input.body === 'A';
+  await runtime.dispatcher.update(s => { s.outbox.push(roundItem(1, { issueId: 'same', body: 'A' })); }, { durable: true });
+  await runtime.report();
+  await runtime.dispatcher.update(s => { s.outbox.push(roundItem(2, { issueId: 'same', body: 'B' })); s.outbox.push(roundItem(3, { issueId: 'other', body: 'C' })); }, { durable: true });
+  f.calls = []; await runtime.report();
+  const sent = f.mutations().flatMap(c => Object.values(c.variables).map(x => x?.body)).filter(Boolean);
+  assert.ok(!sent.includes('B'), 'B waits behind A (A is backing off)');
+  assert.ok(sent.includes('C'), 'another issue is not blocked');
+  // A is due again: still only A for that issue in this flush; B follows only after A is sent.
+  f.reject = () => false; await due(runtime); f.calls = [];
+  await runtime.report();
+  assert.deepEqual(f.mutations().flatMap(c => Object.values(c.variables).map(x => x?.body)).filter(Boolean), ['A']);
+  await due(runtime); f.calls = []; await runtime.report();
+  assert.deepEqual(f.mutations().flatMap(c => Object.values(c.variables).map(x => x?.body)).filter(Boolean), ['B']);
+  // External ops are ordered with task writes on the same issue (resolved id).
+  runtime.linearCache.put({ id: 'same', identifier: 'LP-7', state: { type: 'started' } });
+  await runtime.dispatcher.update(s => { s.outbox.push(roundItem(4, { issueId: 'same', body: 'D', nextAt: Date.now() + 60000 })); }, { durable: true });
+  await runtime.command({ action: 'linear-enqueue', caller: 'director', idempotencyKey: 'e', op: { kind: 'comment', issue: 'LP-7', body: 'E' } });
+  f.calls = []; await runtime.report();
+  assert.equal(f.mutations().length, 0, 'E waits behind D');
+});
+
+test('state moves always read the live state: a person closing the issue inside the cache window is honoured', async () => {
+  const { runtime, f } = await fixture();
+  f.closed = new Set(['issue-1']);
+  runtime.linearCache.put({ id: 'issue-1', state: { id: 'review', type: 'started' } }); // fresh but stale in reality
+  await runtime.dispatcher.update(s => { s.outbox.push(roundItem(1, { body: '', stateId: 'active' })); }, { durable: true });
+  await runtime.report();
+  assert.equal(f.states.has('issue-1'), false);
+  assert.deepEqual((await runtime.store.load()).outbox[0].parts, { state: 'skipped' });
+  // External issueUpdate with stateId gets the same guard.
+  const q = await runtime.command({ action: 'linear-enqueue', caller: 'ops', idempotencyKey: 'u', op: { kind: 'issueUpdate', issue: 'issue-9', input: { stateId: 'active' } } });
+  f.closed.add('issue-9'); f.calls = [];
+  await runtime.report();
+  assert.equal(f.states.has('issue-9'), false);
+  const [r] = await runtime.command({ action: 'linear-result', ids: [q.id] });
+  assert.equal(r.status, 'failed'); assert.match(r.error, /关闭/);
+});
+
+test('a poison alias is isolated by bisection; the rest of the chunk is sent and the poison stops after maxTries', async () => {
+  const { runtime, f } = await fixture({ linearBatch: { maxTries: 2 } });
+  f.poison = input => input.body === 'poison';
+  await runtime.dispatcher.update(s => { for (let n = 1; n <= 8; n++) s.outbox.push(roundItem(n, n === 5 ? { body: 'poison' } : {})); }, { durable: true });
+  await runtime.report();
+  let state = await runtime.store.load();
+  assert.deepEqual(state.outbox.map(i => i.status), ['sent', 'sent', 'sent', 'sent', 'pending', 'sent', 'sent', 'sent']);
+  assert.ok(f.mutations().length <= 1 + 2 * Math.ceil(Math.log2(8)), `bisection requests: ${f.mutations().length}`);
+  await due(runtime); await runtime.report();
+  state = await runtime.store.load();
+  assert.equal(state.outbox[4].status, 'failed', 'a rejected task write is terminal after maxTries');
+  assert.ok((await runtime.snapshot()).errors.some(e => /停止重试/.test(e)));
+});
+
+test('a rate limit stops the rest of the flush and its retry-after is honoured; chunks are capped by bytes', async () => {
+  const { runtime, f } = await fixture({ linearBatch: { maxPerRequest: 2, maxRequestBytes: 10000 } });
+  await runtime.dispatcher.update(s => { for (let n = 1; n <= 6; n++) s.outbox.push(roundItem(n)); }, { durable: true });
+  f.limited = 1;
+  await runtime.report();
+  assert.equal(f.mutations().length, 1, 'after the 429 no further chunk is sent');
+  const state = await runtime.store.load();
+  assert.ok(state.outbox.every(i => i.status === 'pending' && i.nextAt >= Date.now() + 100000), 'retry-after (120s) honoured');
+  // Byte cap: two 6000-char bodies do not share a request.
+  const g = await fixture({ linearBatch: { maxPerRequest: 25, maxRequestBytes: 10000 } });
+  await g.runtime.dispatcher.update(s => { s.outbox.push(roundItem(1, { body: 'x'.repeat(6000) }), roundItem(2, { body: 'y'.repeat(6000) })); }, { durable: true });
+  await g.runtime.report();
+  assert.equal(g.f.mutations().length, 2);
+});
+
+test('flushPending counts only due items; backing-off items do not trigger a flush every tick', async () => {
+  const { runtime, f } = await fixture({ linearBatch: { flushIntervalMs: 3600000, flushPending: 3 } });
+  await runtime.dispatcher.update(s => { s.outbox.push(roundItem(0)); }, { durable: true });
+  await runtime.report(); f.calls = [];
+  await runtime.dispatcher.update(s => { for (let n = 1; n <= 10; n++) s.outbox.push(roundItem(n, { tries: 1, nextAt: Date.now() + 600000 })); s.outbox.push(roundItem(20)); }, { durable: true });
+  await runtime.report();
+  assert.equal(f.calls.length, 0, 'one due item waits for the window');
+});
+
+test('workspace guard: a credential of another workspace sends nothing; an unknown identifier fails instead of passing through', async () => {
+  const { runtime, f } = await fixture();
+  f.org = 'other';
+  await runtime.dispatcher.update(s => { s.outbox.push(roundItem(1)); }, { durable: true });
+  const q = await runtime.command({ action: 'linear-enqueue', caller: 'director', idempotencyKey: 'w', op: { kind: 'comment', issue: 'LON-404', body: 'x' } });
+  await runtime.report();
+  assert.equal(f.mutations().length, 0);
+  assert.ok((await runtime.snapshot()).errors.some(e => /工作区/.test(e)));
+  f.org = 'w'; f.missing = new Set(['LON-404']); await due(runtime);
+  await runtime.report();
+  const [r] = await runtime.command({ action: 'linear-result', ids: [q.id] });
+  assert.equal(r.status, 'failed'); assert.match(r.error, /找不到/);
+  assert.equal((await runtime.store.load()).outbox[0].status, 'sent');
+});
+
+test('in-flight marker: a crash after the send makes the next attempt check first (no duplicate even on the first try)', async () => {
+  const { runtime, f } = await fixture();
+  await runtime.dispatcher.update(s => { s.outbox.push(roundItem(1)); }, { durable: true });
+  // Simulate: the marker was written and the comment reached Linear, then the process died before recording.
+  f.comments.set(roundItem(1).id, 1);
+  await runtime.dispatcher.update(s => { s.outbox[0].attemptAt = new Date().toISOString(); });
+  await runtime.report();
+  assert.equal(f.mutations().length, 0); assert.equal(f.comments.get(roundItem(1).id), 1);
+  assert.equal((await runtime.store.load()).outbox[0].status, 'sent');
+});
+
+test('external writes: no silent project fallback, and a client without batchWrite fails the item visibly', async () => {
+  const { runtime } = await fixture();
+  await runtime.dispatcher.update(s => { s.settings.projects.push({ id: 'p2', label: 'Two', cwd: process.cwd(), linear: { ...mapping, projectId: 'lp2' } }); });
+  await assert.rejects(runtime.command({ action: 'linear-enqueue', caller: 'ops', idempotencyKey: 'amb', op: { kind: 'comment', issue: 'ZZ-1', body: 'x' } }), /无法确定/);
+  const ok = await runtime.command({ action: 'linear-enqueue', caller: 'ops', idempotencyKey: 'pid', op: { kind: 'issueCreate', input: { projectId: 'lp2', teamId: 't', title: 'x' } } });
+  runtime.linearFactory = token => ({ report: async () => {} });
+  await runtime.report();
+  const [r] = await runtime.command({ action: 'linear-result', ids: [ok.id] });
+  assert.equal(r.status, 'failed'); assert.match(r.error, /合批/);
+});
+
+test('linear-view reports comment coverage only from the comment sweep (null when none is configured)', async () => {
+  const { runtime } = await fixture();
+  runtime.linearCache.synced();
+  const view = await runtime.command({ action: 'linear-view', include: ['comments'] });
+  assert.ok(view.cacheAt); assert.equal(view.commentsCoveredUntil, null); assert.equal(view.commentsCoveredFrom, null);
 });

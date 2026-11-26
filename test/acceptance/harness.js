@@ -101,6 +101,17 @@ export class FakeLinear {
       }
       return reply(200, { data, ...(errors.length ? { errors } : {}) });
     }
+    if (/^query(\(|\s*\{)/.test(query.trim()) && query.includes('organization { id }') && !query.includes('$filter') && !query.includes('viewer')) {
+      // Merged-exit check read: workspace, comments / issues by id, and identifiers (r0..) in one query.
+      data = { organization: org };
+      if (v?.comments) data.comments = { nodes: this.comments.filter(c => matches(c, v.comments)).map(c => ({ id: c.id })) };
+      if (v?.issues) data.issues = { nodes: [...this.issues.values()].filter(i => matches(i, v.issues)).map(i => this.view(i)) };
+      for (const [key, ref] of Object.entries(v || {})) if (/^r\d+$/.test(key)) {
+        const i = this.issues.get(ref) || [...this.issues.values()].find(x => x.identifier === ref);
+        data[key] = i ? this.view(i) : null;
+      }
+      return reply(200, { data });
+    }
     if (/\br0: issue\(id:\$r0\)/.test(query)) {
       data = {};
       for (const [key, ref] of Object.entries(v)) {

@@ -133,10 +133,13 @@ export class LinearClient {
       return error;
     };
     if (response.status === 429) throw limited();
+    // `status` lets callers tell a request Linear refused (4xx: retrying the same request cannot help) from a
+    // transport or server failure (5xx, network): see isRejection.
+    const httpError = () => Object.assign(new Error(`Linear HTTP ${response.status}`), { status: response.status });
     // Linear reports a rejected token as HTTP 400 with an AUTHENTICATION_ERROR body: read it for bot credentials.
-    if (!response.ok && !(this.credential && response.status === 400)) throw new Error(`Linear HTTP ${response.status}`);
+    if (!response.ok && !(this.credential && response.status === 400)) throw httpError();
     const result = await response.json();
-    if (!response.ok && !result?.errors?.some(e => e.extensions?.code === 'AUTHENTICATION_ERROR')) throw new Error(`Linear HTTP ${response.status}`);
+    if (!response.ok && !result?.errors?.some(e => e.extensions?.code === 'AUTHENTICATION_ERROR')) throw httpError();
     if (result.errors?.some(e => e.extensions?.code === 'RATELIMITED' || e.extensions?.code === 'RATE_LIMITED')) throw limited();
     if (this.credential && result.errors?.some(e => e.extensions?.code === 'AUTHENTICATION_ERROR')) {
       this.credential.invalidate(authorization);
@@ -191,8 +194,11 @@ export class LinearClient {
       const alias = e.path?.[0];
       if (alias) failed.set(alias, String(e.message || 'Linear rejected the write').slice(0, 200));
     }
-    // An error without a path cannot be attributed: every alias without data counts as failed.
+    // An error without a path cannot be attributed (query validation, a bad variable value, complexity): when no
+    // alias ran at all, the whole request was refused. It throws as a rejection so the caller can bisect the chunk
+    // and isolate the alias that poisons it, instead of blaming every alias in it.
     const general = (result.errors || []).find(e => !e.path?.length);
+    if (general && !ops.some(op => result.data?.[op.alias])) throw Object.assign(new Error(`Linear 拒绝整个请求：${String(general.message || '').slice(0, 200)}`), { status: 400, graphql: true });
     const out = new Map();
     for (const op of ops) {
       const value = result.data?.[op.alias];
@@ -205,14 +211,24 @@ export class LinearClient {
    * Before re-sending writes whose earlier attempt had an unknown outcome, and before moving issues whose state the
    * cache does not know freshly: ONE query for all of them. Returns { comments: Set(id), issues: Map(id -> issue) }.
    */
-  async writeCheck({ commentIds = [], issueIds = [] }) {
-    commentIds = [...new Set(commentIds)].slice(0, 250); issueIds = [...new Set(issueIds)].slice(0, 250);
-    if (!commentIds.length && !issueIds.length) return { comments: new Set(), issues: new Map() };
-    const decl = [], parts = [], variables = {};
+  /**
+   * The same single read also returns the credential's workspace (organization id: writes never leave for another
+   * workspace) and resolves issue refs (identifiers such as LON-123) the cache does not know: refs -> issue | null
+   * (null = Linear has no such issue for this credential).
+   */
+  async writeCheck({ commentIds = [], issueIds = [], refs = [] }) {
+    commentIds = [...new Set(commentIds)].slice(0, 250); issueIds = [...new Set(issueIds)].slice(0, 250); refs = [...new Set(refs)].slice(0, 40);
+    const decl = [], parts = ['organization { id }'], variables = {};
     if (commentIds.length) { decl.push('$comments:CommentFilter!'); parts.push('comments(filter:$comments, first:250) { nodes { id } }'); variables.comments = { id: { in: commentIds } }; }
     if (issueIds.length) { decl.push('$issues:IssueFilter!'); parts.push('issues(filter:$issues, first:250, includeArchived:true) { nodes { id identifier state { id type } } }'); variables.issues = { id: { in: issueIds } }; }
-    const data = await this.query(`query(${decl.join(', ')}) { ${parts.join(' ')} }`, variables);
-    return { comments: new Set((data.comments?.nodes || []).map(c => c.id)), issues: new Map((data.issues?.nodes || []).map(i => [i.id, i])) };
+    refs.forEach((ref, i) => { decl.push(`$r${i}:String!`); parts.push(`r${i}: issue(id:$r${i}) { id identifier state { id type } project { id } }`); variables[`r${i}`] = ref; });
+    const result = await this.request(`query${decl.length ? `(${decl.join(', ')})` : ''} { ${parts.join(' ')} }`, variables);
+    // A ref Linear cannot find fails only its own alias; any other error refuses the whole read.
+    const refAlias = /^r\d+$/;
+    if ((result.errors || []).some(e => !refAlias.test(String(e.path?.[0] ?? '')))) throw new Error('Linear rejected the request; check scope and identifiers');
+    const data = result.data || {};
+    return { organizationId: data.organization?.id || null, comments: new Set((data.comments?.nodes || []).map(c => c.id)),
+      issues: new Map((data.issues?.nodes || []).map(i => [i.id, i])), refs: new Map(refs.map((ref, i) => [ref, data[`r${i}`] || null])) };
   }
   /** Focus contexts of many refs (ids or identifiers) in ONE aliased query. Map ref -> context | null. */
   async focusContexts(refs) {

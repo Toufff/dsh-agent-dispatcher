@@ -112,11 +112,12 @@ Classified completion queues a privacy-preserving comment and moves the issue to
 **写（发件箱合批）**
 
 - 任务回写（评论、改状态）和本机脚本经 `linear-enqueue` 交来的写入都先进持久发件箱（`state.outbox`，与原回写发件箱同样落盘，重启不丢）。
-- 发件箱按凭据分组，**最多每 `flushIntervalMs`（默认 30 秒）**发一次；待发达到 **`flushPending`（默认 20 条）**时立即发。一次把所有到期写入拼成**一个带别名的 GraphQL mutation**（`c0: commentCreate(...) u1: issueUpdate(...) x2: issueCreate(...)`），每个请求最多 **`maxPerRequest`（默认 25）**个别名，超出分块。
-- Linear 对每个别名单独成败（`errors[].path[0]` 是别名）。成功的部分记为已发；**只重试失败的部分**，按 5 秒起指数退避（最长 5 分钟）。整个请求失败（网络、限流、认证）时这一批都按退避重试。Linear 失败**永远不会重跑编码**。
-- 幂等：评论和新建工单都带客户端生成的 id。上一次结果不明（超时、响应丢失）的写入，下次发送前先用**一次读**按 id 核对，已存在的直接记为已发，不会重复。`linear-enqueue` 按 `(caller, idempotencyKey)` 去重，重复提交返回 `duplicate` 和原 id（归档后仍认得）。
-- 改状态前的保护（人已关闭的单不往回改）用同步缓存里的状态；缓存里没有或超过 `cacheMaxAgeMs`（默认 120 秒）的，同一批只做**一次**按 id 的读。下一次同步也会把待改状态的单并进它的 watched 读。
-- 外部写入被 Linear 明确拒绝 `maxTries`（默认 12）次后标 `failed`；网络类失败一直退避重试。
+- 发件箱按凭据分组，**最多每 `flushIntervalMs`（默认 30 秒）**发一次；**到期**待发达到 **`flushPending`（默认 20 条）**时立即发（退避中的不算）。一次把所有到期写入拼成**一个带别名的 GraphQL mutation**（`c0: commentCreate(...) u1: issueUpdate(...) x2: issueCreate(...)`），每个请求最多 **`maxPerRequest`（默认 25）**个别名、变量合计不超过 **`maxRequestBytes`（默认 400000 字节）**，超出分块。
+- **同一工单先进先出**：一个工单只有最早的那条待发写入可以发出（且到期），它失败或退避时，后来的评论 / 改状态都等它；不同工单互不影响。
+- Linear 对每个别名单独成败（`errors[].path[0]` 是别名）。成功的部分记为已发；**只重试失败的部分**，按 5 秒起指数退避（最长 5 分钟）。整个请求失败时分两种：网络、5xx、认证按退避重试这一批；Linear 拒绝整个请求（4xx、没有 path 的校验错误）时**二分拆块**，直到把出问题的那个别名单独隔出来，只有它计为被拒。限流（429）停止本次后面所有块，按 `retry-after`（至少 60 秒）退避。Linear 失败**永远不会重跑编码**。
+- 幂等：评论和新建工单都带客户端生成的 id。发送前先持久写下 `attemptAt`；上一次结果不明（超时、响应丢失、发出后进程崩溃）的写入，下次发送前先用**一次读**按 id 核对，已存在的直接记为已发，不会重复。`linear-enqueue` 按 `(caller, idempotencyKey)` 去重，重复提交返回 `duplicate` 和原 id（归档后仍认得）。
+- 每次发送前的**核对读**（一个凭据一次）：工作区校验（`organization.id` 必须等于项目的 `workspaceId`，否则这个凭据的写入全部暂停并出快照错误；校验结果最多沿用 `workspaceCheckMs`，默认 1 小时）、所有待改状态工单的**实时**状态（人已关闭的单不往回改，不信缓存；外部 `issueUpdate` 带 `stateId` 同样保护）、缓存里没有的工单编号（如 `LON-123`，Linear 找不到就标 `failed`，不原样透传）。
+- 被 Linear 明确拒绝 `maxTries`（默认 12）次的写入（任务回写也一样）、状态一直读不到的改状态，标 `failed` 并在快照 `errors` 里显示一天；网络类失败一直退避重试。外部写入的项目无法确定（多个启用 Linear 的项目且工单未被同步过、`issueCreate` 没带 `projectId`）时入队直接拒绝；客户端不支持合批的外部写入标 `failed`。
 
 **读（同步缓存）**
 
@@ -124,27 +125,28 @@ Classified completion queues a privacy-preserving comment and moves the issue to
 - 每次同步把排队任务的工单和待改状态的工单并进同一个 watched 读，所以正常情况下启动和改状态都不需要单独请求。
 - 专注判定一次评估需要的所有工单上下文合成**一个**别名查询（原来每个专注工单一次）。
 - `issue-context`（面板展示）只读缓存，不发请求；缓存里还没有时返回 `cached: false`。
-- 已知局限：缓存在内存里，重启后由下一次同步重新填；它只包含派发器本来就读到的工单（Ready 接单、在办任务和等待的工单、自己写过的工单）和评论扫描见到的评论，不是整个项目的镜像。评论里人手动回复后的完整评论读取（结构化等待和评论续办）仍按原有的「先全项目一次查哪些单有新评论、再只读这些单」进行。
+- 已知局限：缓存在内存里，重启后由下一次同步重新填；它只包含派发器本来就读到的工单（Ready 接单、在办任务和等待的工单、自己写过的工单）和评论扫描见到的评论，不是整个项目的镜像。评论里人手动回复后的完整评论读取（结构化等待和评论续办）仍按原有的「先全项目一次查哪些单有新评论、再只读这些单」进行；这几条仍是逐任务读：评论续办 / 轮次评论检查（`dispatcher/comments`，每个有新评论的单一次 `activity()`，含复核和评论两次请求）、条件监听（`dispatcher/wait`）、`arm-wait`、专注判定单个编号的回退读。它们的量在 `linearUsage.byPurpose` 里分别可见，受评论扫描（只读被标脏的单）和 `hourlyBudget` 告警约束，尚未合批。
 
 **本机脚本接口**（经已有的认证 `command()` RPC，即 `zrstudio/dsh/command.mjs` / `snapshot.mjs` 那条通道）
 
 - `linear-enqueue`：`{caller: 'director'|'push-queue'|'ops', idempotencyKey, op}`，`op` 是 `{kind:'comment', issue:'LON-123'|issueId, body}`、`{kind:'issueCreate', input:{teamId?, projectId?, title, description, delegateToBot?, assigneeId?, labelIds?, stateId?}}`（Linear 要求 `teamId`；`projectId` 缺省用发送项目的 Linear 项目；`delegateToBot` 委派给本机机器人）或 `{kind:'issueUpdate', issue, input:{stateId?, labelIds?, delegateId?}}`（只认这三个字段，其余直接拒绝）。返回 `{id, status:'queued'|'duplicate'}`，入队本身不发任何 Linear 请求。
 - `linear-result`：`{ids:[...]}` → `[{id, status:'queued'|'sent'|'failed'|'retrying', result?:{issueIdentifier?, commentId?}, error?}]`，只读。
-- `linear-view`：`{projectId?, since?:ISO, include:['issues','comments']}` → 只读**上一次同步的缓存**，绝不发请求：`issues`（`id, identifier, title, state, assigneeId, delegateId, updatedAt`）和 `comments`（`id, issueIdentifier, authorId, authorIsBot, body, createdAt`，`since` 之后、最多 500 条）以及 `cacheAt`。`authorIsBot` = 本机发件箱发出的评论或机器人账号的评论。
+- `linear-view`：`{projectId?, since?:ISO, include:['issues','comments']}` → 只读**上一次同步的缓存**，绝不发请求：`issues`（`id, identifier, title, state, assigneeId, delegateId, updatedAt`）和 `comments`（`id, issueIdentifier, authorId, authorIsBot, body, createdAt`，`since` 之后、最多 500 条）以及 `cacheAt`（上一次**工单**同步的时间）、`commentsCoveredFrom` / `commentsCoveredUntil`：评论只由评论扫描进缓存，`[from, until]` 内创建的评论都在缓存里；没有配置评论扫描（`followup.enabled` + `reviewComments`）或本进程还没扫过时两者为 `null`。推进评论游标的调用方必须以 `commentsCoveredUntil` 为上限，为 `null` 时不推进。重启后第一次扫描也会做（覆盖最近一小时），不再跳过。`authorIsBot` = 本机发件箱发出的评论或机器人账号的评论。
 
 **用量与告警**
 
-- 每个 Linear HTTP 请求按「调用方 / 用途」计数（`dispatcher/sync`、`dispatcher/write`、`dispatcher/write-check`、`dispatcher/eligibility`、`dispatcher/comment-sweep`、`dispatcher/comments`、`dispatcher/focus`、`dispatcher/catalog` 等），快照 `linearUsage` 给出本小时合计、按调用方和按用途的计数；合批写入一个请求只记一次（记在 `dispatcher/write`）。
+- 每个 Linear HTTP 请求按「调用方 / 用途」计数（`dispatcher/sync`、`dispatcher/write`、`dispatcher/write-check`、`dispatcher/eligibility`、`dispatcher/comment-sweep`、`dispatcher/comments`、`dispatcher/focus`、`dispatcher/catalog`、`dispatcher/wait`（条件监听）、`dispatcher/intake`、`dispatcher/arm-wait` 等），快照 `linearUsage` 给出本小时合计、按调用方和按用途的计数；合批写入一个请求只记一次（记在 `dispatcher/write`）。
 - 本小时请求数超过 `hourlyBudget`（默认 2500，Linear 每小时额度）× `warnFraction`（默认 0.6）时，快照 `errors` 出现一条告警，列出各调用方的请求数。快照 `linearOutbox` 给出待发条数、其中外部写入条数和上次发送时间。
 
 设置（顶层，可选）：
 
 ```json
 "linearBatch": { "flushIntervalMs": 30000, "flushPending": 20, "maxPerRequest": 25,
-  "hourlyBudget": 2500, "warnFraction": 0.6, "cacheMaxAgeMs": 120000, "maxTries": 12 }
+  "hourlyBudget": 2500, "warnFraction": 0.6, "cacheMaxAgeMs": 120000, "maxTries": 12,
+  "maxRequestBytes": 400000, "workspaceCheckMs": 3600000 }
 ```
 
-测试（`test/linear-batch.test.js`，真实 `LinearClient` + 假传输，按请求数断言）：30 条回写评论 + 5 次改状态 + 4 条研究主管写入 ≤ 2 个请求；10 个任务同轮启动 ≤ 1 次复核读，缓存新鲜时 0 次；部分别名失败只重试失败的那条；结果不明时先核对再发、不重复；入队幂等且重启后仍在；`linear-view` 不发请求；用量超告警线出快照错误。验收场景 (g) 在真实周期里确认所有写入都是别名合批请求。
+测试（`test/linear-batch.test.js`，真实 `LinearClient` + 假传输，按请求数断言）：30 条回写评论 + 5 次改状态 + 4 条研究主管写入 ≤ 3 个请求（一次核对读 + 两块写）；同工单先进先出；关单保护读实时状态；毒块二分隔离、限流停发并遵守 retry-after、按字节分块；`flushPending` 只算到期项；工作区校验与未知编号；崩溃后先核对；外部写入不静默回退项目；10 个任务同轮启动 ≤ 1 次复核读，缓存新鲜时 0 次；部分别名失败只重试失败的那条；结果不明时先核对再发、不重复；入队幂等且重启后仍在；`linear-view` 不发请求；用量超告警线出快照错误。验收场景 (g) 在真实周期里确认所有写入都是别名合批请求。
 
 ## Sessions and intervention
 
