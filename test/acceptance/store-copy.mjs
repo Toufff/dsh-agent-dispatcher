@@ -8,7 +8,7 @@
 // It refuses any path under ~/.dsh. Imported by `node --test` it does nothing (no tests, no I/O).
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { FakeDomain } from '../fake-domain.js';
 
@@ -76,6 +76,7 @@ export async function runCopy({ code, copy, archive, cycles = 6 }) {
   await runtime.notifications?.pending?.catch?.(() => {});
   const final = await store.read();
   const snap = await runtime.snapshot();
+  await rm(directory, { recursive: true, force: true }).catch(() => {});
   const after = Object.fromEntries(final.tasks.map(t => [t.id, summary(t)]));
   const changed = Object.keys({ ...before, ...after }).filter(id => JSON.stringify(before[id]) !== JSON.stringify(after[id]))
     .map(id => ({ id, issue: (final.tasks.find(t => t.id === id) || initial.tasks.find(t => t.id === id))?.issue?.identifier, before: before[id] || null, after: after[id] || null }));
@@ -83,7 +84,8 @@ export async function runCopy({ code, copy, archive, cycles = 6 }) {
   return {
     code, cycles, tasks: final.tasks.length, statusBefore: statusHist(initial.tasks), statusAfter: statusHist(final.tasks),
     heldBefore: initial.tasks.filter(t => t.hold).length, heldAfterInit: afterInit.tasks.filter(t => t.hold).length, heldAfter: final.tasks.filter(t => t.hold).length,
-    focus: Boolean(final.focus?.issues?.length), settingsLinear: Boolean(final.settings.linear), drain: Boolean(final.drain?.on),
+    focus: Boolean(final.focus?.issues?.length), settingsLinear: Boolean(final.settings.linear), drain: Boolean(final.drain?.on), paused: Boolean(final.paused),
+    queued: final.tasks.filter(t => t.status === 'queued').map(t => ({ hold: Boolean(t.hold), notBefore: t.notBefore || t.nextAt || null, wait: t.wait?.status || null })),
     unknownSettingKeys: snap.settingsUnknownKeys ?? null, starts, judged, ops, writes: writes.length, unknown, errors: [...errors],
     outbox: final.outbox.reduce((h, o) => (h[o.status] = (h[o.status] || 0) + 1, h), {}), changed
   };

@@ -254,13 +254,15 @@ async function flushGroup(runtime, state, { client, project, items }, policy) {
   const ops = [], owners = new Map(), early = new Map();
   let botId;
   const mark = (item, fn) => { const list = early.get(item.id) || []; list.push(fn); early.set(item.id, list); };
+  // External ops may name an issue by identifier (LON-123): send the cached UUID when the cache knows it.
+  const issueRef = ref => cache.find(ref)?.id || ref;
   for (const item of items) {
     const parts = done(item), n = ops.length;
     if (item.external) {
       const op = item.op;
       if (op.kind === 'comment') {
         if (check.comments.has(item.id)) { mark(item, e => { e.parts = { ...e.parts, comment: item.id }; e.result = { commentId: item.id }; }); continue; }
-        ops.push({ alias: `x${n}`, kind: 'comment', input: { id: item.id, issueId: op.issue, body: op.body } });
+        ops.push({ alias: `x${n}`, kind: 'comment', input: { id: item.id, issueId: issueRef(op.issue), body: op.body } });
       } else if (op.kind === 'issueCreate') {
         const known = check.issues.get(item.id);
         if (known) { mark(item, e => { e.parts = { ...e.parts, create: true }; e.result = { issueIdentifier: known.identifier, issueId: known.id }; }); continue; }
@@ -274,7 +276,7 @@ async function flushGroup(runtime, state, { client, project, items }, policy) {
         }
         if (!input.teamId) { mark(item, e => { e.status = 'failed'; e.lastError = 'issueCreate 缺少 teamId'; e.finishedAt = new Date().toISOString(); }); continue; }
         ops.push({ alias: `x${n}`, kind: 'issueCreate', input });
-      } else ops.push({ alias: `x${n}`, kind: 'issueUpdate', id: op.issue, input: op.input });
+      } else ops.push({ alias: `x${n}`, kind: 'issueUpdate', id: issueRef(op.issue), input: op.input });
       owners.set(`x${n}`, { item, part: op.kind === 'comment' ? 'comment' : op.kind === 'issueCreate' ? 'create' : 'update' });
       continue;
     }
