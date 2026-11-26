@@ -497,7 +497,10 @@ export class Runtime {
         if (!original?.issue?.id || !originalProject?.linear?.enabled) throw new Error('Linear mapping is required');
         // Read-only validation before replacing the existing wait/cursor.
         // Goes through the batched reader: coalesced with every other read pending this tick; no comments needed.
-        await this.readActivity(originalProject, before.settings, wait.issueId || original.issue.id, original.issue.id, { purpose: 'arm-wait', since: new Date().toISOString() });
+        // A failure of the whole batch (caused by another pair: 503, bounds) is retried once with this pair alone.
+        const read = [originalProject, before.settings, wait.issueId || original.issue.id, original.issue.id, { purpose: 'arm-wait', since: new Date().toISOString() }];
+        try { await this.readActivity(...read); }
+        catch (error) { if (!(error.batchPairs > 1)) throw error; await this.soloActivity(...read); }
       }
       await this.dispatcher.update(state => {
         const task = state.tasks.find(t => t.id === request.id);
@@ -663,7 +666,8 @@ export class Runtime {
    * in the same tick — comment follow-ups, chain comments, wait monitoring, arm-wait validation — leaves as ONE
    * batched request per credential (LinearClient.activities); the issues and comments it sees go into the cache.
    * Loops that await between tasks register all their reads up front (prefetchActivities). Fails closed: a failed
-   * or out-of-bounds read rejects every caller of that batch; nothing partial is used.
+   * read rejects every caller of that batch (the error carries `batchPairs`, the batch size); a target over the
+   * comment bound fails only its own pairs (LinearClient.activities); nothing partial is used.
    */
   readActivity(project, settings, issueId, parentId, { purpose = 'activity', since } = {}) {
     const mapping = linearMapping(project, settings);
@@ -699,7 +703,20 @@ export class Runtime {
       if (!result) throw new Error('Linear activity read returned no result');
       if (result.error) throw result.error;
       return result.value;
-    });
+    }, error => { throw Object.assign(error, { batchPairs: batch.pairs.size }); });
+  }
+  /** One pair read on its own request (arm-wait retry after a batch-wide failure); same result shape as readActivity. */
+  async soloActivity(project, settings, issueId, parentId, { purpose = 'activity', since } = {}) {
+    const mapping = linearMapping(project, settings);
+    const client = this.client(project.linear, { purpose });
+    if (typeof client.activities !== 'function') return client.activity(mapping, issueId, parentId);
+    const result = await client.activities([{ issueId, parentId, mapping, since, purpose }]);
+    for (const issue of result.issues || []) this.linearCache.put(issue);
+    for (const c of result.comments || []) this.linearCache.putComment(cacheComment(c, mapping.projectId));
+    const one = result.get(`${issueId}|${parentId}`);
+    if (!one) throw new Error('Linear activity read returned no result');
+    if (one.error) throw one.error;
+    return one.value;
   }
   /** Registers many reads in this tick (one batched request); Map key -> promise (rejections are handled by the caller). */
   prefetchActivities(entries) {
@@ -1083,6 +1100,19 @@ export class Runtime {
     const prefetched = this.prefetchActivities(jobs.filter(j => j.remote && !options.activities && j.project.linear?.enabled && j.old.issue?.id &&
       isDeepStrictEqual(j.project, j.old.waitProject)).map(j => ({ key: j.old.id, project: j.project, settings: snapshot.settings,
       issueId: j.old.wait.issueId || j.old.issue.id, parentId: j.old.issue.id, purpose: 'wait', since: j.old.wait.armedAt })));
+    // Admission checks (timers, rechecks, local events) are registered up front too: one issuesByIds read, not one per task.
+    const admitted = new Map();
+    for (const { old, project, observing, recheck } of jobs) {
+      if (observing || !old.issue?.id || !project.linear?.enabled || !isDeepStrictEqual(project, old.waitProject)) continue;
+      // dependencyEvent throws for a stopped dependency: that is the loop's to report, nothing to prefetch.
+      let due = recheck || old.wait.kind === 'time';
+      if (!due && old.wait.kind === 'task') { try { due = Boolean(dependencyEvent(old.wait, old, snapshot, Date.now())); } catch { due = false; } }
+      if (!due) continue;
+      let promise;
+      try { promise = this.admission(linearMapping(project, snapshot.settings), old.issue.id); } catch (error) { promise = Promise.reject(error); }
+      promise.catch(() => {});
+      admitted.set(old.id, promise);
+    }
     for (const { old, source, project, observing, recheck, remote } of jobs) {
       try {
         if (!isDeepStrictEqual(project, old.waitProject)) throw waitFault('WAIT_CONFIGURATION_CHANGED');
@@ -1091,10 +1121,11 @@ export class Runtime {
         const localEvent = old.wait.kind === 'task' ? dependencyEvent(old.wait, old, snapshot, Date.now()) : null;
         if (!observing && old.issue?.id && (recheck || old.wait.kind === 'time' || localEvent)) {
           if (!project.linear?.enabled) throw new Error('Enable Linear before resuming an issue timer');
-          await this.admission(linearMapping(project, snapshot.settings), old.issue.id);
+          await (admitted.get(old.id) || this.admission(linearMapping(project, snapshot.settings), old.issue.id));
         }
         const supplied = options.activities?.get(old.id);
         if (remote && supplied?.error) throw supplied.error;
+        // No wait.issueId = the wait watches the task's own issue (same default as arm-wait).
         const activity = remote ? supplied ? supplied.value : await (prefetched.get(old.id) || this.readActivity(project, snapshot.settings, old.wait.issueId || old.issue.id, old.issue.id, { purpose: 'wait', since: old.wait.armedAt })) : null;
         let event = old.wait.kind === 'task' ? localEvent : wakeEvent(observing ? { ...old.wait, kind: 'linear', notBefore: undefined, expiresAt: undefined, recheckAt: undefined,
           seen: [...(old.wait.seen || []), ...(old.wait.observedRevisions || [])] } : old.wait,
@@ -1248,7 +1279,8 @@ export class Runtime {
       if (settled && (!reviewStatuses.includes(task.status) || !task.assessed && task.status !== 'stopped' || automaticBlock(task, state, 'comment'))) continue;
       if (settled && LIVE_WAIT.has(task.wait?.status) && !policy.trustReceiverComments && !linearMapping(project, state.settings)?.botMode) continue;
       const [source] = JSON.parse(task.key);
-      if (keyTaken(state, JSON.stringify([source, `continue:${task.id}`]))) continue;
+      if (settled && keyTaken(state, JSON.stringify([source, `continue:${task.id}`]))) continue;
+      if (this.boundsPaused(task.issue.id)) continue;
       if (!(settled && task.pendingComments?.length) && !this.commentDue(task, modeOf(project))) continue;
       if (Date.now() < (this.reviewCheckedAt?.get(task.id) || 0)) continue;
       if (settled && task.reviewLimitNotified && (task.reviewWakeups || 0) >= (policy.maxWakeups || 8) && (task.reviewAudits || 0) >= (policy.maxAudits ?? 3)) continue;
@@ -1258,12 +1290,18 @@ export class Runtime {
   }
   /** Whether this task's issue needs a full comment read now (see commentSweep). */
   commentDue(task, mode) {
-    if (mode === 'skip' || Date.now() < (this.commentPauseUntil || 0)) return false;
+    if (mode === 'skip' || Date.now() < (this.commentPauseUntil || 0) || this.boundsPaused(task.issue.id)) return false;
     return mode === 'all' || this.commentDirty.has(task.issue.id);
   }
+  /** An issue whose comment history exceeded the read bound is not re-read until its backoff ends (1 h, doubling, max 24 h). */
+  boundsPaused(issueId) { return Date.now() < (this.commentBoundsPause?.get(issueId)?.until || 0); }
   /** A rate-limited full read pauses the remaining reads of this pass and the next ones until Linear allows. */
-  commentReadFailed(error) {
+  commentReadFailed(error, issueId) {
     if (error?.code === 'RATE_LIMITED') this.commentPauseUntil = Date.now() + (error.retryAfterMs || 60000);
+    if (error?.code === 'LINEAR_READ_BOUNDS' && issueId) {
+      const map = (this.commentBoundsPause ||= new Map()), n = (map.get(issueId)?.n || 0) + 1;
+      map.set(issueId, { n, until: Date.now() + Math.min(3600000 * 2 ** (n - 1), 86400000) });
+    }
     // Over the batched read's bounds nothing was used (fail closed); say so instead of skipping silently.
     if (error?.code === 'LINEAR_READ_BOUNDS' && !this.errors.includes(`Linear 评论读取：${error.message}`)) this.errors.push(`Linear 评论读取：${error.message}`);
   }
@@ -1321,14 +1359,14 @@ export class Runtime {
       // Comments queued while the round ran are already known: they need no new comment on the issue to be due.
       const carried = task.pendingComments || [];
       if (!carried.length && !this.commentDue(task, modeOf(project))) continue;
-      if (carried.length && Date.now() < (this.commentPauseUntil || 0)) continue;
+      if (carried.length && (Date.now() < (this.commentPauseUntil || 0) || this.boundsPaused(task.issue.id))) continue;
       if (Date.now() < (this.reviewCheckedAt.get(task.id) || 0)) continue;
       this.reviewCheckedAt.set(task.id, Date.now() + reviewCommentInterval);
       let activity;
       // Closed, reassigned or moved issues are rejected by eligibility: nothing to continue.
       try { activity = await (prefetched.get(task.id) || this.readActivity(project, state.settings, task.issue.id, task.issue.id, { purpose: 'comments', since: task.createdAt })); }
-      catch (error) { this.commentReadFailed(error); continue; }
-      this.commentDirty.delete(task.issue.id);
+      catch (error) { this.commentReadFailed(error, task.issue.id); continue; }
+      this.commentDirty.delete(task.issue.id); this.commentBoundsPause?.delete(task.issue.id);
       const since = Date.parse(task.createdAt || 0), seen = new Set(task.followupSeen || []);
       // A stop is recorded as the 'stop' action.
       const settledAs = task.status === 'stopped' ? ['stop', 'stopped'] : [task.status];
@@ -1418,8 +1456,8 @@ export class Runtime {
     this.reviewCheckedAt.set(task.id, Date.now() + reviewCommentInterval);
     let activity;
     try { activity = await (prefetched.get(task.id) || this.readActivity(project, state.settings, task.issue.id, task.issue.id, { purpose: 'comments', since: task.createdAt })); }
-    catch (error) { this.commentReadFailed(error); return; }
-    this.commentDirty.delete(task.issue.id);
+    catch (error) { this.commentReadFailed(error, task.issue.id); return; }
+    this.commentDirty.delete(task.issue.id); this.commentBoundsPause?.delete(task.issue.id);
     const prefix = (policy.selfCommentPrefix ?? 'ZRSTUDIO').trim();
     const ownerMarks = String(policy.ownerCommentPrefix ?? 'owner').split('|').map(s => s.trim()).filter(Boolean);
     const seen = new Set([...(task.followupSeen || []), ...(task.pendingComments || []).map(c => c.id)]);

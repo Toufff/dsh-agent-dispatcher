@@ -83,7 +83,9 @@ const focusShape = issue => issue ? { identifier: issue.identifier, title: issue
   parent: issue.parent?.identifier || null, children: (issue.children?.nodes || []).map(c => c.identifier),
   comments: (issue.comments?.nodes || []).map(c => String(c.body || '').slice(0, 4000)) } : null;
 /** Bounds of one batched activity read (LinearClient.activities). */
-export const ACTIVITY_MAX_PAIRS = 100, ACTIVITY_MAX_COMMENTS = 5000;
+export const ACTIVITY_MAX_PAIRS = 100, ACTIVITY_MAX_COMMENTS = 5000, ACTIVITY_MAX_READ = 4 * ACTIVITY_MAX_COMMENTS;
+// Targets whose `since` lie within this span share one comment filter (see activities()).
+export const ACTIVITY_SINCE_BUCKET_MS = 6 * 3600 * 1000;
 const boundsError = detail => Object.assign(new Error(`Linear 合批读取超出上限（${detail}），本次不使用部分结果`), { code: 'LINEAR_READ_BOUNDS' });
 const authFailure = () => Object.assign(new Error('Linear 认证失败'), { code: 'LINEAR_UNAUTHENTICATED' });
 
@@ -362,38 +364,77 @@ export class LinearClient {
   }
   /**
    * Activity of many (issueId, parentId) pairs — parent eligibility, the wait target and the target's comments — in
-   * ONE read: organization check, every parent and target by id, and the comments of all targets updated at or after
-   * the earliest `since` (a pair without `since` reads full history). Comment pages continue on the same connection.
-   * Bounds (never truncated silently): at most ACTIVITY_MAX_PAIRS pairs per call and ACTIVITY_MAX_COMMENTS comments;
-   * beyond either the whole read throws `LINEAR_READ_BOUNDS` (fail closed). Returns Map `${issueId}|${parentId}` ->
-   * { value } (the shape of activity()) or { error } (that pair only: closed, reassigned, invalid target).
+   * one read: organization check, every parent and target by id, and the targets' comments updated at or after their
+   * `since` (a pair without `since` reads full history). Targets are grouped into since-buckets (sinces within
+   * ACTIVITY_SINCE_BUCKET_MS share one comment filter), so an old `since` (a wait armed days ago, a full-history read)
+   * never widens the window of the other targets; the newest bucket rides on the first request, the others continue
+   * as comment pages. Bounds (never truncated silently): at most ACTIVITY_MAX_PAIRS pairs per call (else the whole call
+   * throws `LINEAR_READ_BOUNDS`); at most ACTIVITY_MAX_COMMENTS comments PER TARGET — a target over it gets
+   * { error: LINEAR_READ_BOUNDS } for its pairs only and the others are read without it; and ACTIVITY_MAX_READ
+   * comments in all, beyond which the targets not yet complete get that error (fail closed per pair).
+   * Returns Map `${issueId}|${parentId}` -> { value } (the shape of activity()) or { error } (that pair only).
    */
   async activities(pairs) {
     if (!pairs.length) return new Map();
     if (pairs.length > ACTIVITY_MAX_PAIRS) throw boundsError(`一次读取最多 ${ACTIVITY_MAX_PAIRS} 个工单`);
     const resolved = await Promise.all(pairs.map(p => this.resolve(p.mapping)));
     const issueIds = [...new Set(pairs.flatMap(p => [p.parentId, p.issueId]).filter(Boolean))];
-    const targetIds = [...new Set(pairs.map(p => p.issueId))];
-    const sinces = pairs.map(p => p.since ? Date.parse(p.since) : NaN);
-    const since = sinces.every(Number.isFinite) ? new Date(Math.min(...sinces)).toISOString() : null;
-    const commentFilter = { issue: { id: { in: targetIds } }, ...(since ? { updatedAt: { gte: since } } : {}) };
+    // Per target the earliest since of its pairs (-Infinity = full history).
+    const sinceOf = new Map();
+    for (const p of pairs) {
+      const t = p.since ? Date.parse(p.since) : NaN, at = Number.isFinite(t) ? t : -Infinity;
+      sinceOf.set(p.issueId, Math.min(sinceOf.get(p.issueId) ?? Infinity, at));
+    }
+    const buckets = [];
+    for (const [id, at] of [...sinceOf].sort((a, b) => b[1] - a[1])) {
+      const last = buckets.at(-1);
+      if (last && (at === last.head || last.head - at <= ACTIVITY_SINCE_BUCKET_MS)) { last.ids.push(id); last.since = at; }
+      else buckets.push({ head: at, since: at, ids: [id] });
+    }
+    const filterOf = (ids, at) => ({ issue: { id: { in: ids } }, ...(Number.isFinite(at) ? { updatedAt: { gte: new Date(at).toISOString() } } : {}) });
     const commentFields = 'comments(filter:$comments, first:250, after:$after) { nodes { id body createdAt updatedAt user { id } issue { id } } pageInfo { hasNextPage endCursor } }';
+    const page = async (filter, after) => {
+      const data = await this.query(`query($comments:CommentFilter!, $after:String) { ${commentFields} }`, { comments: filter, after });
+      if (data.comments.pageInfo.hasNextPage && data.comments.pageInfo.endCursor === after) throw new Error('Linear pagination did not advance');
+      return data.comments;
+    };
     const first = await this.query(`query($issues:IssueFilter!, $comments:CommentFilter!, $after:String) { organization { id }
       issues(filter:$issues, first:250, includeArchived:true) { nodes { id identifier title url updatedAt archivedAt project { id } parent { id } assignee { id } delegate { id } state { id type } ${relationFields} } }
-      ${commentFields} }`, { issues: { id: { in: issueIds } }, comments: commentFilter, after: null });
+      ${commentFields} }`, { issues: { id: { in: issueIds } }, comments: filterOf(buckets[0].ids, buckets[0].since), after: null });
     if (first.organization?.id !== pairs[0].mapping.workspaceId) throw new Error('Linear token belongs to another workspace');
     const issues = new Map((first.issues?.nodes || []).map(i => [i.id, i]));
-    const comments = [...first.comments.nodes];
-    let page = first.comments.pageInfo;
-    while (page.hasNextPage) {
-      if (comments.length >= ACTIVITY_MAX_COMMENTS) throw boundsError(`评论超过 ${ACTIVITY_MAX_COMMENTS} 条`);
-      const after = page.endCursor;
-      if (!after) throw new Error('Linear pagination did not advance');
-      const data = await this.query(`query($comments:CommentFilter!, $after:String) { ${commentFields} }`, { comments: commentFilter, after });
-      if (data.comments.pageInfo.hasNextPage && data.comments.pageInfo.endCursor === after) throw new Error('Linear pagination did not advance');
-      comments.push(...data.comments.nodes); page = data.comments.pageInfo;
+    const got = new Map(), counts = new Map(), over = new Set();
+    let read = 0;
+    for (const [n, bucket] of buckets.entries()) {
+      let remaining = bucket.ids.filter(id => !over.has(id)), conn = n === 0 ? first.comments : null;
+      while (remaining.length) {
+        if (read > ACTIVITY_MAX_READ) { remaining.forEach(id => over.add(id)); break; }
+        const filter = filterOf(remaining, bucket.since);
+        conn ||= await page(filter, null);
+        let restart = false;
+        for (;;) {
+          for (const c of conn.nodes) {
+            read++;
+            if (!remaining.includes(c.issue?.id) || got.has(c.id)) continue;
+            got.set(c.id, c); counts.set(c.issue.id, (counts.get(c.issue.id) || 0) + 1);
+          }
+          const more = conn.pageInfo.hasNextPage;
+          const heavy = remaining.filter(id => (counts.get(id) || 0) > ACTIVITY_MAX_COMMENTS || more && (counts.get(id) || 0) >= ACTIVITY_MAX_COMMENTS);
+          if (heavy.length) {
+            // Only that target fails; the rest of its bucket is read again without it (already seen comments are kept).
+            for (const id of heavy) { over.add(id); for (const [cid, c] of got) if (c.issue?.id === id) got.delete(cid); }
+            remaining = remaining.filter(id => !over.has(id)); restart = true; break;
+          }
+          if (!more) break;
+          if (read > ACTIVITY_MAX_READ) { remaining.forEach(id => over.add(id)); remaining = []; break; }
+          if (!conn.pageInfo.endCursor) throw new Error('Linear pagination did not advance');
+          conn = await page(filter, conn.pageInfo.endCursor);
+        }
+        conn = null;
+        if (!restart) break;
+      }
     }
-    if (comments.length > ACTIVITY_MAX_COMMENTS) throw boundsError(`评论超过 ${ACTIVITY_MAX_COMMENTS} 条`);
+    const comments = [...got.values()];
     const out = new Map();
     pairs.forEach((pair, n) => {
       const mapping = resolved[n], parent = issues.get(pair.parentId), target = issues.get(pair.issueId);
@@ -401,6 +442,7 @@ export class LinearClient {
       if (!parent || parent.project?.id !== mapping.projectId || !assigneeAllowed(parent, mapping) || ['completed', 'canceled'].includes(parent.state?.type))
         return out.set(key, { error: new Error('Parent issue is closed, reassigned or outside the mapped project; local continuation remains stopped') });
       if (!validWaitTarget(parent, target, mapping.projectId)) return out.set(key, { error: new WaitTargetError() });
+      if (over.has(pair.issueId)) return out.set(key, { error: boundsError(`工单 ${target.identifier || pair.issueId} 评论超过 ${ACTIVITY_MAX_COMMENTS} 条或本次读取总量超过 ${ACTIVITY_MAX_READ} 条`) });
       out.set(key, { value: { ...target, comments: comments.filter(c => c.issue?.id === target.id), parentState: parent.state } });
     });
     return Object.assign(out, { issues: [...issues.values()], comments });
