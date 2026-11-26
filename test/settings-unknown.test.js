@@ -66,3 +66,17 @@ test('configure still rejects a known key with the wrong type', async () => {
   await assert.rejects(runtime.configure(settings, snapshot.revision));
   assert.equal((await runtime.snapshot()).settings.futureFlag, undefined);
 });
+
+test('reserved keys (__proto__, constructor, prototype) are rejected instead of rewriting the prototype', () => {
+  for (const key of ['__proto__', 'constructor', 'prototype']) {
+    const raw = JSON.parse(JSON.stringify(base()));
+    const withKey = JSON.parse(JSON.stringify(raw).replace(/^\{/, `{"${key}":{"focus":{"judge":{"command":123,"timeoutMs":-5}}},`));
+    assert.ok(Object.hasOwn(withKey, key), key);
+    assert.throws(() => parseSettings(withKey), /not allowed/, key);
+  }
+  const nested = JSON.parse(JSON.stringify(base()));
+  nested.projects[0] = JSON.parse(JSON.stringify(nested.projects[0]).replace(/^\{/, '{"__proto__":{"x":1},'));
+  assert.throws(() => parseSettings(nested), /projects\[p\]\.__proto__/);
+  const ok = parseSettings(base());
+  assert.equal(Object.getPrototypeOf(ok), Object.prototype);
+});

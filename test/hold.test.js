@@ -11,6 +11,7 @@ import { initialState } from '../src/config.js';
 import { Runtime } from '../src/runtime.js';
 import { AUTOMATIC, automaticBlock } from '../src/hold.js';
 import { workItems } from './workflow-fixtures.js';
+import { userStopCandidates, migrateUserStops } from '../src/explain.js';
 
 const done = `<dispatch-result>${JSON.stringify({ status: 'complete', workItems: workItems('complete'), evidence: ['ok'], remaining: [], next: '', progress: 'done', blockers: [] })}</dispatch-result>`;
 const later = () => new Date(Date.now() + 1000).toISOString();
@@ -181,16 +182,40 @@ test('path: intake of a new dispatch round skips a held issue without failing th
   assert.equal((await tasks(runtime)).length, 2);
 });
 
-test('upgrade: a task stopped by a user before holds existed gets a hold at init', async () => {
+test('upgrade: pre-hold stops get a hold only when opted in, and only once', async () => {
   const { runtime, id } = await fixture();
   await runtime.dispatcher.update(s => { const t = s.tasks[0]; t.status = 'stopped'; t.events.push({ action: 'stop', at: '2026-11-26T04:45:00.000Z' }); });
-  const again = await new Runtime({ store: runtime.store, directory: os.tmpdir(), env: {} }).init();
+  // Default (no env): behaviour matches main, nothing is held.
+  const off = await new Runtime({ store: runtime.store, directory: os.tmpdir(), env: {} }).init();
+  assert.equal((await off.snapshot()).tasks[0].hold, undefined);
+  assert.equal(userStopCandidates(await runtime.store.read()).length, 1, 'the candidate list is readable without migrating');
+  const on = { DISPATCH_MIGRATE_USER_STOPS: '1' };
+  const again = await new Runtime({ store: runtime.store, directory: os.tmpdir(), env: on }).init();
   const t = (await again.snapshot()).tasks.find(x => x.id === id);
   assert.equal(t.hold.at, '2026-11-26T04:45:00.000Z');
-  // A stopped task that was returned from a takeover (last event 'return') is left alone.
-  await again.dispatcher.update(s => { delete s.tasks[0].hold; s.tasks[0].events.push({ action: 'return', at: new Date().toISOString() }); });
-  const third = await new Runtime({ store: runtime.store, directory: os.tmpdir(), env: {} }).init();
-  assert.equal((await third.snapshot()).tasks[0].hold, undefined);
+  // The owner unholds it; a restart (still opted in) must not hold it again.
+  await again.command({ action: 'unhold', id });
+  assert.equal((await again.snapshot()).tasks[0].hold, undefined);
+  const third = await new Runtime({ store: runtime.store, directory: os.tmpdir(), env: on }).init();
+  const t3 = (await third.snapshot()).tasks[0];
+  assert.equal(t3.hold, undefined, 'unhold survives a restart');
+  assert.equal(t3.events.filter(e => e.action === 'hold-migrated').length, 1);
+});
+
+test('upgrade candidates: a return or unhold after the stop is not a user stop; the day window limits it', () => {
+  const task = (events, extra = {}) => ({ id: String(Math.random()), status: 'stopped', events, ...extra });
+  const state = { tasks: [
+    task([{ action: 'stop', at: '2026-11-25T00:00:00.000Z' }]),
+    task([{ action: 'stop', at: '2026-11-25T00:00:00.000Z' }, { action: 'return', at: '2026-11-25T01:00:00.000Z' }]),
+    task([{ action: 'stop', at: '2026-11-25T00:00:00.000Z' }, { action: 'unhold', at: '2026-11-25T01:00:00.000Z' }]),
+    task([{ action: 'stop', at: '2026-10-01T00:00:00.000Z' }]),
+  ] };
+  assert.equal(userStopCandidates(state).length, 2);
+  const now = Date.parse('2026-11-26T00:00:00.000Z');
+  assert.equal(migrateUserStops(state, { DISPATCH_MIGRATE_USER_STOPS: '1', DISPATCH_MIGRATE_USER_STOPS_DAYS: '7' }, now), 1);
+  assert.equal(state.tasks[0].hold?.by, 'user');
+  assert.equal(state.tasks[3].hold, undefined);
+  assert.equal(migrateUserStops(state, { DISPATCH_MIGRATE_USER_STOPS: '1' }, now), 0, 'runs once');
 });
 
 test('the guard: hold blocks every path, drain only paths that start new work', () => {

@@ -2,7 +2,8 @@
  * Focus mode: the owner names the issues they actively want worked on; everything else stops being started
  * automatically, without being lost. Tasks in focus, or judged related to it, keep full automation (automatic
  * continuation, comment / time / data wakes, session rotation, fresh-session rescue): those paths all end in a
- * queued round, and the only gate is the start (`automaticBlock(task, state, 'start')`).
+ * queued round, and the gate is the start (`automaticBlock(task, state, 'start')`). A wake of a task already judged
+ * unrelated is not taken (its event stays for later), so it neither shows as resumed nor spends wake budget.
  *
  * Relatedness: deterministic rules first (pure, `relatedByRules`), then a model judge for the rest (runtime,
  * asynchronous, single-flight; see src/focus-judge.js). A judge error, timeout or 'uncertain' never starts the task:
@@ -13,7 +14,8 @@
  * Focus changes release focus holds only; a user hold (stop) stays until an explicit owner action.
  *
  * State (`state.focus`, persisted): { enabled, issues, intent, revision, since, decisions, pending, rejected }.
- * Decisions and pending entries are valid for one focus revision; every focus change bumps it.
+ * Decisions and pending entries are valid for one focus revision; every focus change bumps it (an add of issues
+ * carries the 'related' decisions over, see bump).
  */
 export const FOCUS_HELD = 'FOCUS_HELD';
 export const FOCUS_PENDING = 'FOCUS_PENDING';
@@ -72,8 +74,17 @@ export function relatedByRules({ focus, candidate }) {
   if (id) for (const [f, ctx] of Object.entries(contexts)) {
     if (set.has(f) && handoverIssues(joinText(ctx)).has(id)) return hit('handover', f, `聚焦单 ${f} 写了移交/拆单到 ${id}`);
   }
-  for (const other of mentionedIssues(text)) if (set.has(other) && other !== id) return hit('mention', other, `标题、描述或评论提到聚焦单 ${other}`);
+  // A bare mention releases only from the title. Descriptions, comments (including the dispatcher's own result
+  // comments) and the dispatcher's prompts (basePrompt / prompt) routinely cite LON-28, LON-221 ... as references;
+  // there a mention is only a hint for the judge (mentionHints), never a release.
+  for (const other of mentionedIssues(candidate?.title)) if (set.has(other) && other !== id) return hit('mention', other, `标题提到聚焦单 ${other}`);
   return null;
+}
+
+/** Focus identifiers mentioned anywhere in the candidate's text (a hint for the judge, not a rule). */
+export function mentionHints({ focus, candidate }) {
+  const set = new Set(focus?.issues || []);
+  return [...mentionedIssues(joinText(candidate))].filter(i => set.has(i) && i !== candidate?.identifier);
 }
 
 export const focusOn = state => Boolean(state?.focus?.enabled);
@@ -124,9 +135,20 @@ export function focusDecision(task, state) {
   return { verdict: 'unknown', by: 'none', reason: '等待相关性判断' };
 }
 
-/** automaticBlock's focus part. Only the start is gated: every automatic path ends in a queued round. */
+// Wakes of a settled round (condition / timer, comment, data version). A wake that is known to be unrelated is not
+// taken at all: the event stays unseen (like a user hold) and is taken once focus relates the task again. Otherwise
+// it would queue the round, set resumeNotice (Linear shows "in progress") and spend a maxWakeups unit on a round
+// the start gate then freezes.
+const WAKE_PATHS = new Set(['wake', 'comment', 'data']);
+
+/** automaticBlock's focus part. Starts are gated; wakes only when the task is already judged unrelated. */
 export function focusBlock(task, state, path) {
-  if (path !== 'start' || !focusOn(state)) return null;
+  if (!focusOn(state)) return null;
+  if (WAKE_PATHS.has(path)) {
+    const d = focusDecision(task, state);
+    return d.verdict === 'unrelated' ? { code: FOCUS_HELD, path, reason: `聚焦模式：与聚焦无关，暂不唤醒（${d.reason}）`, decision: d } : null;
+  }
+  if (path !== 'start') return null;
   const d = focusDecision(task, state);
   if (d.verdict === 'related') return null;
   if (d.verdict === 'unrelated') return { code: FOCUS_HELD, path, reason: `聚焦模式：与聚焦无关，已冻结（${d.reason}）`, decision: d };
@@ -193,9 +215,16 @@ export function applyFocusActions(state) {
   return actions.length > 0;
 }
 
-function bump(focus, at) {
-  focus.revision = (focus.revision || 0) + 1;
-  focus.decisions = {}; focus.pending = {};
+// Every focus change starts a new revision. Adding issues cannot make a related task unrelated, so an add keeps
+// the current revision's 'related' decisions (carried to the new revision); unrelated and pending ones are judged
+// again, since the added issues may relate them. Any other change (set, remove, clear) drops all decisions.
+function bump(focus, at, { keepRelated = false } = {}) {
+  const old = focus.revision || 0;
+  focus.revision = old + 1;
+  const kept = {};
+  if (keepRelated) for (const [issue, d] of Object.entries(focus.decisions || {}))
+    if (d?.verdict === 'related' && d.revision === old) kept[issue] = { ...d, revision: focus.revision };
+  focus.decisions = kept; focus.pending = {};
   focus.changedAt = at;
 }
 /** Issues on the chains of the tasks of an issue (focus-approve adds the whole chain). */
@@ -225,8 +254,10 @@ export function focusCommand(state, request, at = now()) {
     const issues = normalizeIssues(request.issues || []).filter(i => !focus.issues.includes(i));
     if (!issues.length) return false;
     focus.issues.push(...issues); focus.rejected = focus.rejected.filter(i => !issues.includes(i));
+    // A new intent can change what counts as related: then nothing is kept.
+    const intentChanged = request.intent !== undefined && String(request.intent).slice(0, 2000) !== focus.intent;
     if (request.intent !== undefined) focus.intent = String(request.intent).slice(0, 2000);
-    bump(focus, at); log({ issues, ...(request.by ? { by: request.by } : {}) });
+    bump(focus, at, { keepRelated: !intentChanged }); log({ issues, ...(request.by ? { by: request.by } : {}) });
   } else if (action === 'focus-remove') {
     if (!focus.enabled) throw new Error('Focus mode is off');
     const issues = normalizeIssues(request.issues || []);
@@ -242,7 +273,7 @@ export function focusCommand(state, request, at = now()) {
     if (!issue) throw new Error('focus-approve needs an issue identifier');
     const issues = chainOfIssue(state, issue).filter(i => !focus.issues.includes(i));
     focus.issues.push(...issues); focus.rejected = focus.rejected.filter(i => i !== issue);
-    bump(focus, at); log({ issue, added: issues });
+    bump(focus, at, { keepRelated: true }); log({ issue, added: issues });
   } else if (action === 'focus-reject') {
     if (!focus.enabled) throw new Error('Focus mode is off');
     const [issue] = normalizeIssues(request.issue);
@@ -288,5 +319,6 @@ export function judgeInput(state, candidate) {
     candidate: { identifier: candidate.identifier, title: String(candidate.title || '').slice(0, 300),
       description: String(candidate.description || '').slice(0, 4000), parent: candidate.parent || null,
       children: (candidate.children || []).slice(0, 50),
-      comments: (candidate.comments || []).slice(-8).map(c => String(c).slice(0, 800)) } };
+      comments: (candidate.comments || []).slice(-8).map(c => String(c).slice(0, 800)),
+      mentions: mentionHints({ focus: state.focus, candidate }) } };
 }

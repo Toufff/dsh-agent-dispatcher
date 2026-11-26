@@ -75,7 +75,7 @@ An invalid Linear wait target is shown as **等待目标需要修正**, not an e
 - **Retry:** allowed only after confirmed stop or terminal failure. Once an agent accepted the task, retry remains on that executor and resumes its recorded session. Starting with a different agent is a new explicit task/handoff, not a silent fallback.
 - **Unknown:** a missing acknowledgement or ambiguous termination blocks the task. Reconcile it; do not start a duplicate. An approval/permission interruption must be resolved in the original tool or by takeover, never by changing executors to bypass the approval.
 
-- **Stop holds the task:** a user stop (`{action:'stop', id, reason?}`) persists `task.hold = {by:'user', reason, at}` before the executor is asked to stop. While held, nothing automatic starts, requeues, continues or wakes the task or its issue: owner/collaborator comments (including comments queued while the round ran), data-version wakes, condition/timer wakes, fresh-session rescue and format repair, output-limit retries, intake of a new dispatch round, and a host restart that interrupts an unconfirmed stop (it settles as stopped instead of resuming). Only an explicit owner action clears it: **retry**, **continue**, **submit** of the same issue, **设置恢复条件** (arm-wait), or **解除冻结** (`{action:'unhold', id}`). After unhold the task is handled normally again: a comment that arrived during the hold can then resume it. Tasks stopped before this version get the hold once at host start when their latest stop/return event is a stop (event `hold-migrated`).
+- **Stop holds the task:** a user stop (`{action:'stop', id, reason?}`) persists `task.hold = {by:'user', reason, at}` before the executor is asked to stop. While held, nothing automatic starts, requeues, continues or wakes the task or its issue: owner/collaborator comments (including comments queued while the round ran), data-version wakes, condition/timer wakes, fresh-session rescue and format repair, output-limit retries, intake of a new dispatch round, and a host restart that interrupts an unconfirmed stop (it settles as stopped instead of resuming). Only an explicit owner action clears it: **retry**, **continue**, **submit** of the same issue, **设置恢复条件** (arm-wait), or **解除冻结** (`{action:'unhold', id}`). After unhold the task is handled normally again: a comment that arrived during the hold can then resume it. Tasks stopped before this version are **not** held by default (same behaviour as before). `userStopCandidates(state)` in `src/explain.js` lists the ones that would be (latest stop/return/unhold event is a stop); after the owner has reviewed that list, starting the host once with `DISPATCH_MIGRATE_USER_STOPS=1` (optionally `DISPATCH_MIGRATE_USER_STOPS_DAYS=N` to only take stops of the last N days) gives them the hold (event `hold-migrated`). The upgrade runs at most once per state (`state.upgrades.userHoldsMigrated`), so a later unhold is not undone by a restart.
 
 ### Ops commands
 
@@ -112,19 +112,20 @@ Snapshot fields for operations (`agentDispatcher/snapshot`):
 
 **什么算相关**（任何要启动的任务都会判一次；续办、唤醒、新接的单最终都变成排队的一轮，只在启动这一步把关）：
 
-1. 先用确定规则（不调模型，`src/focus.js` 的 `relatedByRules`）：在聚焦清单里；续办链（continuationOf / supersededBy / 同一 rootTask）上有聚焦单；Linear 父单或子单是聚焦单（读 Linear 的 parent / children，只读）；单子标题、描述、最近评论里写了「移交 / 接管 / 转交 / 拆单 / split_issue」到某个聚焦单，或聚焦单里写了移交 / 拆单到这张单；标题、描述、评论里提到了聚焦单号（按单号边界匹配，`LON-3` 不会命中 `LON-35`）。本机手动提交、没有 Linear 单的任务算相关；宿主重启打断的那一轮允许跑完。
+1. 先用确定规则（不调模型，`src/focus.js` 的 `relatedByRules`）：在聚焦清单里；续办链（continuationOf / supersededBy / 同一 rootTask）上有聚焦单；Linear 父单或子单是聚焦单（读 Linear 的 parent / children，只读）；单子标题、描述、最近评论里写了「移交 / 接管 / 转交 / 拆单 / split_issue」到某个聚焦单，或聚焦单里写了移交 / 拆单到这张单；**标题**里提到了聚焦单号（按单号边界匹配，`LON-3` 不会命中 `LON-35`）。描述、评论和派发器拼出的 prompt 里只是提到聚焦单号（常见于引用 LON-28、LON-221 作基准）不直接放行，只作为 `candidate.mentions` 提示交给判定程序（线上 279 条任务实测：聚焦 LON-28 时直接放行从 188 个 issue 降到 10 个）。本机手动提交、没有 Linear 单的任务算相关；宿主重启打断的那一轮允许跑完。
 2. 规则判断不了的，交给模型判定（异步、同一时间只判一张、从不阻塞调度循环；结果按「单号 + revision」缓存并带理由持久化）。判定程序只能在本机设置里配，不能来自单子：
 
    ```json
    "focus": { "judge": { "command": "node", "args": ["D:/dsh-agent-dispatcher/scripts/focus-judge.mjs", "--key-env", "LEIHUO_API_KEY", "--gateway", "https://<网关>/v1/chat/completions", "--model", "deepseek-flash"], "timeoutMs": 60000 } }
    ```
 
-   程序从 stdin 读 `{focus:{issues,intent}, candidate:{identifier,title,description 节选,parent,children,最近评论节选}}`，在 stdout 输出 `{"verdict":"related|unrelated|uncertain","reason":"…"}`。参考实现 `scripts/focus-judge.mjs` 调 OpenAI 兼容网关，密钥和网关地址都只写**环境变量名**（`--key-env`、`--gateway-env`），不会出现在设置或日志里；派发器启动它时会去掉 Linear 令牌环境变量。`settings.focus.linearContext: false` 可关闭 Linear 读取（只用本地任务信息判断）。
+   程序从 stdin 读 `{focus:{issues,intent}, candidate:{identifier,title,description 节选,parent,children,最近评论节选,mentions}}`，在 stdout 输出 `{"verdict":"related|unrelated|uncertain","reason":"…"}`。参考实现 `scripts/focus-judge.mjs` 调 OpenAI 兼容网关，密钥和网关地址都只写**环境变量名**（`--key-env`、`--gateway-env`），不会出现在设置或日志里；派发器启动它时会去掉 Linear 令牌环境变量。`settings.focus.linearContext: false` 可关闭 Linear 读取（只用本地任务信息判断）。
 3. **失败保守**：判定出错、超时、或回答 `uncertain`，这张单**不启动**，进「待确认」列表（快照 `focus.pending`，面板可点「算相关」/「不相关」）。没配判定程序时，规则判断不了的单也都进待确认。
 
 **冻结与释放**：
 
-- 已经在跑的不相关任务不会被打断，这一轮跑完；它的下一轮（自动续办、评论续办等）排队后被聚焦冻结。
+- 已经在跑的不相关任务不会被打断，这一轮跑完；它的下一轮（自动续办、评论续办等）排队后被聚焦冻结。已判定不相关的等待中任务，条件 / 定时、评论、数据唤醒都先不接（事件保留，不设 resumeNotice、不占唤醒次数），等聚焦让它变成相关后再接。
+- 新增聚焦单（`focus-add`、`focus-approve`、重试 / 继续 / 解除冻结带来的加入）保留本 revision 已判「相关」的结果，只重判「不相关」和待确认的；改 intent、`focus-set`、`focus-remove`、`focus-clear` 全部重判。
 - `focus-clear`、`focus-approve`、`focus-add` 让任务变成相关时，聚焦冻结自动释放；**用户停止（`hold.by:'user'`）不受聚焦变化影响**，仍需重试 / 继续 / 解除冻结。
 - 聚焦开启时，你对某张单的**重试、继续、解除冻结**会把这张单加入聚焦（这就是你主动要求的单）；派发器自己发起的评论 / 数据续办不会。
 - 每个决定都是任务事件：`focus-related`、`focus-judged`（判定结果与理由）、`focus-held`、`focus-pending` / `focus-judging`、`focus-start`（启动时用的规则或判定理由）、`focus-release`。`explain` 的 `focus` 段给出当前判定、是否被聚焦冻结和最近的聚焦事件，`runnable.reasons` 里会写明「聚焦模式：…」。

@@ -106,18 +106,36 @@ export function explainTask(task, state, { now = Date.now(), archived = false, a
 }
 
 /**
- * Upgrade: a current, scheduler-owned stopped task whose latest stop/return event is a stop was stopped by a user
- * before holds existed. It gets the hold now (otherwise the next owner comment would resume it as before).
+ * Upgrade candidates: a current, scheduler-owned stopped task whose latest stop/return/unhold event is a stop was
+ * (probably) stopped by a user before holds existed. Read-only; `sinceMs` limits it to stops after that time.
  */
-export function migrateUserStops(state) {
-  let count = 0;
+export function userStopCandidates(state, { sinceMs = 0 } = {}) {
+  const out = [];
   for (const task of state.tasks) {
     if (task.hold || task.status !== 'stopped' || task.owner === 'human' || !currentTask(task, state)) continue;
-    const last = (task.events || []).findLast(e => e.action === 'stop' || e.action === 'return');
+    const last = (task.events || []).findLast(e => ['stop', 'return', 'unhold', 'hold-migrated'].includes(e.action));
     if (last?.action !== 'stop') continue;
-    setHold(task, { reason: 'stop (before holds existed)', at: last.at });
-    task.events.push({ action: 'hold-migrated', at: new Date().toISOString() });
-    count++;
+    if (sinceMs && !(Date.parse(last.at) >= sinceMs)) continue;
+    out.push({ task, at: last.at });
   }
-  return count;
+  return out;
+}
+
+/**
+ * Upgrade (opt-in, once): give the candidates above a hold, so a pre-hold stop keeps sticking. Off unless
+ * DISPATCH_MIGRATE_USER_STOPS=1 (a stop recorded before holds may have come from a script or RPC, so the owner
+ * reviews `userStopCandidates` first); DISPATCH_MIGRATE_USER_STOPS_DAYS limits it to recent stops. It runs at most
+ * once per state (`state.upgrades.userHoldsMigrated`), so an unhold is never undone by a later restart.
+ */
+export function migrateUserStops(state, env = {}, now = Date.now()) {
+  if (env.DISPATCH_MIGRATE_USER_STOPS !== '1' || state.upgrades?.userHoldsMigrated) return 0;
+  const days = Number(env.DISPATCH_MIGRATE_USER_STOPS_DAYS);
+  const sinceMs = Number.isFinite(days) && days > 0 ? now - days * 86400e3 : 0;
+  const found = userStopCandidates(state, { sinceMs });
+  for (const { task, at } of found) {
+    setHold(task, { reason: 'stop (before holds existed)', at });
+    task.events.push({ action: 'hold-migrated', at: new Date(now).toISOString() });
+  }
+  (state.upgrades ||= {}).userHoldsMigrated = { at: new Date(now).toISOString(), count: found.length, sinceMs: sinceMs || null };
+  return found.length;
 }

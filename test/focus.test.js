@@ -9,7 +9,7 @@ import { MemoryStore } from '../src/dispatcher.js';
 import { initialState } from '../src/config.js';
 import { Runtime } from '../src/runtime.js';
 import { FileStore } from '../src/store.js';
-import { relatedByRules, handoverIssues, mentionedIssues, normalizeIssues, focusDecision } from '../src/focus.js';
+import { relatedByRules, handoverIssues, mentionedIssues, normalizeIssues, focusDecision, judgeInput, localCandidate } from '../src/focus.js';
 import { commandJudge, parseJudgeOutput } from '../src/focus-judge.js';
 import { workItems } from './workflow-fixtures.js';
 
@@ -30,7 +30,10 @@ const RULES = [
   ['handover in candidate comment: 移交', F(['LON-40']), C({ comments: ['这部分移交 LON-40 处理'] }), 'handover', 'LON-40'],
   ['handover in focus issue: split_issue', F(['LON-35'], { 'LON-35': { description: '{"id":"r245-h338","split_issue": "LON-50"}' } }), C({}), 'handover', 'LON-35'],
   ['mention in title', F(['LON-28']), C({ title: 'LON-50 · LON-28 现役复核' }), 'mention', 'LON-28'],
-  ['mention in comments', F(['LON-28']), C({ comments: ['参考 LON-28 的结果'] }), 'mention', 'LON-28'],
+  // Regression (review): descriptions / dispatcher prompts / comments cite LON-28 everywhere; a bare mention there is
+  // only a judge hint (on live data 187/279 issues were released by such mentions when LON-28 was in focus).
+  ['mention in comments is only a hint', F(['LON-28']), C({ comments: ['参考 LON-28 的结果'] }), null, null],
+  ['mention in description / prompt is only a hint', F(['LON-28']), C({ description: '基准见 LON-28 与 LON-221 的逐笔表' }), null, null],
   ['no relation', F(['LON-28']), C({ title: 'LON-50 · 板块轮动', description: '无关内容 LON-280 LON-2' }), null, null],
   ['identifier prefix is not a mention (LON-3 vs LON-35)', F(['LON-3']), C({ description: '见 LON-35 与 XLON-3' }), null, null],
   ['self mention does not count', F(['LON-99']), C({ description: 'LON-50 自己' }), null, null],
@@ -134,6 +137,19 @@ test('judge: an error or timeout never starts the task; it is listed for confirm
   assert.equal(snap.tasks.find(t => t.issue.identifier === 'EX-2').hold.by, 'focus');
   assert.deepEqual(snap.focus.pending.map(p => p.issue), ['EX-3']);
   assert.deepEqual(starts, []);
+});
+
+test('command judge: a UTF-8 character split across stdout chunks is decoded intact', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'focus-judge-'));
+  try {
+    const script = path.join(dir, 'split.mjs');
+    // Writes the reply in two chunks, cutting the 3-byte character 关 in the middle.
+    await writeFile(script, `process.stdin.resume();process.stdin.on('end',()=>{const b=Buffer.from(JSON.stringify({verdict:'related',reason:'相关'}));
+      const cut=b.indexOf(Buffer.from('关'))+1;process.stdout.write(b.subarray(0,cut),()=>setTimeout(()=>process.stdout.write(b.subarray(cut)),50));});`);
+    const settings = { focus: { judge: { command: process.execPath, args: [script], timeoutMs: 5000 } } };
+    const got = await commandJudge({ focus: { issues: ['EX-1'] }, candidate: { identifier: 'EX-2' } }, { settings });
+    assert.deepEqual(got, { verdict: 'related', reason: '相关' });
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test('command judge: real child process, related / bad output / timeout; secrets removed from its env', async () => {
@@ -330,4 +346,56 @@ test('reference judge script: calls an OpenAI-compatible gateway with key from a
     assert.equal(parseReply('{"verdict":"Unrelated","reason":"x"}').verdict, 'unrelated');
     assert.throws(() => parseReply('no idea'));
   } finally { server.close(); }
+});
+
+test('rules: a mention outside the title reaches the judge as a hint, not a release', () => {
+  const state = { focus: { enabled: true, issues: ['LON-28'], revision: 1, decisions: {}, pending: {}, rejected: [] },
+    tasks: [{ id: 't', status: 'queued', title: 'LON-50 · 板块轮动', basePrompt: '对照 LON-28 现役与 LON-221 基准', issue: { identifier: 'LON-50' }, events: [] }] };
+  const task = state.tasks[0];
+  assert.equal(focusDecision(task, state).verdict, 'unknown');
+  assert.deepEqual(judgeInput(state, localCandidate(task, state)).candidate.mentions, ['LON-28']);
+});
+
+test('focus add keeps related decisions (no re-judging); unrelated / pending ones and other changes re-judge', async () => {
+  const { focusCommand } = await import('../src/focus.js');
+  const state = { tasks: [] };
+  focusCommand(state, { action: 'focus-set', issues: ['LON-1'], intent: 'x' });
+  const r = state.focus.revision;
+  state.focus.decisions = { 'LON-2': { verdict: 'related', by: 'judge', reason: 'a', revision: r }, 'LON-3': { verdict: 'unrelated', by: 'judge', reason: 'b', revision: r } };
+  state.focus.pending = { 'LON-4': { verdict: 'uncertain', by: 'judge', reason: 'c', revision: r } };
+  focusCommand(state, { action: 'owner-add', issues: ['LON-9'], by: 'retry' });
+  assert.equal(state.focus.revision, r + 1);
+  assert.deepEqual(Object.keys(state.focus.decisions), ['LON-2']);
+  assert.equal(state.focus.decisions['LON-2'].revision, r + 1);
+  assert.deepEqual(state.focus.pending, {});
+  focusCommand(state, { action: 'focus-add', issues: ['LON-10'], intent: 'changed' });
+  assert.deepEqual(state.focus.decisions, {}, 'a new intent re-judges everything');
+  state.focus.decisions = { 'LON-2': { verdict: 'related', by: 'judge', reason: 'a', revision: state.focus.revision } };
+  focusCommand(state, { action: 'focus-remove', issues: ['LON-9'] });
+  assert.deepEqual(state.focus.decisions, {}, 'a removal re-judges everything');
+});
+
+test('wake: a condition wake of a task judged unrelated is not taken (no resumeNotice, no wake budget); taken once related', async () => {
+  for (const unrelated of [true, false]) {
+    const { runtime } = await fixture();
+    await submit(runtime, 2);
+    await runtime.dispatcher.tick(); await runtime.assess();
+    const t = await taskOf(runtime, 'EX-2');
+    await runtime.dispatcher.update(s => { const x = s.tasks.find(y => y.id === t.id); x.status = 'blocked'; x.assessed = true; x.report = 'done'; });
+    await runtime.command({ action: 'arm-wait', id: t.id, wait: { kind: 'time', condition: 'timer', notBefore: new Date(Date.now() - 1000).toISOString() } });
+    await runtime.command({ action: 'focus-set', issues: ['EX-1'] });
+    if (unrelated) await runtime.command({ action: 'focus-reject', issue: 'EX-2' });
+    else await runtime.command({ action: 'focus-add', issues: ['EX-2'] });
+    await runtime.monitor({ localOnly: true });
+    const after = await taskOf(runtime, 'EX-2');
+    if (unrelated) {
+      assert.equal(after.status, 'blocked');
+      assert.ok(!after.resumeNotice);
+      assert.equal(after.wakeups || 0, 0);
+      // Focus now relates it: the kept event is taken.
+      await runtime.command({ action: 'focus-add', issues: ['EX-2'] });
+      await runtime.monitor({ localOnly: true });
+      assert.equal((await taskOf(runtime, 'EX-2')).status, 'queued');
+    } else assert.equal(after.status, 'queued');
+  }
 });

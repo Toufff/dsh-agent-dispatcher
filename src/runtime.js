@@ -205,8 +205,8 @@ export class Runtime {
       if (Array.isArray(task.ownerInstructions)) task.ownerInstructions = task.ownerInstructions.map(stripHandovers);
     }
     if (this.env.DISPATCH_START_PAUSED === '1') state.paused = true;
-    // Tasks a user stopped before holds existed get one, so a stop keeps sticking across this upgrade.
-    migrateUserStops(state);
+    // Opt-in, once: tasks a user stopped before holds existed get one (see migrateUserStops).
+    migrateUserStops(state, this.env);
     }, { durable: true });
     this.install((await this.store.read()).settings); return this;
   }

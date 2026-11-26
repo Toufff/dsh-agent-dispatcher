@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /**
  * Reference focus-mode judge (settings.focus.judge). Reads the dispatcher's judge input as JSON on stdin:
- *   { focus: { issues, intent }, candidate: { identifier, title, description, parent, children, comments } }
+ *   { focus: { issues, intent }, candidate: { identifier, title, description, parent, children, comments, mentions } }
+ * (`mentions`: focus identifiers cited somewhere in the candidate's text — a hint only; citing a focus issue as a
+ * reference or baseline does not make the candidate part of it).
  * asks an OpenAI-compatible chat-completions gateway whether the candidate belongs to what the owner is focusing on,
  * and prints one line { "verdict": "related" | "unrelated" | "uncertain", "reason": "..." }.
  *
@@ -41,7 +43,8 @@ export function buildMessages(input) {
     'it is part of the same requirement, a follow-up, split-off, handover, prerequisite, fix, review or verification of a focus issue,',
     'or the intent text explicitly covers it. It is UNRELATED if it is independent work that merely shares a topic or project.',
     'Answer UNCERTAIN when the evidence does not let you decide. Be lenient toward RELATED for clear dependencies,',
-    'strict against generic topical similarity.',
+    'strict against generic topical similarity. candidate.mentions lists focus issues the text merely cites; citing a focus issue',
+    'as a reference, baseline or comparison is NOT by itself a relation.',
     'Reply with one JSON object only: {"verdict":"related"|"unrelated"|"uncertain","reason":"<one sentence in Chinese>"}.',
   ].join(' ');
   const user = `Focus:\n${JSON.stringify(input.focus || {}, null, 1)}\n\nCandidate:\n${JSON.stringify(input.candidate || {}, null, 1)}`;
@@ -78,8 +81,10 @@ export async function judge(input, opts, env = process.env, fetchImpl = fetch) {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
-  let raw = '';
-  for await (const chunk of process.stdin) raw += chunk;
+  // Collect bytes and decode once: a multi-byte UTF-8 character may be split between chunks.
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  const raw = Buffer.concat(chunks).toString('utf8');
   const result = await judge(JSON.parse(raw), opts);
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }

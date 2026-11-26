@@ -35,6 +35,8 @@ export function commandJudge(input, { settings, env = process.env, secretKeys = 
     const finish = (error, value) => { if (settled) return; settled = true; clearTimeout(timer); error ? reject(error) : resolve(value); };
     const timer = setTimeout(() => { child.kill(); finish(Object.assign(new Error(`判定超时（${judge.timeoutMs || 60000} ms）`), { code: 'JUDGE_TIMEOUT' })); }, judge.timeoutMs || 60000);
     child.on('error', error => finish(Object.assign(new Error(`判定程序无法启动：${String(error.message).slice(0, 200)}`), { code: 'JUDGE_ERROR' })));
+    // Decode as UTF-8 across chunk boundaries (a Chinese character split between two chunks stays intact).
+    child.stdout.setEncoding('utf8');
     child.stdout.on('data', chunk => { out += chunk; if (out.length > MAX_OUTPUT) { child.kill(); finish(new Error('判定输出过长')); } });
     child.on('close', code => {
       if (code !== 0) return finish(Object.assign(new Error(`判定程序退出码 ${code}`), { code: 'JUDGE_ERROR' }));

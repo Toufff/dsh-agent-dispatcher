@@ -116,12 +116,15 @@ const unwrap = schema => {
 };
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const label = (item, index) => plain(item) && typeof item.id === 'string' && item.id ? `[${item.id}]` : `[${index}]`;
+const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 // Walks value against schema; returns [{ at: [...keys/indexes], key, value, path }] for every unknown key.
 function collectUnknown(schema, value, at = [], shown = '') {
   const s = unwrap(schema), def = s?._zod?.def, found = [];
   if (def?.type === 'object' && plain(value)) {
     for (const [key, child] of Object.entries(value)) {
       const path = shown ? `${shown}.${key}` : key;
+      // Putting these back would rewrite the parsed object's prototype (and expose unvalidated "known" fields).
+      if (RESERVED_KEYS.has(key)) throw new Error(`Settings key not allowed: ${path}`);
       if (!Object.hasOwn(def.shape, key)) found.push({ at, key, value: child, path });
       else found.push(...collectUnknown(def.shape[key], child, [...at, key], path));
     }
@@ -142,7 +145,7 @@ export function parseSettings(raw) {
   const parsed = settingsSchema.parse(known);
   for (const u of unknown) {
     const target = reach(parsed, u.at);
-    if (plain(target)) target[u.key] = structuredClone(u.value);
+    if (plain(target)) Object.defineProperty(target, u.key, { value: structuredClone(u.value), enumerable: true, writable: true, configurable: true });
   }
   return parsed;
 }
