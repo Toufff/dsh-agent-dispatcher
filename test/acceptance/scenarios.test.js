@@ -170,3 +170,26 @@ test('(f) an unknown settings key is accepted, reported and survives restart', a
     assert.deepEqual(snap.settings.futureFlag, { mode: 'x' }); assert.deepEqual(snap.settingsUnknownKeys, ['futureFlag']);
   } finally { await w.close(); }
 });
+
+test('(g) merged exit: a cycle of five finishing tasks and director writes reaches Linear as aliased batches; restart keeps queued writes', async () => {
+  const w = await world();
+  try {
+    for (const id of ['mx-1', 'mx-2', 'mx-3', 'mx-4', 'mx-5']) ready(w, id);
+    await w.cycle(1);
+    // The cache learned the issues from the sync and from its own write results: the view needs no request.
+    const calls = w.linear.calls.length;
+    const view = await w.runtime.command({ action: 'linear-view', include: ['issues'] });
+    assert.ok(view.issues.some(i => i.identifier === 'MX-1')); assert.equal(w.linear.calls.length, calls);
+    const queued = await w.runtime.command({ action: 'linear-enqueue', caller: 'director', idempotencyKey: 'mx-review', op: { kind: 'comment', issue: 'mx-1', body: '复审意见' } });
+    await w.restart();
+    const before = w.linear.calls.length, batchesBefore = w.linear.batches || 0;
+    await w.cycle(2);
+    const writes = w.linear.calls.slice(before).filter(c => c.query.startsWith('mutation('));
+    assert.equal(writes.length, (w.linear.batches || 0) - batchesBefore, 'every write left as one aliased mutation request');
+    assert.ok(writes.length <= 2, `write requests: ${writes.length}`);
+    assert.ok(!w.linear.calls.some(c => /mutation\(\$input/.test(c.query)), 'no single-write mutation');
+    assert.equal(w.linear.writes.filter(x => x.id === queued.id).length, 1);
+    assert.equal((await w.runtime.command({ action: 'linear-result', ids: [queued.id] }))[0].status, 'sent');
+    for (const id of ['MX-1', 'MX-2', 'MX-3', 'MX-4', 'MX-5']) assert.equal((await w.last(id)).report, 'sent');
+  } finally { await w.close(); }
+});

@@ -20,7 +20,7 @@ async function fixture({ count = 1 } = {}) {
     const response = (data, status = 200) => ({ ok: status === 200, status, headers: new Headers({ date: new Date(f.now).toUTCString(), 'retry-after': '120' }), json: async () => ({ data }) });
     if (f.fail === 'rate') return response(null, 429);
     if (f.fail === 'offline') return response(null, 503);
-    if (query.includes('organization')) return response({ organization: { id: 'w' } });
+    if (query.includes('organization') && !query.includes('issues(')) return response({ organization: { id: 'w' } });
     if (v.id) {
       const issue = f.issues.find(i => i.id === v.id);
       return response({ issue: issue && { ...issue, ...(query.includes('comments(') ? {
@@ -34,7 +34,7 @@ async function fixture({ count = 1 } = {}) {
     else if (v.filter.id) items = f.issues.filter(i => v.filter.id.in.includes(i.id));
     else items = f.issues.filter(i => v.filter.or.some(m => i.project.id === m.project.id.eq && i.assignee.id === m.assignee.id.eq && i.state.id === m.state.id.eq && i.updatedAt >= m.updatedAt.gte && i.updatedAt <= m.updatedAt.lte));
     const start = Number(v.after || 0), nodes = items.slice(start, start + f.pageSize), end = start + nodes.length;
-    return response({ [kind]: { nodes, pageInfo: { hasNextPage: end < items.length, endCursor: String(end) } } });
+    return response({ organization: { id: 'w' }, [kind]: { nodes, pageInfo: { hasNextPage: end < items.length, endCursor: String(end) } } });
   };
   f.make = async () => {
     const r = await new Runtime({ store, directory: os.tmpdir(), env: { TEST_TOKEN: 'synthetic' }, linearFactory: token => new LinearClient(token, fetcher) }).init();

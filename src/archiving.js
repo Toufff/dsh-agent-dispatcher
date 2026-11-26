@@ -50,7 +50,7 @@ export function archivePlan(state, policy = archivePolicy(state.settings), now =
     .map(t => ({ task: t, count: t.rounds.length - policy.keepRounds }));
   const stamp = [], outbox = [];
   for (const item of state.outbox) {
-    if (!['sent', 'superseded'].includes(item.status)) continue;
+    if (!['sent', 'superseded'].includes(item.status) && !(item.external && item.status === 'failed')) continue;
     if (!item.finishedAt) (unstampedOutbox === 'archive' ? outbox : stamp).push(item);
     else if (now - Date.parse(item.finishedAt) >= policy.outboxDays * DAY) outbox.push(item);
   }

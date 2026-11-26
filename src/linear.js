@@ -79,6 +79,9 @@ const receiverClauses = mapping => mapping.intakeBy === 'delegate'
   ? [{ delegate: { id: { eq: mapping.delegateId } } }]
   : assigneeFilters(mapping).map(assignee => ({ assignee }));
 const delegateField = mappings => mappings.some(m => m?.intakeBy === 'delegate') ? ' delegate { id }' : '';
+const focusShape = issue => issue ? { identifier: issue.identifier, title: issue.title || '', description: String(issue.description || '').slice(0, 20000),
+  parent: issue.parent?.identifier || null, children: (issue.children?.nodes || []).map(c => c.identifier),
+  comments: (issue.comments?.nodes || []).map(c => String(c.body || '').slice(0, 4000)) } : null;
 const authFailure = () => Object.assign(new Error('Linear 认证失败'), { code: 'LINEAR_UNAUTHENTICATED' });
 
 /**
@@ -96,8 +99,19 @@ export class LinearClient {
     if (!this.credential) throw Object.assign(new Error('委派接单需要机器人凭据'), { code: 'LINEAR_AUTH' });
     return { ...mapping, delegateId: (await this.credential.identity()).id };
   }
-  async query(query, variables = {}, retried = false) {
+  async query(query, variables = {}) {
+    const result = await this.request(query, variables);
+    if (result.errors?.length) throw new Error('Linear rejected the request; check scope and identifiers');
+    return result.data;
+  }
+  /**
+   * One HTTP request. Returns the raw GraphQL result ({data, errors}) so a batched (aliased) mutation can map each
+   * alias's own success or failure; transport, rate-limit and authentication failures still throw for the whole
+   * request. `onRequest` (set by the runtime) counts every HTTP request for linearUsage.
+   */
+  async request(query, variables = {}, retried = false) {
     const authorization = this.credential ? await this.credential.ready() : this.token;
+    this.onRequest?.();
     const response = await this.fetcher('https://api.linear.app/graphql', {
       method: 'POST', headers: { Authorization: authorization, 'Content-Type': 'application/json' },
       body: JSON.stringify({ query, variables }), signal: AbortSignal.timeout(15000)
@@ -105,7 +119,7 @@ export class LinearClient {
     // An expired or revoked bot token: drop it and retry once with a fresh one.
     if (this.credential && response.status === 401) {
       this.credential.invalidate(authorization);
-      if (!retried) return this.query(query, variables, true);
+      if (!retried) return this.request(query, variables, true);
       throw authFailure();
     }
     const serverTime = Date.parse(response.headers?.get('date'));
@@ -126,12 +140,91 @@ export class LinearClient {
     if (result.errors?.some(e => e.extensions?.code === 'RATELIMITED' || e.extensions?.code === 'RATE_LIMITED')) throw limited();
     if (this.credential && result.errors?.some(e => e.extensions?.code === 'AUTHENTICATION_ERROR')) {
       this.credential.invalidate(authorization);
-      if (!retried) return this.query(query, variables, true);
+      if (!retried) return this.request(query, variables, true);
       throw authFailure();
     }
     this.credential?.accepted(authorization);
-    if (result.errors?.length) throw new Error('Linear rejected the request; check scope and identifiers');
-    return result.data;
+    return result;
+  }
+  /**
+   * Admission data of many issues in ONE request (organization check included): id, project, receiver, state.
+   * Returns a Map id -> issue (missing ids are absent). Chunks of 250 ids; more ids mean more requests.
+   */
+  async issuesByIds(ids, mapping) {
+    ids = [...new Set(ids.filter(Boolean))];
+    const out = new Map();
+    if (mapping) mapping = await this.resolve(mapping);
+    for (let i = 0; i < ids.length; i += 250) {
+      const chunk = ids.slice(i, i + 250);
+      const data = await this.query(`query($filter:IssueFilter!) { organization { id }
+        issues(filter:$filter, first:250, includeArchived:true) { nodes { id identifier title url updatedAt archivedAt project { id } assignee { id } delegate { id } state { id type } parent { id } ${relationFields} } } }`,
+      { filter: { id: { in: chunk } } });
+      if (mapping && data.organization?.id !== mapping.workspaceId) throw new Error('Linear token belongs to another workspace');
+      for (const issue of data.issues?.nodes || []) out.set(issue.id, issue);
+    }
+    return out;
+  }
+  /**
+   * Many writes as ONE aliased GraphQL mutation (Linear executes each alias independently).
+   * ops: [{ alias, kind: 'comment' | 'issueCreate' | 'issueUpdate', input, id? }] (issueUpdate takes `id`).
+   * Returns Map alias -> { ok, data } | { ok: false, error }. A transport / auth / rate-limit failure throws.
+   */
+  async batchWrite(ops) {
+    if (!ops.length) return new Map();
+    const decl = [], fields = [], variables = {};
+    for (const op of ops) {
+      if (!/^[a-z][a-z0-9_]{0,40}$/i.test(op.alias)) throw new Error('invalid alias');
+      if (op.kind === 'comment') {
+        decl.push(`$${op.alias}:CommentCreateInput!`); variables[op.alias] = op.input;
+        fields.push(`${op.alias}: commentCreate(input:$${op.alias}) { success comment { id } }`);
+      } else if (op.kind === 'issueCreate') {
+        decl.push(`$${op.alias}:IssueCreateInput!`); variables[op.alias] = op.input;
+        fields.push(`${op.alias}: issueCreate(input:$${op.alias}) { success issue { id identifier } }`);
+      } else if (op.kind === 'issueUpdate') {
+        decl.push(`$${op.alias}:IssueUpdateInput!`, `$${op.alias}_id:String!`); variables[op.alias] = op.input; variables[`${op.alias}_id`] = op.id;
+        fields.push(`${op.alias}: issueUpdate(id:$${op.alias}_id, input:$${op.alias}) { success issue { id identifier state { type } } }`);
+      } else throw new Error(`unknown write kind ${op.kind}`);
+    }
+    const result = await this.request(`mutation(${decl.join(', ')}) { ${fields.join(' ')} }`, variables);
+    const failed = new Map();
+    for (const e of result.errors || []) {
+      const alias = e.path?.[0];
+      if (alias) failed.set(alias, String(e.message || 'Linear rejected the write').slice(0, 200));
+    }
+    // An error without a path cannot be attributed: every alias without data counts as failed.
+    const general = (result.errors || []).find(e => !e.path?.length);
+    const out = new Map();
+    for (const op of ops) {
+      const value = result.data?.[op.alias];
+      if (value?.success && !failed.has(op.alias)) out.set(op.alias, { ok: true, data: value });
+      else out.set(op.alias, { ok: false, error: failed.get(op.alias) || (general ? String(general.message).slice(0, 200) : 'Linear write was not confirmed') });
+    }
+    return out;
+  }
+  /**
+   * Before re-sending writes whose earlier attempt had an unknown outcome, and before moving issues whose state the
+   * cache does not know freshly: ONE query for all of them. Returns { comments: Set(id), issues: Map(id -> issue) }.
+   */
+  async writeCheck({ commentIds = [], issueIds = [] }) {
+    commentIds = [...new Set(commentIds)].slice(0, 250); issueIds = [...new Set(issueIds)].slice(0, 250);
+    if (!commentIds.length && !issueIds.length) return { comments: new Set(), issues: new Map() };
+    const decl = [], parts = [], variables = {};
+    if (commentIds.length) { decl.push('$comments:CommentFilter!'); parts.push('comments(filter:$comments, first:250) { nodes { id } }'); variables.comments = { id: { in: commentIds } }; }
+    if (issueIds.length) { decl.push('$issues:IssueFilter!'); parts.push('issues(filter:$issues, first:250, includeArchived:true) { nodes { id identifier state { id type } } }'); variables.issues = { id: { in: issueIds } }; }
+    const data = await this.query(`query(${decl.join(', ')}) { ${parts.join(' ')} }`, variables);
+    return { comments: new Set((data.comments?.nodes || []).map(c => c.id)), issues: new Map((data.issues?.nodes || []).map(i => [i.id, i])) };
+  }
+  /** Focus contexts of many refs (ids or identifiers) in ONE aliased query. Map ref -> context | null. */
+  async focusContexts(refs) {
+    refs = [...new Set(refs.filter(Boolean))].slice(0, 40);
+    const out = new Map();
+    if (!refs.length) return out;
+    const decl = refs.map((_, i) => `$r${i}:String!`).join(', ');
+    const fields = refs.map((_, i) => `r${i}: issue(id:$r${i}) { identifier title description parent { identifier }
+      children(first:50) { nodes { identifier } } comments(last:15) { nodes { body createdAt } } }`).join(' ');
+    const result = await this.request(`query(${decl}) { ${fields} }`, Object.fromEntries(refs.map((r, i) => [`r${i}`, r])));
+    refs.forEach((ref, i) => out.set(ref, focusShape(result.data?.[`r${i}`])));
+    return out;
   }
   async collection(kind, filter, fields, includeArchived = false) {
     const nodes = []; let after = null;
@@ -149,7 +242,7 @@ export class LinearClient {
     } while (after);
     return nodes;
   }
-  async changes({ workspaceId, mappings, targets, issueSince, commentSince, startedAt }) {
+  async changes({ workspaceId, mappings, targets, issueSince, commentSince, startedAt, extraIds = [] }) {
     const identity = await this.query('query { organization { id } }');
     if (identity.organization.id !== workspaceId) throw new Error('Linear token belongs to another workspace');
     // Use the earlier clock and overlap on the next read; never advance to completion time.
@@ -161,8 +254,10 @@ export class LinearClient {
       project: { id: { eq: m.projectId } }, ...receiver, state: { id: { eq: m.readyStateId } },
       updatedAt: { gte: issueSince && issueSince > m.since ? issueSince : m.since, lte: until }
     }))) }, fields) : []; } catch (error) { if (error.code === 'RATE_LIMITED') throw error; issueError = error; }
-    const ids = [...new Set(targets.flatMap(t => [t.parentId, t.issueId]))];
-    try { watched = ids.length ? await this.collection('issues', { id: { in: ids } }, `id identifier project { id } assignee { id }${delegateField(mappings)} state { id type } parent { id } archivedAt ${relationFields}`, true) : [];
+    // Issues the runtime needs fresh (queued tasks' admission, pending state moves) ride on the same watched read:
+    // one batched query per sync, never one request per task.
+    const ids = [...new Set([...targets.flatMap(t => [t.parentId, t.issueId]), ...extraIds].filter(Boolean))];
+    try { watched = ids.length ? await this.collection('issues', { id: { in: ids } }, `id identifier title url updatedAt project { id } assignee { id }${delegateField(mappings)} state { id type } parent { id } archivedAt ${relationFields}`, true) : [];
     comments = targets.length ? await this.collection('comments', {
       issue: { id: { in: [...new Set(targets.map(t => t.issueId))] } }, updatedAt: { gte: commentSince, lte: until }
     }, 'id body createdAt updatedAt user { id } issue { id }') : [];
@@ -236,18 +331,15 @@ export class LinearClient {
   }
   /** Issue ids in the mapped project with a comment created or edited since `since`: one paged query for all issues. */
   async commentedIssues(mapping, since) {
-    const nodes = await this.collection('comments', { issue: { project: { id: { eq: mapping.projectId } } }, updatedAt: { gte: since } }, 'id issue { id }');
-    return new Set(nodes.map(c => c.issue?.id).filter(Boolean));
+    // Same single paged query; the comment bodies it carries feed the runtime's cache (linear-view) at no extra request.
+    const nodes = await this.collection('comments', { issue: { project: { id: { eq: mapping.projectId } } }, updatedAt: { gte: since } }, 'id body createdAt updatedAt user { id } issue { id identifier }');
+    return Object.assign(new Set(nodes.map(c => c.issue?.id).filter(Boolean)), { comments: nodes });
   }
   /** Focus mode: what relatedness rules and the judge may read about one issue (read only, bounded). */
   async focusContext(ref) {
     const data = await this.query(`query($id:String!) { issue(id:$id) { identifier title description parent { identifier }
       children(first:50) { nodes { identifier } } comments(last:15) { nodes { body createdAt } } } }`, { id: ref });
-    const issue = data?.issue;
-    if (!issue) return null;
-    return { identifier: issue.identifier, title: issue.title || '', description: String(issue.description || '').slice(0, 20000),
-      parent: issue.parent?.identifier || null, children: (issue.children?.nodes || []).map(c => c.identifier),
-      comments: (issue.comments?.nodes || []).map(c => String(c.body || '').slice(0, 4000)) };
+    return focusShape(data?.issue);
   }
   async activity(mapping, issueId, parentId) {
     const parent = await this.eligible(mapping, parentId);

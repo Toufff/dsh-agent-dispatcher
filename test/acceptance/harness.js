@@ -77,6 +77,38 @@ export class FakeLinear {
     this.calls.push({ auth, query: query.replace(/\s+/g, ' ').slice(0, 120) });
     const org = { id: this.workspaceId, name: 'Synthetic' };
     let data;
+    // Merged exit: one aliased mutation carries many writes (each alias succeeds or fails on its own).
+    if (/^mutation\(/.test(query.trim()) && /\b[a-z]\d+_?\w*: (commentCreate|issueCreate|issueUpdate)/.test(query)) {
+      this.batches = (this.batches || 0) + 1;
+      data = {}; const errors = [];
+      for (const [, alias, kind] of query.matchAll(/(\w+): (commentCreate|issueCreate|issueUpdate)\(/g)) {
+        const input = v[alias];
+        if (this.failAlias?.(kind, input, v[`${alias}_id`])) { data[alias] = null; errors.push({ message: 'synthetic rejection', path: [alias] }); continue; }
+        if (kind === 'commentCreate') {
+          this.writes.push({ kind: 'comment', id: input.id, issueId: input.issueId, body: input.body, auth, author });
+          if (!this.comments.some(c => c.id === input.id)) this.comments.push({ id: input.id, body: input.body, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), user: { id: author }, issueId: input.issueId });
+          data[alias] = { success: true, comment: { id: input.id } };
+        } else if (kind === 'issueUpdate') {
+          const id = v[`${alias}_id`];
+          this.writes.push({ kind: 'state', issueId: id, stateId: input.stateId, auth, author });
+          this.touch(id, { state: { id: input.stateId, type: 'started' } });
+          data[alias] = { success: true, issue: { id, identifier: this.issues.get(id)?.identifier, state: { type: 'started' } } };
+        } else {
+          const issue = this.issue(input.id, { identifier: `NEW-${this.issues.size + 1}`, title: input.title, delegate: input.delegateId ? { id: input.delegateId } : null });
+          this.writes.push({ kind: 'create', id: input.id, auth, author });
+          data[alias] = { success: true, issue: { id: issue.id, identifier: issue.identifier } };
+        }
+      }
+      return reply(200, { data, ...(errors.length ? { errors } : {}) });
+    }
+    if (/\br0: issue\(id:\$r0\)/.test(query)) {
+      data = {};
+      for (const [key, ref] of Object.entries(v)) {
+        const i = this.issues.get(ref) || [...this.issues.values()].find(x => x.identifier === ref);
+        data[key] = i ? { ...this.view(i), comments: { nodes: this.comments.filter(c => c.issueId === i.id).slice(-15) } } : null;
+      }
+      return reply(200, { data });
+    }
     if (query.includes('viewer')) data = { viewer: { id: author, name: author === this.botId ? 'TomorrowNeverKnows' : 'Touf', app: author === this.botId }, organization: org,
       projects: { nodes: [], pageInfo }, users: { nodes: [], pageInfo }, workflowStates: { nodes: [], pageInfo } };
     else if (query.includes('commentCreate')) {
@@ -89,9 +121,14 @@ export class FakeLinear {
       this.touch(v.id, { state: { id: v.input.stateId, type: v.input.stateId === 'review' ? 'started' : 'started' } });
       data = { issueUpdate: { success: true } };
     } else if (/^query \{ organization \{ id \} \}$/.test(query.trim())) data = { organization: org };
-    else if (query.includes('issues(filter:')) {
+    else if (query.includes('comments(filter:$comments') || query.includes('issues(filter:$issues')) {
+      // Merged-exit check read: comments / issues by id in one query.
+      data = {};
+      if (v.comments) data.comments = { nodes: this.comments.filter(c => matches(c, v.comments)).map(c => ({ id: c.id })) };
+      if (v.issues) data.issues = { nodes: [...this.issues.values()].filter(i => matches(i, v.issues)).map(i => this.view(i)) };
+    } else if (query.includes('issues(filter:')) {
       const nodes = [...this.issues.values()].filter(i => matches(i, v.filter)).map(i => this.view(i));
-      data = { issues: { nodes, pageInfo } };
+      data = { organization: org, issues: { nodes, pageInfo } };
     } else if (query.includes('comments(filter:')) {
       const nodes = this.comments.map(c => this.commentView(c)).filter(c => matches(c, v.filter));
       data = { comments: { nodes, pageInfo } };
@@ -166,6 +203,8 @@ export async function world({ settings = s => s, focusJudge, env = ENV, linear =
   const state = initialState(); state.paused = false; state.settings.concurrency = 6;
   state.settings.executors = [{ id: 'codex', type: 'codex', label: 'Fake executor', command: 'codex', args: [], sandbox: 'read-only', enabled: true }];
   state.settings.projects = [project()];
+  // Each synthetic cycle stands for minutes of host time: the merged exit flushes every cycle.
+  state.settings.linearBatch = { flushIntervalMs: 0 };
   state.settings = settings(state.settings) || state.settings;
   let store = await openStore(directory, state);
   const w = { directory, linear, executor, runtime: null, judged: [] };

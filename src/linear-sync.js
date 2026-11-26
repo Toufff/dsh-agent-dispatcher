@@ -60,12 +60,27 @@ export class LinearSync {
       const commentStart = group.waits.length ? new Date(Math.min(...group.waits.map(t => Date.parse(t.wait.armedAt)))).toISOString() : new Date(now).toISOString();
       const valid = async () => syncGroups(await r.store.read()).some(g => g.key === group.key && g.signature === group.signature);
       let monitored = false;
+      // Issues the runtime will need fresh before the next sync (queued tasks' admission, pending state moves) join
+      // this sync's single watched read, so starting or reporting them needs no request of its own.
+      const ids = new Set(group.projects.map(p => p.id));
+      const extraIds = [...new Set([
+        ...state.tasks.filter(t => ids.has(t.projectId) && t.status === 'queued' && t.issue?.id && currentTask(t, state)).map(t => t.issue.id),
+        ...state.outbox.filter(i => i.status === 'pending' && ids.has(i.projectId) && i.stateId && !i.parts?.state).map(i => i.issueId)
+      ].filter(Boolean))].slice(0, 250);
       try {
-        const result = await r.client(group.mappings[0]).changes({
+        const result = await r.client(group.mappings[0], { purpose: 'sync' }).changes({
           workspaceId: group.projects[0].linear.workspaceId, mappings: group.mappings,
           targets: group.waits.map(t => ({ parentId: t.issue.id, issueId: t.wait.issueId || t.issue.id })),
-          issueSince: since, commentSince: since && since > commentStart ? since : commentStart, startedAt: now
+          issueSince: since, commentSince: since && since > commentStart ? since : commentStart, startedAt: now,
+          ...(extraIds.length ? { extraIds } : {})
         });
+        // The sync cache (linear-view, issue-context, admission, state guard) learns everything this read saw.
+        if (r.linearCache) {
+          if (!result.activityError) for (const issue of result.watched || []) r.linearCache.put(issue);
+          if (!result.issueError) for (const issue of result.issues || []) r.linearCache.put(issue);
+          for (const c of result.comments || []) r.linearCache.putComment({ id: c.id, issueId: c.issue?.id, authorId: c.user?.id || null, body: c.body, createdAt: c.createdAt, updatedAt: c.updatedAt });
+          if (!result.issueError && !result.activityError) r.linearCache.synced();
+        }
         if (!await valid()) continue;
         const retained = same ? saved.comments || [] : [];
         const merged = new Map(retained.map(c => [c.id, c]));

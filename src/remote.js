@@ -6,7 +6,12 @@ const codec = (schema, name) => ({ mode: 'strict', typeSymbol: `dsh-agent-dispat
 const commandSchema = z.object({ action: z.enum(['configure', 'submit', 'pause', 'resume', 'poll', 'reconcile',
   'stop', 'takeover', 'return', 'retry', 'accept', 'continue', 'arm-wait', 'reassess-result', 'issue-context', 'archived-task', 'linear-catalog', 'check-directory',
   'unhold', 'clear-resume', 'explain', 'drain', 'undrain',
-  'focus-set', 'focus-add', 'focus-remove', 'focus-clear', 'focus-approve', 'focus-reject']), id: z.string().optional(), settings: z.json().optional(), wait: waitSchema.optional(),
+  'focus-set', 'focus-add', 'focus-remove', 'focus-clear', 'focus-approve', 'focus-reject',
+  // Linear merged exit (src/linear-outbox.js): local scripts write through the outbox and read the sync cache.
+  'linear-enqueue', 'linear-result', 'linear-view']), id: z.string().optional(),
+  caller: z.enum(['director', 'push-queue', 'ops']).optional(), idempotencyKey: z.string().min(1).max(200).optional(), op: z.json().optional(),
+  ids: z.array(z.string().max(80)).max(500).optional(), since: z.string().max(40).optional(),
+  include: z.array(z.enum(['issues', 'comments'])).max(2).optional(), settings: z.json().optional(), wait: waitSchema.optional(),
   tokenEnv: z.string().regex(/^[A-Z][A-Z0-9_]+$/).max(160).optional(), cwd: z.string().max(4096).optional(),
   revision: z.number().optional(), confirmedIdle: z.boolean().optional(), preserveCursor: z.boolean().optional(), expiry: z.boolean().optional(), reason: z.string().max(300).optional(), projectId: z.string().optional(), title: z.string().max(300).optional(),
   prompt: z.string().min(1).max(100000).optional(),

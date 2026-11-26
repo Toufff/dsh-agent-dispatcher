@@ -105,6 +105,47 @@ Classified completion queues a privacy-preserving comment and moves the issue to
 
 **回滚**：删掉 `linear.projects` 里该项目的绑定（或整个 `linear` 块）并保存，立即回到个人密钥 + 按 assignee 接单 + 前缀协议；在办任务不受影响。工单上的 delegate 留着也无害。
 
+### Linear 合批出口
+
+本机访问 Linear 只走派发器这一个出口，**合批**发出：不再是每个任务、每个脚本做完一件事就各自调一次 Linear（实现在 `src/linear-outbox.js`）。
+
+**写（发件箱合批）**
+
+- 任务回写（评论、改状态）和本机脚本经 `linear-enqueue` 交来的写入都先进持久发件箱（`state.outbox`，与原回写发件箱同样落盘，重启不丢）。
+- 发件箱按凭据分组，**最多每 `flushIntervalMs`（默认 30 秒）**发一次；待发达到 **`flushPending`（默认 20 条）**时立即发。一次把所有到期写入拼成**一个带别名的 GraphQL mutation**（`c0: commentCreate(...) u1: issueUpdate(...) x2: issueCreate(...)`），每个请求最多 **`maxPerRequest`（默认 25）**个别名，超出分块。
+- Linear 对每个别名单独成败（`errors[].path[0]` 是别名）。成功的部分记为已发；**只重试失败的部分**，按 5 秒起指数退避（最长 5 分钟）。整个请求失败（网络、限流、认证）时这一批都按退避重试。Linear 失败**永远不会重跑编码**。
+- 幂等：评论和新建工单都带客户端生成的 id。上一次结果不明（超时、响应丢失）的写入，下次发送前先用**一次读**按 id 核对，已存在的直接记为已发，不会重复。`linear-enqueue` 按 `(caller, idempotencyKey)` 去重，重复提交返回 `duplicate` 和原 id（归档后仍认得）。
+- 改状态前的保护（人已关闭的单不往回改）用同步缓存里的状态；缓存里没有或超过 `cacheMaxAgeMs`（默认 120 秒）的，同一批只做**一次**按 id 的读。下一次同步也会把待改状态的单并进它的 watched 读。
+- 外部写入被 Linear 明确拒绝 `maxTries`（默认 12）次后标 `failed`；网络类失败一直退避重试。
+
+**读（同步缓存）**
+
+- 启动前复核、`issue-context`、专注判定上下文、计时 / 数据唤醒不再每个任务各读一次：先看同步缓存（同步的接单读、watched 读、合批读、评论扫描、写入结果都会更新它），缓存在 `cacheMaxAgeMs` 内见过就直接用；否则同一轮里所有复核**共用一次**按 id 的批量读（`issues(filter:{id:{in:[...]}})`，带组织校验）。读失败一律**关闭**：任务留在队列 30 秒后再查，不会用过期数据启动。
+- 每次同步把排队任务的工单和待改状态的工单并进同一个 watched 读，所以正常情况下启动和改状态都不需要单独请求。
+- 专注判定一次评估需要的所有工单上下文合成**一个**别名查询（原来每个专注工单一次）。
+- `issue-context`（面板展示）只读缓存，不发请求；缓存里还没有时返回 `cached: false`。
+- 已知局限：缓存在内存里，重启后由下一次同步重新填；它只包含派发器本来就读到的工单（Ready 接单、在办任务和等待的工单、自己写过的工单）和评论扫描见到的评论，不是整个项目的镜像。评论里人手动回复后的完整评论读取（结构化等待和评论续办）仍按原有的「先全项目一次查哪些单有新评论、再只读这些单」进行。
+
+**本机脚本接口**（经已有的认证 `command()` RPC，即 `zrstudio/dsh/command.mjs` / `snapshot.mjs` 那条通道）
+
+- `linear-enqueue`：`{caller: 'director'|'push-queue'|'ops', idempotencyKey, op}`，`op` 是 `{kind:'comment', issue:'LON-123'|issueId, body}`、`{kind:'issueCreate', input:{teamId?, projectId?, title, description, delegateToBot?, assigneeId?, labelIds?, stateId?}}`（Linear 要求 `teamId`；`projectId` 缺省用发送项目的 Linear 项目；`delegateToBot` 委派给本机机器人）或 `{kind:'issueUpdate', issue, input:{stateId?, labelIds?, delegateId?}}`（只认这三个字段，其余直接拒绝）。返回 `{id, status:'queued'|'duplicate'}`，入队本身不发任何 Linear 请求。
+- `linear-result`：`{ids:[...]}` → `[{id, status:'queued'|'sent'|'failed'|'retrying', result?:{issueIdentifier?, commentId?}, error?}]`，只读。
+- `linear-view`：`{projectId?, since?:ISO, include:['issues','comments']}` → 只读**上一次同步的缓存**，绝不发请求：`issues`（`id, identifier, title, state, assigneeId, delegateId, updatedAt`）和 `comments`（`id, issueIdentifier, authorId, authorIsBot, body, createdAt`，`since` 之后、最多 500 条）以及 `cacheAt`。`authorIsBot` = 本机发件箱发出的评论或机器人账号的评论。
+
+**用量与告警**
+
+- 每个 Linear HTTP 请求按「调用方 / 用途」计数（`dispatcher/sync`、`dispatcher/write`、`dispatcher/write-check`、`dispatcher/eligibility`、`dispatcher/comment-sweep`、`dispatcher/comments`、`dispatcher/focus`、`dispatcher/catalog` 等），快照 `linearUsage` 给出本小时合计、按调用方和按用途的计数；合批写入一个请求只记一次（记在 `dispatcher/write`）。
+- 本小时请求数超过 `hourlyBudget`（默认 2500，Linear 每小时额度）× `warnFraction`（默认 0.6）时，快照 `errors` 出现一条告警，列出各调用方的请求数。快照 `linearOutbox` 给出待发条数、其中外部写入条数和上次发送时间。
+
+设置（顶层，可选）：
+
+```json
+"linearBatch": { "flushIntervalMs": 30000, "flushPending": 20, "maxPerRequest": 25,
+  "hourlyBudget": 2500, "warnFraction": 0.6, "cacheMaxAgeMs": 120000, "maxTries": 12 }
+```
+
+测试（`test/linear-batch.test.js`，真实 `LinearClient` + 假传输，按请求数断言）：30 条回写评论 + 5 次改状态 + 4 条研究主管写入 ≤ 2 个请求；10 个任务同轮启动 ≤ 1 次复核读，缓存新鲜时 0 次；部分别名失败只重试失败的那条；结果不明时先核对再发、不重复；入队幂等且重启后仍在；`linear-view` 不发请求；用量超告警线出快照错误。验收场景 (g) 在真实周期里确认所有写入都是别名合批请求。
+
 ## Sessions and intervention
 
 An invalid Linear wait target is shown as **等待目标需要修正**, not an endlessly retrying connection failure. Targets must be the current issue or its direct child in the mapped project. Manual save validates this before replacing the old wait; the previous evidence and attempts remain. Network failures still retry. Correcting a target begins listening for new replies after saving unless the unchanged-target cursor-preservation option is selected.

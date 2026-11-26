@@ -40,17 +40,26 @@ test('connection and directory inspection never change state or expose credentia
   await assert.rejects(runtime.command({ action: 'linear-catalog', tokenEnv: 'TEST_TOKEN' }), e => !e.message.includes('private-synthetic-value'));
 });
 
-test('issue context lookup is read-only and works for disabled historical tasks', async () => {
+test('issue context lookup is read-only, cache-only (no Linear request) and works for disabled historical tasks', async () => {
+  let requests = 0;
   const runtime = await fixture({ env: { TEST_TOKEN: 'synthetic' }, linearFactory: () => ({
-    issueContext: async (mapping, parent, target, authors) => ({ parent, target, authors })
+    issueContext: async () => { requests++; return {}; }
   }) });
   await runtime.dispatcher.update(state => {
-    state.settings.projects[0].linear = { tokenEnv: 'TEST_TOKEN', enabled: false };
+    state.settings.projects[0].linear = { tokenEnv: 'TEST_TOKEN', enabled: false, projectId: 'lp' };
     state.settings.projects[0].followup = { enabled: false, commentAuthorIds: ['peer'] };
     state.tasks.push({ id: 'task', projectId: 'p', issue: { id: 'parent' }, wait: { issueId: 'child' } });
   });
   const before = await runtime.store.load();
-  assert.deepEqual(await runtime.command({ action: 'issue-context', id: 'task' }), { parent: 'parent', target: 'child', authors: ['peer'] });
+  // Not seen by any sync yet: an empty context, not a request.
+  assert.deepEqual(await runtime.command({ action: 'issue-context', id: 'task' }), { checkedAt: null, cached: false, replyUsers: [{ id: 'peer', name: 'peer' }] });
+  runtime.linearCache.put({ id: 'parent', identifier: 'LP-1', project: { id: 'lp' } });
+  runtime.linearCache.put({ id: 'child', identifier: 'LP-2', project: { id: 'lp' }, parent: { id: 'parent' } });
+  const context = await runtime.command({ action: 'issue-context', id: 'task' });
+  assert.equal(context.source.identifier, 'LP-1'); assert.equal(context.target.identifier, 'LP-2'); assert.ok(context.checkedAt);
+  runtime.linearCache.put({ id: 'child', parent: { id: 'elsewhere' } });
+  await assert.rejects(runtime.command({ action: 'issue-context', id: 'task' }), e => e.code === 'INVALID_WAIT_TARGET');
+  assert.equal(requests, 0);
   assert.deepEqual(await runtime.store.load(), before);
   await assert.rejects(runtime.command({ action: 'issue-context', id: 'missing' }), /no Linear mapping/);
 });

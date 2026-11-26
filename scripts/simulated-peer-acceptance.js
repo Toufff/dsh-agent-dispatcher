@@ -27,8 +27,26 @@ export async function runSimulatedPeer({ directory, adapter, pollMs = 500, onSta
     const { query, variables: v } = JSON.parse(options.body);
     const pageInfo = { hasNextPage: false, endCursor: null };
     let data;
-    if (query.includes('organization')) data = { organization: { id: 'workspace' } };
-    else if (query.includes('issues(filter:')) data = { issues: { nodes: [{ id: 'parent', identifier: 'SIM-1', title: 'Simulated collaborator acceptance', description, url: 'https://linear.app/example/issue/SIM-1' }], pageInfo } };
+    const parentIssue = { id: 'parent', identifier: 'SIM-1', title: 'Simulated collaborator acceptance', description, url: 'https://linear.app/example/issue/SIM-1',
+      project: { id: 'project' }, assignee: { id: 'owner' }, delegate: null, state: { id: remote.state, type: 'started' } };
+    if (query.trim().startsWith('mutation(')) {
+      // Merged exit: one aliased mutation carries the comment and the state move.
+      data = {};
+      for (const [, alias, kind] of query.matchAll(/(\w+): (commentCreate|issueUpdate)\(/g)) {
+        const input = v[alias];
+        if (kind === 'commentCreate') {
+          assert.equal(input.issueId, 'parent');
+          remote.writes.set(input.id, (remote.writes.get(input.id) || 0) + 1);
+          remote.reports.set(input.id, input);
+          data[alias] = { success: true, comment: { id: input.id } };
+        } else {
+          assert.equal(v[`${alias}_id`], 'parent'); assert.notEqual(input.stateId, 'done');
+          remote.state = input.stateId; data[alias] = { success: true, issue: { id: 'parent', identifier: 'SIM-1', state: { type: 'started' } } };
+        }
+      }
+    } else if (query.includes('issues(filter:')) data = { organization: { id: 'workspace' }, issues: { nodes: [parentIssue], pageInfo } };
+    else if (query.includes('comments(filter:$comments')) data = { comments: { nodes: [...remote.reports.keys()].filter(id => v.comments.id.in.includes(id)).map(id => ({ id })) } };
+    else if (query.includes('organization')) data = { organization: { id: 'workspace' } };
     else if (query.includes('commentCreate')) {
       assert.equal(v.input.issueId, 'parent');
       remote.writes.set(v.input.id, (remote.writes.get(v.input.id) || 0) + 1);
@@ -68,6 +86,7 @@ export async function runSimulatedPeer({ directory, adapter, pollMs = 500, onSta
   };
   try {
     const state = initialState(); state.paused = false;
+    state.settings.linearBatch = { flushIntervalMs: 0 };
     state.settings.executors = [{ id: 'codex', type: 'codex', label: 'Codex simulation', command: process.env.DISPATCH_SMOKE_COMMAND || 'codex', args: [], sandbox: 'read-only', enabled: true }];
     state.settings.projects = [{ id: 'acceptance-simulated-peer', label: 'Isolated simulation', cwd: directory,
       followup: { enabled: true, commentAuthorIds: ['owner', 'peer'], maxWakeups: 3 },

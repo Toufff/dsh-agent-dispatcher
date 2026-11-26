@@ -11,7 +11,8 @@ import { outcomeProtocol, parseOutcome, inspectOutcome, outcomeReports } from '.
 import { parseSettings, unknownSettingKeys } from './config.js';
 import { CliAdapter } from './adapters/cli.js';
 import { DshAdapter } from './adapters/dsh.js';
-import { LinearClient, linearMapping, receiverAllowed, syncKey, replyExcludedId } from './linear.js';
+import { LinearClient, linearMapping, receiverAllowed, syncKey, replyExcludedId, validWaitTarget, WaitTargetError } from './linear.js';
+import { IssueCache, LinearUsage, batchPolicy, enqueueExternal, externalResults, flushBatched, cacheComment } from './linear-outbox.js';
 import { LinearCredentials, credentialEnvNames, credentialKey } from './linear-auth.js';
 import { botTrust } from './comment-trust.js';
 import { AdapterRegistry } from './adapters/registry.js';
@@ -168,7 +169,9 @@ export class Runtime {
     this.credentials = new LinearCredentials({ env, now, fetcher: (...args) => (linearFetch || fetch)(...args) });
     this.focusJudge = focusJudge; this.focusJudging = null; this.focusContexts = { revision: null, map: new Map() };
     this.linearFactory = linearFactory; this.adapters = {}; this.health = {}; this.errors = [];
-    this.sync = new LinearSync(this); this.reads = new Map(); this.notifications = new Notifications(this);
+    this.sync = new LinearSync(this); this.reads = new Map();
+    // Linear merged exit: the sync cache every per-task read uses, and request counters (src/linear-outbox.js).
+    this.linearCache = new IssueCache(now); this.linearUsage = new LinearUsage(now); this.admissionBatches = new Map(); this.notifications = new Notifications(this);
     this.registry = registry || new AdapterRegistry();
     if (!registry) {
       for (const type of ['codex', 'claude']) this.registry.register(type, (config, deps) => new CliAdapter(config, path.join(deps.directory, 'runs'), deps.secretKeys));
@@ -188,7 +191,7 @@ export class Runtime {
       if (!task.issue?.id) return;
       const mapping = linearMapping(state.settings.projects.find(p => p.id === task.projectId), state.settings);
       if (!mapping?.enabled) throw new Error('Linear dispatch disabled');
-      await this.client(mapping).eligible(mapping, task.issue.id);
+      await this.admission(mapping, task.issue.id);
     } });
   }
   async init() {
@@ -262,7 +265,12 @@ export class Runtime {
     // Bound credentials (bot): identity and token expiry only, never the token. Errors fail closed and show here.
     const linearIdentity = this.credentials.status();
     const identityErrors = linearIdentity.filter(c => c.error).map(c => `Linear 凭据 ${c.id || c.mode}：${c.error}`);
-    return { ...state, tasks, archived, drain, restart: restartReadiness(state), focus: focusView(state), linearSync: undefined, syncStatus, linearIdentity, health: this.health,
+    // Linear requests this clock hour, per caller / purpose; over warnFraction of the hourly budget is an error.
+    const linearUsage = this.linearUsage.snapshot(batchPolicy(state.settings));
+    if (linearUsage.over) identityErrors.push(`Linear 请求本小时已 ${linearUsage.total} 次，超过预算 ${linearUsage.hourlyBudget} 的告警线 ${linearUsage.warnAt}；按调用方：${Object.entries(linearUsage.byCaller).map(([k, n]) => `${k} ${n}`).join('，')}`);
+    const linearOutbox = { pending: state.outbox.filter(i => i.status === 'pending').length, external: state.outbox.filter(i => i.external && i.status === 'pending').length,
+      lastFlushAt: this.lastFlushAt ? new Date(this.lastFlushAt).toISOString() : null };
+    return { ...state, tasks, archived, drain, restart: restartReadiness(state), focus: focusView(state), linearSync: undefined, syncStatus, linearIdentity, linearUsage, linearOutbox, health: this.health,
       // Settings fields this bundle does not understand (kept, no effect until a rebuild/restart).
       settingsUnknownKeys: unknownSettingKeys(state.settings), errors: [...this.errors, ...identityErrors, ...reportErrors, ...monitorErrors, ...expired, ...attentionErrors, ...notificationErrors, ...reviewLimits] };
   }
@@ -340,7 +348,11 @@ export class Runtime {
     if (request.action === 'linear-catalog') {
       if (!/^[A-Z][A-Z0-9_]{1,159}$/.test(request.tokenEnv || '')) throw new Error('填写密钥环境变量名，不要填写密钥本身。');
       if (!this.env[request.tokenEnv]) throw new Error('宿主未读取到此环境变量，请在启动 DSH 的环境中配置后再连接。');
-      try { return await this.sharedRead(`catalog:${request.tokenEnv}`, () => this.client({ tokenEnv: request.tokenEnv }).catalog()); }
+      try { return await this.sharedRead(`catalog:${request.tokenEnv}`, async () => {
+        const catalog = await this.client({ tokenEnv: request.tokenEnv }, { purpose: 'catalog' }).catalog();
+        for (const u of catalog?.users || []) if (u?.id) this.linearCache.users.set(u.id, u.name || u.id);
+        return catalog;
+      }); }
       catch { throw new Error('无法读取 Linear 账号与项目，请检查密钥权限和网络，然后重试。'); }
     }
     if (request.action === 'check-directory') {
@@ -362,8 +374,27 @@ export class Runtime {
       const project = state.settings.projects.find(p => p.id === task?.projectId);
       if (!task?.issue?.id || !project?.linear) throw new Error('This task has no Linear mapping');
       if (task.wait?.kind === 'task') return { checkedAt: new Date().toISOString() }; // Local dependencies need no remote parent/child lookup.
-      return this.sharedRead(JSON.stringify(['context', state.revision, task.id, task.wait?.issueId]), () => this.client(project.linear).issueContext(project.linear, task.issue.id,
-        task.wait?.issueId || task.issue.id, project.followup?.commentAuthorIds || []), 60000);
+      // Display data from the sync cache only (the watched read covers every wait's parent and target): no request.
+      const source = this.linearCache.get(task.issue.id), target = this.linearCache.get(task.wait?.issueId || task.issue.id);
+      const authorIds = [...new Set(project.followup?.commentAuthorIds || [])].slice(0, 30);
+      if (!source || !target) return { checkedAt: null, cached: false, replyUsers: authorIds.map(id => ({ id, name: this.linearCache.users.get(id) || id })) };
+      if (!validWaitTarget(source.issue, target.issue, project.linear.projectId)) throw new WaitTargetError();
+      return { source: source.issue, target: target.issue, cached: true,
+        replyUsers: authorIds.map(id => ({ id, name: this.linearCache.users.get(id) || id })), checkedAt: new Date(Math.min(source.at, target.at)).toISOString() };
+    }
+    if (request.action === 'linear-enqueue') {
+      // Local scripts (research director, push queue, ops) write to Linear only through this durable, merged outbox.
+      const result = await this.dispatcher.update(state => enqueueExternal(state, request, this.linearCache, this.store.archive), { durable: true });
+      await this.dispatcher.flush();
+      return result;
+    }
+    if (request.action === 'linear-result') return externalResults(await this.store.read(), request.ids, this.store.archive);
+    if (request.action === 'linear-view') {
+      // Cache only: never a network request, whoever asks and however often.
+      const state = await this.store.read();
+      const include = Array.isArray(request.include) && request.include.length ? request.include.filter(k => ['issues', 'comments'].includes(k)) : ['issues', 'comments'];
+      const botIds = new Set([...(state.settings.linear?.credentials || []).map(c => c.botUserId), ...this.credentials.status().map(c => c.botUserId || (c.mode === 'clientCredentials' ? c.viewer?.id : null))].filter(Boolean));
+      return this.linearCache.view({ projectId: request.projectId, since: request.since, include }, { ownIds: new Set(ownCommentIds(state)), botIds });
     }
     if (request.action === 'explain') {
       // Read-only: the decision inputs in force for one task right now (current settings, not cached fields).
@@ -443,7 +474,7 @@ export class Runtime {
       if (wait.kind === 'linear') {
         if (!original?.issue?.id || !originalProject?.linear?.enabled) throw new Error('Linear mapping is required');
         // Read-only validation before replacing the existing wait/cursor.
-        await this.client(originalProject.linear).activity(linearMapping(originalProject, before.settings), wait.issueId || original.issue.id, original.issue.id);
+        await this.client(originalProject.linear, { purpose: 'arm-wait' }).activity(linearMapping(originalProject, before.settings), wait.issueId || original.issue.id, original.issue.id);
       }
       await this.dispatcher.update(state => {
         const task = state.tasks.find(t => t.id === request.id);
@@ -547,7 +578,19 @@ export class Runtime {
     await this.dispatcher.flush();
     return this.snapshot();
   }
-  client(linear) {
+  /** A Linear client whose every HTTP request is counted in linearUsage under (caller, purpose). */
+  client(linear, { caller = 'dispatcher', purpose = 'other' } = {}) {
+    return this.counted(this.rawClient(linear), caller, purpose);
+  }
+  counted(client, caller, purpose) {
+    if (client && typeof client === 'object') {
+      client.usageCaller = caller; client.usagePurpose = purpose;
+      client.onRequest = () => this.linearUsage.count(client.usageCaller, client.usagePurpose);
+    }
+    return client;
+  }
+  usagePurpose(client, purpose) { if (client && typeof client === 'object') client.usagePurpose = purpose; }
+  rawClient(linear) {
     const mapping = this.boundMapping(linear);
     // A project switched to a bound credential (bot) never falls back to the personal key: fail closed.
     if (mapping?.auth || mapping?.botMode || mapping?.intakeBy === 'delegate') {
@@ -557,6 +600,40 @@ export class Runtime {
     const token = this.env[mapping.tokenEnv];
     if (!token) throw new Error(`Missing environment variable ${mapping.tokenEnv}`);
     return this.linearFactory(token);
+  }
+  /**
+   * Pre-start eligibility (and timer / data wakes): parent issue still in the mapped project, still this receiver's,
+   * not closed. Uses the sync cache when it saw the issue within cacheMaxAgeMs; otherwise every check made in the
+   * same tick shares ONE batched read (issues by id). A failed read fails closed (the task waits, nothing runs).
+   */
+  async admission(mapping, issueId) {
+    const policy = batchPolicy(this.settingsCache);
+    const admissible = issue => issue?.state?.type && issue.project?.id && 'assignee' in issue && (mapping.intakeBy !== 'delegate' || 'delegate' in issue);
+    const check = async issue => {
+      const resolved = await this.resolveMapping(mapping);
+      if (!issue || issue.archivedAt || issue.project?.id !== resolved.projectId || !receiverAllowed(issue, resolved) || ['completed', 'canceled'].includes(issue.state?.type))
+        throw new Error('Parent issue is closed, reassigned or outside the mapped project; local continuation remains stopped');
+      return issue;
+    };
+    const cached = this.linearCache.fresh(issueId, policy.cacheMaxAgeMs);
+    if (admissible(cached)) return check(cached);
+    const client = this.client(mapping, { purpose: 'eligibility' });
+    // Clients without the batched read keep the single-issue check.
+    if (typeof client.issuesByIds !== 'function') return client.eligible(mapping, issueId);
+    const key = syncKey(mapping);
+    let batch = this.admissionBatches.get(key);
+    if (!batch) {
+      batch = { ids: new Set() };
+      this.admissionBatches.set(key, batch);
+      // Registered synchronously: every check started in this tick joins before the read leaves.
+      batch.promise = new Promise(resolve => setImmediate(resolve)).then(() => {
+        this.admissionBatches.delete(key);
+        return client.issuesByIds([...batch.ids], mapping);
+      }).then(map => { for (const issue of map.values()) this.linearCache.put(issue); return map; });
+      batch.promise.catch(() => {});
+    }
+    batch.ids.add(issueId);
+    return check((await batch.promise).get(issueId));
   }
   /** The effective mapping (settings.linear binding merged) of a project.linear object passed by a caller. */
   boundMapping(linear) {
@@ -660,12 +737,28 @@ export class Runtime {
         const task = state.tasks.find(t => t.id === item.taskId);
         // A round report belongs to a finished round, not to the task's current status: it is never superseded
         // (2026-11-23: rounds must reach Linear eventually; it carries its own issue and body).
-        if (item.roundReport) continue;
+        if (item.roundReport || item.external) continue;
         if (!task || !currentTask(task, state) || task.reportVersion !== item.reportVersion || task.status !== item.taskStatus) item.status = 'superseded';
       }
     }, { durable: true });
     const state = await this.store.read();
-    for (const item of state.outbox.filter(i => i.status === 'pending' && (!i.nextAt || i.nextAt <= Date.now()))) {
+    const due = state.outbox.filter(i => i.status === 'pending' && (!i.nextAt || i.nextAt <= Date.now()));
+    // Merged exit: items whose client sends aliased batches wait for the flush window (flushIntervalMs) unless
+    // flushPending of them are waiting; then all of them leave together (src/linear-outbox.js).
+    const batched = [], legacy = [];
+    for (const item of due) {
+      const project = state.settings.projects.find(p => p.id === item.projectId);
+      let client = null;
+      try { client = project?.linear ? this.rawClient(project.linear) : null; } catch { /* missing credential: legacy path records the failure */ }
+      (typeof client?.batchWrite === 'function' ? batched : item.external ? null : legacy)?.push(item);
+    }
+    const policy = batchPolicy(state.settings);
+    const waiting = state.outbox.filter(i => i.status === 'pending').length;
+    if (batched.length && (this.lastFlushAt === undefined || Date.now() - this.lastFlushAt >= policy.flushIntervalMs || waiting >= policy.flushPending)) {
+      this.lastFlushAt = Date.now();
+      await flushBatched(this, state, batched);
+    }
+    for (const item of legacy) {
       const live = await this.store.read(), latest = live.tasks.find(t => t.id === item.taskId);
       if (!item.roundReport && (!latest || !currentTask(latest, live) || latest.reportVersion !== item.reportVersion || latest.status !== item.taskStatus)) {
         await this.dispatcher.update(s => { s.outbox.find(i => i.id === item.id).status = 'superseded'; });
@@ -673,7 +766,7 @@ export class Runtime {
       }
       const project = state.settings.projects.find(p => p.id === item.projectId);
       try {
-        await this.client(project.linear).report(item, project.linear);
+        await this.client(project.linear, { purpose: 'write' }).report(item, project.linear);
         await this.dispatcher.update(s => {
           s.outbox.find(i => i.id === item.id).status = 'sent';
           delete s.outbox.find(i => i.id === item.id).lastError;
@@ -899,7 +992,7 @@ export class Runtime {
         const localEvent = old.wait.kind === 'task' ? dependencyEvent(old.wait, old, snapshot, Date.now()) : null;
         if (!observing && old.issue?.id && (recheck || old.wait.kind === 'time' || localEvent)) {
           if (!project.linear?.enabled) throw new Error('Enable Linear before resuming an issue timer');
-          await this.client(project.linear).eligible(linearMapping(project, snapshot.settings), old.issue.id);
+          await this.admission(linearMapping(project, snapshot.settings), old.issue.id);
         }
         const supplied = options.activities?.get(old.id);
         if (remote && supplied?.error) throw supplied.error;
@@ -1022,7 +1115,10 @@ export class Runtime {
       if (started - last < this.commentSweepMs) { modes.set(key, 'dirty'); continue; }
       try {
         // One minute of overlap covers clock skew and comments written while the previous pass ran.
-        for (const id of await client.commentedIssues(project.linear, new Date(last - 60000).toISOString())) this.commentDirty.add(id);
+        this.usagePurpose(client, 'comment-sweep');
+        const commented = await client.commentedIssues(project.linear, new Date(last - 60000).toISOString());
+        for (const id of commented) this.commentDirty.add(id);
+        for (const c of commented.comments || []) this.linearCache.putComment(cacheComment(c, project.linear.projectId));
         this.commentSweptAt.set(key, started); modes.set(key, 'dirty'); this.commentSweepError = null;
       } catch (error) {
         // The cursor stays put, so nothing is missed; a rate limit also pauses the per-issue reads.
@@ -1099,7 +1195,7 @@ export class Runtime {
       this.reviewCheckedAt.set(task.id, Date.now() + reviewCommentInterval);
       let activity;
       // Closed, reassigned or moved issues are rejected by eligibility: nothing to continue.
-      try { activity = await this.client(project.linear).activity(linearMapping(project, state.settings), task.issue.id, task.issue.id); }
+      try { activity = await this.client(project.linear, { purpose: 'comments' }).activity(linearMapping(project, state.settings), task.issue.id, task.issue.id); }
       catch (error) { this.commentReadFailed(error); continue; }
       this.commentDirty.delete(task.issue.id);
       const since = Date.parse(task.createdAt || 0), seen = new Set(task.followupSeen || []);
@@ -1190,7 +1286,7 @@ export class Runtime {
     if (Date.now() < (this.reviewCheckedAt.get(task.id) || 0)) return;
     this.reviewCheckedAt.set(task.id, Date.now() + reviewCommentInterval);
     let activity;
-    try { activity = await this.client(project.linear).activity(linearMapping(project, state.settings), task.issue.id, task.issue.id); }
+    try { activity = await this.client(project.linear, { purpose: 'comments' }).activity(linearMapping(project, state.settings), task.issue.id, task.issue.id); }
     catch (error) { this.commentReadFailed(error); return; }
     this.commentDirty.delete(task.issue.id);
     const prefix = (policy.selfCommentPrefix ?? 'ZRSTUDIO').trim();
@@ -1254,7 +1350,7 @@ export class Runtime {
           });
           continue;
         }
-        try { await this.client(project.linear).eligible(linearMapping(project, state.settings), task.issue.id); } catch { continue; }
+        try { await this.admission(linearMapping(project, state.settings), task.issue.id); } catch { continue; }
         const issue = task.issue.identifier || 'this issue';
         const registered = registeredAttempt(task);
         const rotation = await this.rotationFor(task.projectId, registered?.executor, registered?.sessionId, state);
@@ -1332,7 +1428,14 @@ export class Runtime {
     const project = state.settings.projects.find(p => p.id === task.projectId);
     if (!project?.linear) return null;
     let client;
-    try { client = this.client(project.linear); } catch { return null; }
+    try { client = this.client(project.linear, { purpose: 'focus' }); } catch { return null; }
+    if (Array.isArray(ref)) {
+      // Every context one evaluation needs, in ONE aliased query (was one request per focus issue).
+      if (typeof client.focusContexts !== 'function') return undefined;
+      let timer;
+      try { return await Promise.race([client.focusContexts(ref), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), 20000); })]); }
+      catch { return null; } finally { clearTimeout(timer); }
+    }
     if (typeof client.focusContext !== 'function') return null;
     let timer;
     try {
@@ -1345,10 +1448,15 @@ export class Runtime {
     const task = state.tasks.find(t => t.id === item.taskId);
     if (!task || state.focus?.revision !== item.revision || !state.focus.enabled) return;
     const local = localCandidate(task, state);
-    const remote = await this.focusLinear(state, task, task.issue?.id || item.identifier);
+    if (this.focusContexts.revision !== item.revision) this.focusContexts = { revision: item.revision, map: new Map() };
+    const ref = task.issue?.id || item.identifier;
+    const missing = state.focus.issues.slice(0, 30).filter(f => !this.focusContexts.map.has(f));
+    const many = await this.focusLinear(state, task, [ref, ...missing]);
+    // A failed batched read leaves the contexts empty (rules then use local data) instead of reading one by one.
+    if (many !== undefined) for (const f of missing) this.focusContexts.map.set(f, many?.get(f) ?? null);
+    const remote = many !== undefined ? many?.get(ref) ?? null : await this.focusLinear(state, task, ref);
     const candidate = { ...local, ...(remote ? { title: remote.title || local.title, description: [remote.description, local.description].filter(Boolean).join('\n\n').slice(0, 24000),
       parent: remote.parent, children: remote.children, comments: [...(remote.comments || []), ...local.comments] } : {}) };
-    if (this.focusContexts.revision !== item.revision) this.focusContexts = { revision: item.revision, map: new Map() };
     const contexts = {};
     for (const f of state.focus.issues.slice(0, 30)) {
       if (!this.focusContexts.map.has(f)) this.focusContexts.map.set(f, await this.focusLinear(state, task, f));
