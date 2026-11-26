@@ -17,6 +17,22 @@ The first policy is an ordered list of enabled executors and FIFO tasks. By defa
 - Persist result reporting separately. A failed Linear update must never restart coding.
 - Deduplicate intake by workspace, issue and explicit dispatch round, not issue modification time.
 - Managed concurrency does not prevent writes by unrelated manual sessions.
+- Task status semantics live in one declarative table (`src/states.js`): terminal, slot-holding, executing, after-restart behaviour, and which transitions (continue, retry, arm, comment/data wake, notifications, panel) a status admits. Code asks the table; no module keeps its own literal list of task statuses. `test/states.test.js` fails when a status assigned or compared in `src/` has no entry, when a literal status list reappears, or when a caller names an undeclared property. `manual` is terminal (no slot, not active for configure); ownership keeps its directory exclusive.
+- A user stop is a persisted hold (`task.hold`), not only an event. Every automatic path that would start, requeue, continue or wake a task calls the single guard `automaticBlock(task, state, path)` (`src/hold.js`) immediately before acting, under the aggregate lock where the path mutates state. Only explicit owner actions (retry, continue, submit, arm-wait, unhold) clear it. An interrupted turn on a held task or with a pending stop settles as the stop.
+- Drain (`state.drain`) is persisted. It gates the same guard for paths that create or start work; it never stops or interrupts a running turn.
+
+### User hold: restart paths it closes (3.5)
+
+Investigation of LON-35/160/284/299 restarting after stop found these paths by which a stopped task could run again without an explicit owner action:
+
+1. **Comment resume** (`reviewComments`): `stopped` is a comment-resumable status, so any trusted comment newer than the task's creation (not the stop) that had not been seen continued it, and with `trustReceiverComments` an owner-marked comment did too. Most likely cause of the observed restarts.
+2. **Queued comments** (`pendingComments`): comments queued while the round ran made a stopped task due without any new comment; the next sweep continued it immediately.
+3. **Interrupted stop**: an unconfirmed stop leaves `unknown` + `pendingStop`. If the host restarted, reconcile saw `interrupted`, which requeued the task in the same session; tick did not check `pendingStop`.
+4. **Data / condition wakes** (`dataWakes`, `monitor`): only for blocked/decision/needs_result tasks, so not for `stopped` directly, but a hold set on such a task (or a rearmed wait) was not checked.
+5. **Intake of a new dispatch round**: a stopped task is terminal, so changing the mapping's `round` admitted a new task for the same issue.
+6. **Assessment requeue** (format repair, fresh-session rescue, auto-continue) and **output-limit retry**: act on review/failed rounds; not reachable from a confirmed stop, guarded for unconfirmed-stop races.
+
+Paths verified not to restart a stopped task: tick (stopped is terminal), reconcile of a confirmed stop (terminal tasks are not reconciled), archive/restore (the record, including its hold, is restored as is). Each path above has a test in `test/hold.test.js`.
 
 ## Host integration
 

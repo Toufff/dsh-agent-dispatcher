@@ -1,3 +1,4 @@
+import { has, FAULTED_WAIT } from './states.js';
 import { z } from 'zod';
 import { waitScopeError, keyTaken, archivedStubs, findTask } from './workflow.js';
 
@@ -108,10 +109,10 @@ export function dependencyEvent(wait, task, state, now) {
   if (wait.expiresAt && now >= Date.parse(wait.expiresAt)) return { expired: true };
   if (wait.notBefore && now < Date.parse(wait.notBefore)) return null;
   const target = findTask(state, wait.taskId);
-  if (target.owner === 'human' || ['failed', 'stopped', 'exhausted', 'decision', 'stalled', 'needs_result'].includes(target.status) ||
-      ['invalid', 'expired', 'limit'].includes(target.wait?.status) && target.status === 'blocked') throw waitFault('WAIT_DEPENDENCY_STOPPED');
+  if (target.owner === 'human' || has(target.status, 'dependencyFails') ||
+      FAULTED_WAIT.has(target.wait?.status) && target.status === 'blocked') throw waitFault('WAIT_DEPENDENCY_STOPPED');
   const attempt = target.attempts?.at(-1);
-  if (!['review', 'accepted'].includes(target.status) || !target.assessed || target.outcome?.status !== 'complete' ||
+  if (!has(target.status, 'linearReview') || !target.assessed || target.outcome?.status !== 'complete' ||
       !attempt?.accepted || attempt.status !== 'review') return null;
   return { key: `task:${wait.id}:${target.id}:${attempt.id}`, reason: JSON.stringify({
     taskId: target.id, issue: target.issue?.identifier, status: target.status,

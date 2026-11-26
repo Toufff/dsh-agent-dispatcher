@@ -1,3 +1,4 @@
+import { FAULTED_WAIT } from './states.js';
 import { z } from 'zod';
 
 const text = z.string().trim().min(1).max(2000);
@@ -265,7 +266,7 @@ export function attentionFor(task, state) {
   else if (task.status === 'decision') reason = '需要具体决策或授权';
   else if (task.status === 'blocked' && task.events?.at(-1)?.action === 'window-expired')
     reason = '继承的执行时段已过期，本轮未启动；可按本轮要求重新核定执行时机';
-  else if (task.status === 'blocked' && ['invalid', 'expired', 'limit'].includes(task.wait?.status))
+  else if (task.status === 'blocked' && FAULTED_WAIT.has(task.wait?.status))
     reason = { invalid: '等待配置无效', expired: '等待时段已过期', limit: '自动唤醒预算已用完' }[task.wait.status];
   else if (task.status === 'blocked' && !task.wait) reason = '阻塞未设置可触发的恢复条件';
   if (!reason && task.status === 'blocked' && decisionItems(task).length) return {

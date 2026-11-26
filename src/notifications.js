@@ -1,3 +1,4 @@
+import { has, FAULTED_WAIT } from './states.js';
 import { readFile, stat } from 'node:fs/promises';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { attentionFor, currentTask, decisionItems } from './workflow.js';
@@ -74,11 +75,11 @@ export function attention(state, channel, secrets = []) {
   for (const task of state.tasks.filter(t => currentTask(t, state))) {
     if (!channel.projectIds.includes(task.projectId) || task.wait?.status === 'superseded') continue;
     const types = [];
-    if (['decision', 'failed', 'exhausted', 'stalled', 'needs_result'].includes(task.status)) types.push(task.status);
-    else if (!['accepted', 'stopped'].includes(task.status) && decisionItems(task).length) types.push('decision');
+    if (has(task.status, 'notify')) types.push(task.status);
+    else if (!has(task.status, 'closed') && decisionItems(task).length) types.push('decision');
     if (task.status === 'blocked') {
       if (!task.wait && attentionFor(task, state)) types.push('unrouted');
-      if (['invalid', 'expired', 'limit'].includes(task.wait?.status)) types.push(task.wait.status);
+      if (FAULTED_WAIT.has(task.wait?.status)) types.push(task.wait.status);
       else if (task.wait?.errorCount >= 3) types.push('monitor');
     }
     if (state.outbox.some(i => i.taskId === task.id && i.status === 'pending' && i.tries >= 3)) types.push('report');

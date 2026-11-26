@@ -1,4 +1,4 @@
-import { terminal } from './dispatcher.js';
+import { terminal, has } from './states.js';
 import { currentTask, issueKey } from './workflow.js';
 
 /**
@@ -31,7 +31,7 @@ export function archivePlan(state, policy = archivePolicy(state.settings), now =
     if (!terminal.has(task.status) || task.owner === 'human' || task.pendingStop || pendingReports.has(task.id) || task.pendingRounds?.length || task.pendingComments?.length) return false;
     if (task.supersededBy) return true;
     if (now - endedAt(task) < policy.taskDays * DAY) return false;
-    return !currentTask(task, state) || (['accepted', 'stopped'].includes(task.status) && !task.reviewLimitNotified);
+    return !currentTask(task, state) || (has(task.status, 'closed') && !task.reviewLimitNotified);
   }).map(t => t.id));
   // Remove what a staying task still references, until nothing changes.
   for (let changed = true; changed;) {

@@ -1,3 +1,4 @@
+import { LIVE_WAIT } from './states.js';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { WaitTargetError, validWaitTarget, linearMapping, assigneeAllowed } from './linear.js';
@@ -13,7 +14,7 @@ export function syncGroups(state) {
     const group = groups.get(key); group.projects.push(project);
     if (!state.paused && project.followup?.enabled) for (const task of state.tasks) {
       if (!currentTask(task, state) || task.projectId !== project.id || task.status !== 'blocked' || task.owner === 'human' || !task.issue?.id ||
-          !['watching', 'validating', 'expired'].includes(task.wait?.status)) continue;
+          !LIVE_WAIT.has(task.wait?.status)) continue;
       if (task.wait.kind === 'task' || task.wait.kind !== 'linear' && task.wait.status !== 'expired') continue;
       if (task.wait.status === 'expired' && !project.followup.observeAfterExpiry) continue;
       if (state.tasks.some(t => t.owner === 'human' && t.cwd === task.cwd)) continue;

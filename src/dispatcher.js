@@ -3,8 +3,11 @@ import { captureResultText } from './result-text.js';
 import { waitFaults } from './followup.js';
 import { currentTask, issueKey, keyTaken, repairRound, deliverPendingComments, withHandover } from './workflow.js';
 import { asStateStore } from './state-store.js';
+import { terminal, is, STOP_CONFIRMING_RESULTS, ADOPTED_RESULTS } from './states.js';
+import { automaticBlock, blockError, setHold, clearHold } from './hold.js';
 
-export const terminal = new Set(['review', 'failed', 'exhausted', 'stopped', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result', 'manual']);
+// The terminal set is declared in src/states.js; re-exported for existing importers.
+export { terminal };
 async function bounded(operation, ms = 15000) {
   let timer;
   try { return await Promise.race([Promise.resolve().then(operation), new Promise(resolve => {
@@ -61,7 +64,7 @@ export class Dispatcher {
   /** Persist every committed change now. */
   flush() { return this.#exclusive(() => this.store.flush()); }
 
-  enqueue({ source, round, cwd, prompt, executors, title = source, projectId, issue, session, resultContract = false, basePrompt, continuationOf, workflowVersion, goalPrompt, workItems, ownerInstructions, continuationTiming = 'inherit' }) {
+  enqueue({ source, round, cwd, prompt, executors, title = source, projectId, issue, session, resultContract = false, basePrompt, continuationOf, workflowVersion, goalPrompt, workItems, ownerInstructions, continuationTiming = 'inherit', byUser = false }) {
     return this.#section(async state => {
       if (!source || !round || !cwd || !prompt || !executors?.length)
         throw new Error('source, explicit round, local cwd, prompt and executors required');
@@ -75,9 +78,14 @@ export class Dispatcher {
       if (!['inherit', 'recheck'].includes(continuationTiming) || (continuationTiming === 'recheck' && (!prior || !ownerInstructions?.at(-1)?.trim())))
         throw new Error('Timing changes require an explicit owner continuation instruction');
       if (continuationOf && (!prior || !currentTask(prior, state) || prior.owner === 'human' ||
-          !['review', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result', 'stopped'].includes(prior.status)))
+          !is(prior.status, 'continuable')))
         throw new Error('Continue the current completed task, not a historical or active task');
       const issueIdentity = issueKey({ projectId, issue }, state);
+      // A user stop holds the issue: automatic paths (intake of a new round, comment/data continuations) may not
+      // start new work on it. An explicit owner submit/continue (byUser) clears the hold instead.
+      const held = [prior, ...(issueIdentity ? state.tasks.filter(t => issueKey(t, state) === issueIdentity && currentTask(t, state)) : [])]
+        .filter(t => t?.hold);
+      if (!byUser) for (const t of held) { const block = automaticBlock(t, state, continuationOf ? 'continue' : 'intake'); if (block) throw blockError(block); }
       if (issueIdentity && state.tasks.some(t => issueKey(t, state) === issueIdentity &&
           (!terminal.has(t.status) || t.owner === 'human')))
         throw new Error('This issue already has an active or human-owned task');
@@ -101,6 +109,7 @@ export class Dispatcher {
         // Unpublished automatic-round results travel with the chain instead of dying with the old task.
         ...(prior?.pendingRounds?.length ? { pendingRounds: prior.pendingRounds } : {}) };
       state.tasks.push(task);
+      if (byUser) for (const t of held) clearHold(t, continuationOf ? 'continue' : 'submit');
       if (prior) {
         delete prior.pendingRounds;
         prior.supersededBy = task.id;
@@ -121,7 +130,7 @@ export class Dispatcher {
    */
   tick() {
     return this.#section(async state => {
-      if (state.paused) return;
+      if (state.paused || state.drain?.on) return;
       // Every unresolved, non-queued task owns one automatic execution slot. The global
       // limit (settings.concurrency) and each project's limit (maxConcurrent) default to 1,
       // which keeps the original single-slot behavior.
@@ -134,7 +143,7 @@ export class Dispatcher {
       const picked = [];
       for (const t of active) {
         if (picked.length >= free) break;
-        if (t.status === 'queued' && !notYet(t) && hasSlot(t, [...occupied, ...picked], state) &&
+        if (t.status === 'queued' && !notYet(t) && !automaticBlock(t, state, 'start') && hasSlot(t, [...occupied, ...picked], state) &&
             (!t.admissionRetryAt || Date.now() >= t.admissionRetryAt) && !state.tasks.some(other => other.owner === 'human' && !other.manualParked && other.cwd === t.cwd))
           picked.push(t);
       }
@@ -241,7 +250,7 @@ export class Dispatcher {
         publicSummary: `执行者在无人值守执行中提出了问题，需要回答后才能继续：\n${asked}`.slice(0, 4000) };
       if (task.wait) task.wait.status = 'resolved';
       task.events?.push({ action: 'input-required', kind: task.inputRequest.kind, attemptId: attempt.id, at: task.inputRequest.at });
-    } else if (['running', 'finishing', 'waiting', 'review', 'failed'].includes(status)) {
+    } else if (ADOPTED_RESULTS.has(status)) {
       attempt.status = task.status = status;
       attempt.accepted = true;
     } else {
@@ -259,7 +268,7 @@ export class Dispatcher {
     }
     if (previous !== task.status) {
       task.report = 'pending';
-      task.executionNotice = ['running', 'failed', 'unknown'].includes(task.status);
+      task.executionNotice = is(task.status, 'executionNotice');
       task.events?.push({ action: task.status, at: new Date().toISOString(), attemptId: attempt.id });
     }
   }
@@ -287,8 +296,13 @@ export class Dispatcher {
     // every running task on every pass was most of the reconcile cost.
     try { result = await bounded(() => adapter?.reconcile(structuredClone({ task: reconcileView(task), attempt }))); }
     catch { result = { status: 'unknown' }; }
-    if (task.pendingStop && ['review', 'failed', 'stopped', 'needs_input'].includes(result?.status)) {
-      const action = task.pendingStop;
+    // A turn that died with the host (interrupted) while a stop was pending, or on a held task, is a confirmed
+    // termination: it settles as the stop, never as a resumable interruption (3.5: stopped tasks restarted after
+    // a host restart because 'interrupted' requeued them).
+    const settlesStop = STOP_CONFIRMING_RESULTS.has(result?.status) || (result?.status === 'interrupted' && (task.pendingStop || task.hold));
+    if (settlesStop && (task.pendingStop || task.hold)) {
+      const action = task.pendingStop || 'stop';
+      if (result.status === 'interrupted') task.events.push({ action: 'interrupted-while-stopping', at: new Date().toISOString(), attemptId: attempt.id });
       attempt.status = 'stopped'; task.status = action === 'takeover' ? 'manual' : 'stopped';
       task.owner = action === 'takeover' ? 'human' : 'scheduler';
       if (task.wait) task.wait.status = 'suspended';
@@ -318,7 +332,7 @@ export class Dispatcher {
    * freshSession (retry only): { sessionId, reason, handover } read by the caller outside this lock. When the
    * retried attempt is still that session, the retry starts a fresh session with the handover text prepended.
    */
-  action(id, action, { confirmedIdle = false, freshSession } = {}) {
+  action(id, action, { confirmedIdle = false, freshSession, reason, automatic = false } = {}) {
     return this.update(async state => {
       const task = state.tasks.find(t => t.id === id);
       if (!task) throw new Error('Task not found');
@@ -328,6 +342,8 @@ export class Dispatcher {
         // A takeover of a round that was executing hands a live session to a person, who may now be editing the
         // working directory; taking over an already settled task only parks it (e.g. a parent waiting for children).
         const parkedOnly = action === 'takeover' && (terminal.has(task.status) || task.status === 'queued');
+        // The hold is durable before the adapter is asked to stop: an unconfirmed or interrupted stop keeps it.
+        if (action === 'stop') setHold(task, { reason: reason || 'stop' });
         if (!terminal.has(task.status) && task.status !== 'queued' && task.status !== 'busy') {
           task.status = 'stopping';
           task.pendingStop = action;
@@ -355,7 +371,9 @@ export class Dispatcher {
         }
         task.owner = 'scheduler'; task.status = 'stopped'; delete task.manualParked;
       } else if (action === 'retry') {
-        if (!['failed', 'exhausted', 'stopped'].includes(task.status)) throw new Error('Stop or reconcile before retry');
+        if (!is(task.status, 'retryable')) throw new Error('Stop or reconcile before retry');
+        if (automatic) { const block = automaticBlock(task, state, 'output-retry'); if (block) throw blockError(block); }
+        else clearHold(task, 'retry');
         const repair = repairRound(task);
         task.previousAttempts = [...(task.previousAttempts ?? []), ...task.attempts];
         const fresh = attempt?.accepted && freshSession?.sessionId === attempt.sessionId ? freshSession : null;

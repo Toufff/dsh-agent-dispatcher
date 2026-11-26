@@ -1,3 +1,4 @@
+import { has, WATCHED_WAIT } from '../states.js';
 export function formatTime(value) {
   if (!value) return '未设置';
   const date = new Date(value);
@@ -18,7 +19,7 @@ export function waitDraftFor(task) {
 }
 
 export function waitView(task, data, now = Date.now()) {
-  if (!['blocked', 'decision', 'stalled', 'stopped'].includes(task.status) || (task.status === 'stopped' && !task.wait)) return null;
+  if (!has(task.status, 'armable') || (task.status === 'stopped' && !task.wait)) return null;
   const wait = task.wait;
   const queueExpired = task.status === 'blocked' && task.events?.at(-1)?.action === 'window-expired';
   const project = data.settings.projects.find(p => p.id === task.projectId);
@@ -68,7 +69,7 @@ export function waitView(task, data, now = Date.now()) {
       : `由宿主增量同步可信回复；${sync?.nextAt ? `下次检查 ${formatTime(sync.nextAt)}，` : ''}收到后由原会话核验并继续。${wait.recheckAt ? `即使没有回复，也会在 ${formatTime(wait.recheckAt)} 起独立复查；不代表条件已满足。` : ''}`;
   } else { monitor = ({ triggered: '已触发，等待原会话核验', suspended: '监听已停止', resolved: '本轮等待已结束', superseded: '已由后续处理替代' })[wait.status] || '等待状态待核对'; action = '核对当前任务状态后再安排后续处理。'; }
   if (task.attention && !task.historical) action = task.attention.action;
-  if (wait?.workItemIds?.length && task.status === 'blocked' && !task.historical && !task.supersededBy && !expired && !queueExpired && ['watching', 'validating'].includes(wait.status)) {
+  if (wait?.workItemIds?.length && task.status === 'blocked' && !task.historical && !task.supersededBy && !expired && !queueExpired && WATCHED_WAIT.has(wait.status)) {
     const labels = (task.workItems || []).filter(i => wait.workItemIds.includes(i.id)).map(i => i.title).join('、');
     title = `独立阶段：${labels || '等待核验'}`;
     action += ' 待审批阶段保持暂停，独立唤醒不会批准或执行它们。';

@@ -71,6 +71,25 @@ An invalid Linear wait target is shown as **等待目标需要修正**, not an e
 - **Retry:** allowed only after confirmed stop or terminal failure. Once an agent accepted the task, retry remains on that executor and resumes its recorded session. Starting with a different agent is a new explicit task/handoff, not a silent fallback.
 - **Unknown:** a missing acknowledgement or ambiguous termination blocks the task. Reconcile it; do not start a duplicate. An approval/permission interruption must be resolved in the original tool or by takeover, never by changing executors to bypass the approval.
 
+- **Stop holds the task:** a user stop (`{action:'stop', id, reason?}`) persists `task.hold = {by:'user', reason, at}` before the executor is asked to stop. While held, nothing automatic starts, requeues, continues or wakes the task or its issue: owner/collaborator comments (including comments queued while the round ran), data-version wakes, condition/timer wakes, fresh-session rescue and format repair, output-limit retries, intake of a new dispatch round, and a host restart that interrupts an unconfirmed stop (it settles as stopped instead of resuming). Only an explicit owner action clears it: **retry**, **continue**, **submit** of the same issue, **设置恢复条件** (arm-wait), or **解除冻结** (`{action:'unhold', id}`). After unhold the task is handled normally again: a comment that arrived during the hold can then resume it. Tasks stopped before this version get the hold once at host start when their latest stop/return event is a stop (event `hold-migrated`).
+
+### Ops commands
+
+All go through the authenticated `agentDispatcher/command` RPC (owner only); the panel shows **排空**, **解除冻结** and **清除排队时段** buttons where they apply.
+
+| Command | Effect |
+| --- | --- |
+| `{action:'explain', id}` | Read-only. Returns the decision inputs in force now: `settings` (paused, drain, concurrency, and the effective `followup` values from the current settings revision with defaults applied), `counters` (autoRounds, idle rounds, wakeups, review wakeups/audits, session rounds, each with its effective limit), `lastEvaluated` (values a task cached at its last assessment, e.g. `autoRoundLimit`, labelled as such), `holds` (`hold`, `pendingStop`), `pending` (wait, resumeWindow and whether it is in the future, admission backoff, queued comments/rounds, continuation task), `runnable` (`runnableNow` plus every reason it would not start on the next tick: status, hold, drain, pause, queue window, admission backoff, manual writer in the same directory, concurrency/slot), and the last ten events. Linear admission is rechecked at start and is not evaluated by explain. Works on archived tasks. |
+| `{action:'clear-resume', id, expiry?}` | Removes a task's queue window `resumeWindow.notBefore` and any admission backoff so it can be scheduled; `expiry: true` also removes `expiresAt`. The previous values are recorded in a `clear-resume` event. Does not change a structured wait (`task.wait`); rearm that explicitly. |
+| `{action:'drain', reason?}` / `{action:'undrain'}` | Persisted `state.drain = {on, at, reason}`. While draining no queued task starts and no new work is created (intake, comment/data continuations, condition wakes, output-limit retries); running turns finish and are reconciled/assessed normally, and a finished round that continues is requeued (it starts after undrain or a restart). Both are logged in `state.opsLog` (last 50). |
+| `{action:'unhold', id}` | Clears a user hold (see **Stop holds the task**). |
+
+Snapshot fields for operations (`agentDispatcher/snapshot`):
+
+- `drain`: `{ on: false }` or `{ on: true, at, reason }`.
+- `restart`: `{ idleForRestart, idleExceptUncertain, executing: [{id, issue, status}], uncertain: [...], queued }`. `idleForRestart` is true when no task is in an executing status (starting, running, finishing, waiting, busy, stopping, unknown), i.e. a host restart interrupts no turn. `idleExceptUncertain` ignores `unknown` tasks (execution not confirmed). A restart script can `drain`, poll the snapshot until `restart.idleForRestart` (or, deliberately, `idleExceptUncertain`) is true, restart the host, then `undrain` (drain is persisted, so it is still on after the restart).
+- Per task, `autoRoundLimit` is the effective limit from current settings; `autoRoundLimitEvaluated` is the value the task cached at its last assessment.
+
 CLI print mode cannot host every interactive approval UI. If the tool exits for approval, the task is failed and requires manual intervention; if it stays running, the dispatcher keeps its slot occupied. DSH approvals remain in the native session.
 
 ## Persistence and recovery

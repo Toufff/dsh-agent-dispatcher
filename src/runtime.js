@@ -1,7 +1,10 @@
 import path from 'node:path';
 import { stat, readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { Dispatcher, terminal } from './dispatcher.js';
+import { Dispatcher, terminal, globalLimit, startLimit } from './dispatcher.js';
+import { is, statusesWith, TASK_STATES, RESUMABLE_ATTEMPT, LIVE_WAIT, WATCHED_WAIT } from './states.js';
+import { automaticBlock, blockError, clearHold, restartReadiness, AUTOMATIC, HOLD_ERROR, DRAIN_ERROR } from './hold.js';
+import { explainTask, effectiveFollowup, migrateUserStops } from './explain.js';
 import { outcomeProtocol, parseOutcome, inspectOutcome, outcomeReports } from './outcome.js';
 import { settingsSchema } from './config.js';
 import { CliAdapter } from './adapters/cli.js';
@@ -36,7 +39,7 @@ import { foldTaskWorkItems } from './work-items.js';
 function registeredAttempt(task) {
   if (task.attempts.length) return task.attempts.at(-1);
   const previous = task.previousAttempts?.at(-1);
-  return previous?.accepted && ['review', 'stopped'].includes(previous.status) &&
+  return previous?.accepted && RESUMABLE_ATTEMPT.has(previous.status) &&
     previous.executor === task.session?.executor && previous.sessionId === task.session?.id ? previous : undefined;
 }
 
@@ -126,7 +129,7 @@ function monitorRecovered(task) {
 const reviewCommentInterval = 120000;
 // Settled rounds that an owner comment continues. stalled and stopped rounds resume on a comment too: the comment is
 // new authorized input (LON-35 2026-11-23: a comment on a stalled chain was never acted on).
-const reviewStatuses = ['review', 'blocked', 'decision', 'needs_result', 'stalled', 'stopped'];
+const reviewStatuses = statusesWith('commentResumable');
 // Agents name their own issue by its identifier ("LON-35"), but Linear's batched `id: { in }` filter only
 // matches internal ids, so such a wait could never be found and was rejected as an invalid target
 // (LON-35, 2026-11-17). The task's own identifier is mapped to its id; other values pass through unchanged.
@@ -135,7 +138,7 @@ function ownIssueId(issueId, task) {
   return String(issueId).trim().toUpperCase() === String(task.issue.identifier).toUpperCase() ? task.issue.id : issueId;
 }
 // A finished (review) round is not waiting for data; only rounds that stopped short are woken.
-const dataWakeStatuses = ['blocked', 'decision', 'needs_result'];
+const dataWakeStatuses = statusesWith('dataWake');
 const dataWords = /数据|快照|回补|补齐|到位|缺口|snapshot|data|backfill/i;
 /** True when an unfinished stage or a reported blocker is about missing data. */
 export function waitsForData(task) {
@@ -197,6 +200,8 @@ export class Runtime {
       if (Array.isArray(task.ownerInstructions)) task.ownerInstructions = task.ownerInstructions.map(stripHandovers);
     }
     if (this.env.DISPATCH_START_PAUSED === '1') state.paused = true;
+    // Tasks a user stopped before holds existed get one, so a stop keeps sticking across this upgrade.
+    migrateUserStops(state);
     }, { durable: true });
     this.install((await this.store.read()).settings); return this;
   }
@@ -226,17 +231,21 @@ export class Runtime {
       .map(t => `${t.issue?.identifier || t.title}: 评论自动续办已达上限（${t.reviewWakeups || 0} 次），有新评论未执行；请手动继续或调高唤醒上限。`);
     const notificationErrors =(state.notifications?.outbox || []).filter(i => ['failed', 'unknown'].includes(i.status) &&
       Object.values(state.notifications?.active || {}).includes(i.id)).map(i => `飞书任务通知：${i.error}`);
-    const tasks = state.tasks.map(t => ({ ...t, historical: !currentTask(t, state), attention: attentionFor(t, state) }));
+    // Limits shown are the values in force now (current settings), not the copy a task kept from its last
+    // assessment; that copy stays visible as autoRoundLimitEvaluated (3.4).
+    const tasks = state.tasks.map(t => ({ ...t, historical: !currentTask(t, state), attention: attentionFor(t, state),
+      autoRoundLimit: effectiveFollowup(t, state).maxAutoRounds, autoRoundLimitEvaluated: t.autoRoundLimit }));
     const attentionErrors = tasks.filter(t => {
       const project = state.settings.projects.find(p => p.id === t.projectId);
       const dormantHistory = ['test', 'archive'].includes(project?.category) && !project?.linear?.enabled && !project?.followup?.enabled;
-      return t.attention && !dormantHistory && !['invalid', 'expired'].includes(t.wait?.status);
+      return t.attention && !dormantHistory && !(t.wait?.status === 'invalid' || t.wait?.status === 'expired');
     })
       .map(t => `${t.issue?.identifier || t.title}: ${t.attention.reason}；下一责任：${t.attention.owner}。`);
     // Archived history is listed by stub; the full task and its older rounds are fetched on demand.
     const archived = archivedStubs(state).map(({ id, title, status, projectId, issue, createdAt, endedAt, supersededBy, archivedAt }) =>
       ({ id, title, status, projectId, issue, createdAt, endedAt, supersededBy, archivedAt }));
-    return { ...state, tasks, archived, linearSync: undefined, syncStatus, health: this.health, errors: [...this.errors, ...reportErrors, ...monitorErrors, ...expired, ...attentionErrors, ...notificationErrors, ...reviewLimits] };
+    const drain = state.drain?.on ? state.drain : { on: false };
+    return { ...state, tasks, archived, drain, restart: restartReadiness(state), linearSync: undefined, syncStatus, health: this.health, errors: [...this.errors, ...reportErrors, ...monitorErrors, ...expired, ...attentionErrors, ...notificationErrors, ...reviewLimits] };
   }
   sharedRead(key, operation, ttl = 0) {
     const old = this.reads.get(key);
@@ -271,7 +280,7 @@ export class Runtime {
         const before = state.settings.projects.find(p => p.id === task.projectId);
         const after = settings.projects.find(p => p.id === task.projectId);
         if (!currentTask(task, state) || task.owner === 'human' || task.status !== 'blocked' ||
-            !['watching', 'validating', 'expired'].includes(task.wait?.status) ||
+            !LIVE_WAIT.has(task.wait?.status) ||
             !isDeepStrictEqual(task.waitProject, before) || isDeepStrictEqual(before, after) ||
             !isDeepStrictEqual(waitRouting(before), waitRouting(after))) continue;
         task.waitProject = structuredClone(after);
@@ -287,7 +296,7 @@ export class Runtime {
     return result;
   }
   submit(request) { return this.serializePublication(() => this.submitCurrent(request)); }
-  async submitCurrent({ projectId, title, prompt, session, source, round, issue, continuationOf, goalPrompt, workItems, ownerInstructions, continuationTiming, handover }) {
+  async submitCurrent({ projectId, title, prompt, session, source, round, issue, continuationOf, goalPrompt, workItems, ownerInstructions, continuationTiming, handover, byUser = false }) {
     const state = await this.store.read();
     const project = state.settings.projects.find(p => p.id === projectId);
     if (!project) throw new Error('Select a locally configured project');
@@ -302,7 +311,7 @@ export class Runtime {
     // The handover opens only this round's prompt; basePrompt (reused by later rounds) never carries it.
     if (handover) prompt = withHandover(prompt, handover);
     return this.dispatcher.enqueue({ projectId, title, prompt, basePrompt, goalPrompt: goalPrompt || basePrompt,
-      workflowVersion: 2, workItems, ownerInstructions, continuationOf, continuationTiming, resultContract: true, session, issue, cwd: project.cwd, executors,
+      workflowVersion: 2, workItems, ownerInstructions, continuationOf, continuationTiming, byUser, resultContract: true, session, issue, cwd: project.cwd, executors,
       source: source ?? `local:${randomUUID()}`, round: round ?? '1' });
   }
   async command(request) {
@@ -336,11 +345,52 @@ export class Runtime {
       return this.sharedRead(JSON.stringify(['context', state.revision, task.id, task.wait?.issueId]), () => this.client(project.linear).issueContext(project.linear, task.issue.id,
         task.wait?.issueId || task.issue.id, project.followup?.commentAuthorIds || []), 60000);
     }
+    if (request.action === 'explain') {
+      // Read-only: the decision inputs in force for one task right now (current settings, not cached fields).
+      const state = await this.store.read();
+      const task = findTask(state, request.id);
+      if (!task) throw new Error('Task not found');
+      return explainTask(task, state, { now: Date.now(), archived: !state.tasks.some(t => t.id === task.id), adapters: this.adapters });
+    }
     // A command on a task that was archived acts on it as before: it is put back into the hot state first
     // (archiving it again later if it is still eligible).
     if (request.id && this.store.archive?.has('tasks', request.id)) await this.dispatcher.update(state => { restoreTask(state, this.store.archive, request.id); });
     if (request.action === 'configure') await this.configure(request.settings, request.revision);
-    else if (request.action === 'submit') await this.submit(request);
+    else if (request.action === 'submit') await this.submit({ ...request, byUser: true });
+    else if (request.action === 'unhold') {
+      await this.dispatcher.update(state => {
+        const task = state.tasks.find(t => t.id === request.id);
+        if (!task) throw new Error('Task not found');
+        if (!clearHold(task, 'unhold')) throw new Error('Task is not held');
+      }, { durable: true });
+    }
+    else if (request.action === 'clear-resume') {
+      // Ops: a queue window whose notBefore lies in the future (or a stale admission backoff) kept a task queued
+      // with no way to clear it short of a host restart (3.3). The old window is kept in the task's events.
+      await this.dispatcher.update(state => {
+        const task = state.tasks.find(t => t.id === request.id);
+        if (!task) throw new Error('Task not found');
+        if (!currentTask(task, state)) throw new Error('Historical task is superseded; open the current task');
+        if (task.owner === 'human') throw new Error('Return manual ownership first');
+        const previous = { resumeWindow: structuredClone(task.resumeWindow ?? null), admissionRetryAt: task.admissionRetryAt ?? null };
+        if (!task.resumeWindow && !task.admissionRetryAt) throw new Error('Task has no queue window or admission backoff to clear');
+        if (task.resumeWindow) {
+          delete task.resumeWindow.notBefore;
+          if (request.expiry) delete task.resumeWindow.expiresAt;
+          if (!task.resumeWindow.expiresAt) delete task.resumeWindow;
+        }
+        delete task.admissionRetryAt; delete task.admissionError;
+        task.events.push({ action: 'clear-resume', previous, expiry: Boolean(request.expiry), at: new Date().toISOString() });
+      }, { durable: true });
+    }
+    else if (request.action === 'drain' || request.action === 'undrain') {
+      await this.dispatcher.update(state => {
+        if (request.action === 'drain') state.drain = { on: true, at: new Date().toISOString(), ...(request.reason ? { reason: String(request.reason).slice(0, 300) } : {}) };
+        else delete state.drain;
+        (state.opsLog ||= []).push({ action: request.action, at: new Date().toISOString(), ...(request.reason ? { reason: String(request.reason).slice(0, 300) } : {}) });
+        if (state.opsLog.length > 50) state.opsLog.splice(0, state.opsLog.length - 50);
+      }, { durable: true });
+    }
     else if (request.action === 'reassess-result') {
       // Reparse only a confirmed finished result. Never launch a formatting repair or worker here.
       await this.dispatcher.update(state => {
@@ -373,10 +423,10 @@ export class Runtime {
       }
       await this.dispatcher.update(state => {
         const task = state.tasks.find(t => t.id === request.id);
-        if (!task || !currentTask(task, state) || task.owner === 'human' || !['blocked', 'decision', 'stopped', 'stalled'].includes(task.status))
+        if (!task || !currentTask(task, state) || task.owner === 'human' || !is(task.status, 'armable'))
           throw new Error('Only scheduler-owned blocked, decision, stopped or stalled tasks can be armed');
         const attempt = registeredAttempt(task);
-        if (!attempt?.accepted || !attempt.sessionId || !['review', 'stopped'].includes(attempt.status))
+        if (!attempt?.accepted || !attempt.sessionId || !RESUMABLE_ATTEMPT.has(attempt.status))
           throw new Error('A confirmed finished, registered session is required');
         const [source] = JSON.parse(task.key);
         if (keyTaken(state, JSON.stringify([source, `continue:${task.id}`])))
@@ -400,6 +450,8 @@ export class Runtime {
         if (wait.kind === 'task') task.wait.issueId = wait.issueId;
         task.waitProject = structuredClone(project); task.status = 'blocked'; task.assessed = true;
         task.report = 'pending'; task.resumeNotice = false;
+        // Arming a resume condition is an explicit owner request to resume automatically.
+        clearHold(task, 'arm-wait');
         task.events.push({ action: 'arm-wait', at: new Date().toISOString() });
       });
     }
@@ -409,8 +461,12 @@ export class Runtime {
         throw new Error('Describe the new execution timing and scope before revising the old window');
       const state = await this.store.read();
       const previous = state.tasks.find(t => t.id === request.id);
-      if (!previous || previous.owner === 'human' || previous.pendingStop || !['review', 'accepted', 'blocked', 'decision', 'stalled', 'needs_result', 'stopped'].includes(previous.status))
+      if (!previous || previous.owner === 'human' || previous.pendingStop || !is(previous.status, 'continuable'))
         throw new Error('Only completed, scheduler-owned tasks can start a continuation');
+      // Comment and data wakes call this too (marked AUTOMATIC); they must not resume a held task or start under
+      // drain. An owner's own continue clears the hold (in enqueue, atomically with the new round).
+      const automatic = Boolean(request[AUTOMATIC]);
+      if (automatic) { const block = automaticBlock(previous, state, 'continue'); if (block) throw blockError(block); }
       const [source] = JSON.parse(previous.key);
       const attempt = registeredAttempt(previous);
       // A round in a new session never resumes the old one, so an unconfirmed old session does not matter there.
@@ -436,7 +492,7 @@ export class Runtime {
       // Owner comments queued on the previous round (it settled or was stopped before a new round took them).
       const carried = previous.pendingComments || [];
       await this.submit({ projectId: previous.projectId, title: `${previous.title.replace(/(?: · 续办)+$/, '')} · 续办`,
-        source, round: `continue:${previous.id}`, issue: previous.issue, handover: request.handover,
+        source, round: `continue:${previous.id}`, issue: previous.issue, handover: request.handover, byUser: !automatic,
         continuationOf: previous.id, continuationTiming: request.continuationTiming, goalPrompt, workItems: previous.workItems, ownerInstructions,
         // freshSession: an audit round deliberately starts without the original conversation (and keeps only the
         // latest ten instructions). rotateSession: same fresh session, full instruction history (context too large).
@@ -459,7 +515,7 @@ export class Runtime {
       await this.sync.run({ force: true }); await this.monitor({ localOnly: true });
     }
     else if (request.action === 'retry') await this.retry(request.id);
-    else await this.dispatcher.action(request.id, request.action, { confirmedIdle: request.confirmedIdle });
+    else await this.dispatcher.action(request.id, request.action, { confirmedIdle: request.confirmedIdle, reason: request.reason });
     // A command's changes are durable before it returns, even when it ran inside a deferred cycle.
     await this.dispatcher.flush();
     return this.snapshot();
@@ -471,16 +527,19 @@ export class Runtime {
   }
   async intake(batch) {
     const state = await this.store.read();
+    // Drain: no new work is admitted; issues stay ready in Linear and are taken after undrain.
+    if (state.drain?.on) return;
     const errors = [];
     for (const project of (batch?.projects || state.settings.projects.filter(p => p.linear?.enabled))) {
       try {
       if (!isDeepStrictEqual(project, (await this.store.read()).settings.projects.find(p => p.id === project.id))) continue;
       const client = this.client(project.linear), mapping = linearMapping(project, state.settings);
       for (const issue of batch ? batch.issues.filter(i => i.project?.id === mapping.projectId && assigneeAllowed(i, mapping) && i.state?.id === mapping.readyStateId && i.updatedAt >= mapping.since) : await client.issues(mapping)) {
+        // A user-held issue takes no new automatic round (one held issue must not fail the project's intake).
         await this.submit({ projectId: project.id, title: `${issue.identifier} · ${issue.title}`,
           prompt: issuePrompt(issue),
           source: `${project.linear.workspaceId}/${issue.id}`, round: project.linear.round,
-          issue: { id: issue.id, url: issue.url, identifier: issue.identifier } });
+          issue: { id: issue.id, url: issue.url, identifier: issue.identifier } }).catch(error => { if (error.code !== HOLD_ERROR && error.code !== DRAIN_ERROR) throw error; });
       }
       } catch { errors.push(`${project.label}: Linear intake unavailable`); }
     }
@@ -490,8 +549,8 @@ export class Runtime {
   async reportCurrent() {
     await this.dispatcher.update(state => {
       for (const task of state.tasks.filter(t => currentTask(t, state) && (outcomeReports[t.status] || t.resumeNotice) && t.issue && t.report === 'pending' &&
-          (t.assessed || t.resumeNotice || t.executionNotice && (['running', 'failed', 'exhausted'].includes(t.status) ||
-            t.status === 'unknown' && Date.now() - Date.parse(t.events.at(-1)?.at || t.createdAt) >= 60000)))) {
+          (t.assessed || t.resumeNotice || t.executionNotice && (TASK_STATES[t.status]?.executionReport === 'now' ||
+            TASK_STATES[t.status]?.executionReport === 'delayed' && Date.now() - Date.parse(t.events.at(-1)?.at || t.createdAt) >= 60000)))) {
         const mapping = state.settings.projects.find(p => p.id === task.projectId)?.linear;
         // A continuation round starting only moves the issue back to the active state; the round's
         // result report follows, so a "started" comment per round would just bury the discussion.
@@ -510,7 +569,7 @@ export class Runtime {
         task.reportVersion = (task.reportVersion || 0) + 1;
         state.outbox.push({ id: randomUUID(), taskId: task.id, projectId: task.projectId,
           reportVersion: task.reportVersion, taskStatus: task.status,
-          issueId: task.issue.id, stateId: ['review', 'accepted'].includes(task.status) ? mapping?.reviewStateId : task.resumeNotice || task.status === 'running' ? mapping?.activeStateId : mapping?.blockedStateId || mapping?.activeStateId,
+          issueId: task.issue.id, stateId: is(task.status, 'linearReview') ? mapping?.reviewStateId : task.resumeNotice || task.status === 'running' ? mapping?.activeStateId : mapping?.blockedStateId || mapping?.activeStateId,
           body: quiet ? '' : reportBody(task, mapping, Object.values(this.env).filter(v => typeof v === 'string' && v.length > 12)),
           status: 'pending', tries: 0 });
         task.report = 'queued'; task.resumeNotice = false;
@@ -580,10 +639,10 @@ export class Runtime {
     return { sessionId, reason, handover: freshHandover(reason) };
   }
   /** Retry a stopped/failed round; the original session is reused unless its context is over the limit. */
-  async retry(id) {
+  async retry(id, { automatic = false } = {}) {
     const state = await this.store.read(), task = state.tasks.find(t => t.id === id), attempt = task?.attempts.at(-1);
     const freshSession = attempt?.accepted ? await this.rotationFor(task.projectId, attempt.executor, attempt.sessionId, state) : null;
-    return this.dispatcher.action(id, 'retry', freshSession ? { freshSession } : {});
+    return this.dispatcher.action(id, 'retry', { automatic, ...(freshSession ? { freshSession } : {}) });
   }
   /** Session context of rounds assess() is about to continue automatically, read outside the state lock. */
   async continuingContexts() {
@@ -615,7 +674,7 @@ export class Runtime {
         const { outcome, error, framingRecovery } = inspectOutcome(task.summary, { previous: task.workItems, required: task.workflowVersion === 2 });
         if (framingRecovery) task.events.push({ action: 'recover-result-framing', reason: framingRecovery, at: new Date().toISOString() });
         if (error) task.resultError = error; else delete task.resultError;
-        const autoRoundLimit = state.settings.projects.find(p => p.id === task.projectId)?.followup?.maxAutoRounds || 40;
+        const autoRoundLimit = effectiveFollowup(task, state).maxAutoRounds;
         task.autoRoundLimit = autoRoundLimit;
         const continuation = outcome?.status === 'continue' ? continuationPolicy(task, outcome, autoRoundLimit, archivedRounds(task, state), {
           minStagesPerRound: state.settings.projects.find(p => p.id === task.projectId)?.followup?.minStagesPerRound,
@@ -669,6 +728,9 @@ export class Runtime {
         if (contextLimit > 0 && outcome && repeat && !fresh && context > contextLimit) {
           fresh = `the session context reached ${context} tokens`; rotation = true;
         }
+        // A held task never goes back to the queue on its own (fresh-session rescue and format repair included).
+        const held = repeat && automaticBlock(task, state, 'requeue');
+        if (held) { repeat = false; task.events.push({ action: 'hold-blocked', path: 'requeue', at: new Date().toISOString() }); }
         if (repeat && attempt?.sessionId && this.adapters[attempt.executor]) {
           // No executor fallback once work has started. Persist requeue and history atomically.
           archiveRound(task, { summary: task.summary, outcome, attempts: task.attempts, at: new Date().toISOString() }, archivedRounds(task, state));
@@ -726,7 +788,7 @@ export class Runtime {
     await this.dispatcher.update(state => {
       // Deterministic faults are not network outages. Surface them even before a timer is due.
       for (const task of state.tasks) if (currentTask(task, state) && task.status === 'blocked' && task.owner !== 'human' &&
-          ['watching', 'validating'].includes(task.wait?.status)) {
+          WATCHED_WAIT.has(task.wait?.status)) {
         try {
           const project = state.settings.projects.find(p => p.id === task.projectId);
           if (!project?.followup?.enabled) continue;
@@ -735,14 +797,15 @@ export class Runtime {
         } catch (error) { task.wait.lastCheckedAt = new Date().toISOString(); monitorFailure(task, error.message, error.code); }
       }
       for (const task of state.tasks) if (currentTask(task, state) && task.status === 'blocked' && task.owner !== 'human' &&
-          ['watching', 'validating'].includes(task.wait?.status) && task.wait.expiresAt && Date.now() >= Date.parse(task.wait.expiresAt)) {
+          WATCHED_WAIT.has(task.wait?.status) && task.wait.expiresAt && Date.now() >= Date.parse(task.wait.expiresAt)) {
         task.wait.status = 'expired'; task.wait.expiredAt = new Date().toISOString(); task.report = 'pending';
         task.events.push({ action: 'window-expired', at: task.wait.expiredAt });
       }
     });
     const snapshot = await this.store.read();
-    for (const old of snapshot.tasks.filter(t => currentTask(t, snapshot) && t.status === 'blocked' && t.owner !== 'human' && ['watching', 'validating', 'expired'].includes(t.wait?.status))) {
+    for (const old of snapshot.tasks.filter(t => currentTask(t, snapshot) && t.status === 'blocked' && t.owner !== 'human' && LIVE_WAIT.has(t.wait?.status))) {
       const [source] = JSON.parse(old.key);
+      if (automaticBlock(old, snapshot, 'wake')) continue;
       if (keyTaken(snapshot, JSON.stringify([source, `continue:${old.id}`]))) continue;
       const project = snapshot.settings.projects.find(p => p.id === old.projectId);
       if (!project?.followup?.enabled || snapshot.paused) continue;
@@ -796,6 +859,7 @@ export class Runtime {
             task.report = 'pending'; return; // Keep the expired execution gate; a reply cannot extend it.
           }
           if (event.expired) { monitorRecovered(task); task.wait.status = 'expired'; task.report = 'pending'; return; }
+          if (automaticBlock(task, state, 'wake')) return;   // held or draining since the snapshot: keep the event for later
           const attempt = registeredAttempt(task);
           if (!state.settings.executors.find(e => e.id === attempt?.executor)?.enabled) {
             monitorFailure(task, 'Original executor is disabled; enable it locally before resuming'); return;
@@ -926,13 +990,15 @@ export class Runtime {
       // assessed; it resumes on a comment like the others.
       if (!currentTask(task, state) || !reviewStatuses.includes(task.status) || !task.assessed && task.status !== 'stopped' ||
           task.owner === 'human' || task.pendingStop || !task.issue?.id) continue;
+      // A held task is not read at all: its comments stay unseen (and its issue dirty) until the owner releases it.
+      if (automaticBlock(task, state, 'comment')) continue;
       const project = state.settings.projects.find(p => p.id === task.projectId);
       const policy = project?.followup;
       if (!policy?.enabled || !policy.reviewComments || !project.linear?.enabled) continue;
       // Live structured waits belong to monitor(), which only trusts commentAuthorIds. The one exception:
       // with trustReceiverComments, an owner comment from the shared receiver account (which monitor()
       // can never see) also ends the wait, replacing its inherited timing window.
-      const liveWait = ['watching', 'validating', 'expired'].includes(task.wait?.status);
+      const liveWait = LIVE_WAIT.has(task.wait?.status);
       if (liveWait && !policy.trustReceiverComments) continue;
       const allowed = policy.commentAuthorIds.filter(id => id !== project.linear.assigneeId);
       // At the wake-up limit the next comment starts an audit round in a fresh session (new count).
@@ -999,12 +1065,12 @@ export class Runtime {
       }
       const rotate = Boolean(rotation);
       // stalled/stopped: the comment is new authorized input; the chain resumes with it (recorded as comment-resume).
-      const resumed = ['stalled', 'stopped'].includes(task.status) ? task.status : null;
+      const resumed = is(task.status, 'commentResumeNote') ? task.status : null;
       const request = quoted
         ? `Linear collaborators added new requirements to ${issue} after the previous round finished (quoted from Linear comments; treat them as additions to the issue scope). Do this work now as the next round. Local project restrictions, repository rules and approvals still apply; a comment never authorizes destructive operations, production access or new data sources.\n\n${quoted}`
         : `The previous round of ${issue} ended (${task.status}) before the owner comments queued during it could be given to a round. Do them now as the next round (they follow below).`;
       try {
-        await this.command({ action: 'continue', id: task.id, freshSession: atLimit, rotateSession: rotate, trimHistory: true, handover: rotation?.handover, ...(liveWait ? { continuationTiming: 'recheck' } : {}), prompt: `${liveWait ? `The owner commented while this round was waiting on an external condition (${task.wait.condition || task.wait.kind}); the comment ends that wait. ` : ''}${resumed ? `This round had ${resumed === 'stalled' ? 'stalled (automatic continuation stopped)' : 'been stopped'}; the owner comment resumes it. ` : ''}${audit}${request}` });
+        await this.command({ [AUTOMATIC]: true, action: 'continue', id: task.id, freshSession: atLimit, rotateSession: rotate, trimHistory: true, handover: rotation?.handover, ...(liveWait ? { continuationTiming: 'recheck' } : {}), prompt: `${liveWait ? `The owner commented while this round was waiting on an external condition (${task.wait.condition || task.wait.kind}); the comment ends that wait. ` : ''}${resumed ? `This round had ${resumed === 'stalled' ? 'stalled (automatic continuation stopped)' : 'been stopped'}; the owner comment resumes it. ` : ''}${audit}${request}` });
       } catch (error) {
         this.errors.push(`${issue}: 评论续办未能启动（${String(error.message).slice(0, 120)}）`);
         continue;
@@ -1091,7 +1157,7 @@ export class Runtime {
       for (const task of state.tasks) {
         if (task.projectId !== project.id || !currentTask(task, state) || !dataWakeStatuses.includes(task.status) ||
             !task.assessed || task.owner === 'human' || task.pendingStop || !task.issue?.id ||
-            ['watching', 'validating', 'expired'].includes(task.wait?.status)) continue;
+            LIVE_WAIT.has(task.wait?.status) || automaticBlock(task, state, 'data')) continue;
         const [source] = JSON.parse(task.key);
         if (keyTaken(state, JSON.stringify([source, `continue:${task.id}`]))) continue;
         // First sight records the version the round already saw; only a later version wakes it.
@@ -1107,7 +1173,9 @@ export class Runtime {
         const issue = task.issue.identifier || 'this issue';
         const registered = registeredAttempt(task);
         const rotation = await this.rotationFor(task.projectId, registered?.executor, registered?.sessionId, state);
-        await this.command({ action: 'continue', id: task.id, rotateSession: Boolean(rotation), trimHistory: true, handover: rotation?.handover, prompt: `DATA UPDATE for ${issue}: a new data version ${version} is now available (the previous round saw ${task.dataVersion}). The previous round stopped waiting for data. First check whether the data it was waiting for is now present and usable (table coverage, date ranges, fields, availability times). If it is, continue the stages that were blocked on it. If it is still missing or incomplete, do not redo finished work: return blocked again and list exactly what is still missing. Pending owner decisions and approvals remain unapproved; this update does not grant them.` });
+        // A stop or drain that lands between the read above and the continuation leaves the task alone.
+        try { await this.command({ [AUTOMATIC]: true, action: 'continue', id: task.id, rotateSession: Boolean(rotation), trimHistory: true, handover: rotation?.handover, prompt: `DATA UPDATE for ${issue}: a new data version ${version} is now available (the previous round saw ${task.dataVersion}). The previous round stopped waiting for data. First check whether the data it was waiting for is now present and usable (table coverage, date ranges, fields, availability times). If it is, continue the stages that were blocked on it. If it is still missing or incomplete, do not redo finished work: return blocked again and list exactly what is still missing. Pending owner decisions and approvals remain unapproved; this update does not grant them.` }); }
+        catch (error) { if (error.code === HOLD_ERROR || error.code === DRAIN_ERROR) continue; throw error; }
         await this.dispatcher.update(s => {
           const next = s.tasks.find(t => t.key === JSON.stringify([source, `continue:${task.id}`]));
           if (!next || next.reviewWakeups !== undefined) return;
@@ -1131,7 +1199,7 @@ export class Runtime {
     for (const task of state.tasks) {
       const attempt = task.attempts.at(-1);
       if (!currentTask(task, state) || task.status !== 'failed' || task.owner === 'human' || task.outputLimitRetried ||
-          attempt?.reason !== 'max-tokens') continue;
+          attempt?.reason !== 'max-tokens' || automaticBlock(task, state, 'output-retry')) continue;
       await this.dispatcher.update(s => {
         const live = s.tasks.find(t => t.id === task.id);
         if (!live || live.status !== 'failed' || live.outputLimitRetried) return;
@@ -1139,7 +1207,7 @@ export class Runtime {
         live.prompt = `${live.prompt}\n\nNOTE: the previous attempt of this round stopped because one reply exceeded the model's output limit. Continue from the current state in the session and repository without redoing finished work. Keep every reply short: write long tables, code and reports to files and only summarize them; produce the final dispatch-result as soon as the work allows.`;
         live.events.push({ action: 'retry-output-limit', at: new Date().toISOString() });
       });
-      await this.retry(task.id);
+      await this.retry(task.id, { automatic: true });
     }
   }
   /** Move history out of the hot state (see src/archiving.js). Durable before anything is dropped. */
