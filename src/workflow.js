@@ -249,7 +249,9 @@ export function continuationPolicy(task, outcome, maxAutoRounds = 40, earlier = 
     return item.evidence.some(value => !seen.has(normalize(value)));
   });
   const doneNow = (outcome.workItems || []).filter(item => item.status === 'done' && opened(item)).length;
-  const enough = minStages === 0 || doneNow >= minStages;
+  // A task's first round has nothing registered yet, so "completed registered stages" cannot judge it: every
+  // item is new, `opened` is false for all of them and the quota would stop the task before it ever worked.
+  const enough = minStages === 0 || !history.length || doneNow >= minStages;
   const idle = checkpoint && enough ? 0 : (task.continuationIdleRounds ?? task.autoRounds ?? 0);
   const budget = (task.autoRounds || 0) >= maxAutoRounds || idle >= 3;
   const progress = enough && (checkpoint || Boolean(outcome.progress.trim()) && outcome.progress !== task.lastProgress);
