@@ -11,7 +11,9 @@ import { outcomeProtocol, parseOutcome, inspectOutcome, outcomeReports } from '.
 import { parseSettings, unknownSettingKeys } from './config.js';
 import { CliAdapter } from './adapters/cli.js';
 import { DshAdapter } from './adapters/dsh.js';
-import { LinearClient, linearMapping, assigneeAllowed } from './linear.js';
+import { LinearClient, linearMapping, receiverAllowed, syncKey } from './linear.js';
+import { LinearCredentials, credentialEnvNames, credentialKey } from './linear-auth.js';
+import { botTrust } from './comment-trust.js';
 import { AdapterRegistry } from './adapters/registry.js';
 import { isDeepStrictEqual } from 'node:util';
 import { wakeEvent, waitSchema, validateLocalWait, dependencyEvent, waitFault, waitFaults, isAcceptanceNotice } from './followup.js';
@@ -160,8 +162,10 @@ export function issuePrompt(issue) {
 const FOCUS_COMMANDS = new Set(['focus-set', 'focus-add', 'focus-remove', 'focus-clear', 'focus-approve', 'focus-reject']);
 
 export class Runtime {
-  constructor({ store, ctx = {}, directory, linearFactory = token => new LinearClient(token), env = process.env, registry, commentSweepMs = COMMENT_SWEEP_MS, focusJudge = commandJudge }) {
+  constructor({ store, ctx = {}, directory, linearFactory = token => new LinearClient(token), env = process.env, registry, commentSweepMs = COMMENT_SWEEP_MS, focusJudge = commandJudge, linearFetch, now = Date.now }) {
     this.store = asStateStore(store); this.ctx = ctx; this.directory = directory; this.env = env; this.commentSweepMs = commentSweepMs;
+    // Bot / bound credentials (settings.linear): tokens in memory only, shared by every client (single-flight refresh).
+    this.credentials = new LinearCredentials({ env, now, fetcher: (...args) => (linearFetch || fetch)(...args) });
     this.focusJudge = focusJudge; this.focusJudging = null; this.focusContexts = { revision: null, map: new Map() };
     this.linearFactory = linearFactory; this.adapters = {}; this.health = {}; this.errors = [];
     this.sync = new LinearSync(this); this.reads = new Map(); this.notifications = new Notifications(this);
@@ -208,10 +212,15 @@ export class Runtime {
     // Opt-in, once: tasks a user stopped before holds existed get one (see migrateUserStops).
     migrateUserStops(state, this.env);
     }, { durable: true });
-    this.install((await this.store.read()).settings); return this;
+    this.install((await this.store.read()).settings);
+    // Bot identity is checked on start (viewer { id app }); a failure only shows in the snapshot and fails closed.
+    this.verifyLinearIdentities().catch(() => {});
+    return this;
   }
   install(settings) {
-    const secretKeys = settings.projects.flatMap(project => project.linear ? [project.linear.tokenEnv] : []);
+    this.settingsCache = settings;
+    const secretKeys = [...settings.projects.flatMap(project => project.linear ? [project.linear.tokenEnv] : []),
+      ...(settings.linear?.credentials || []).flatMap(credentialEnvNames)];
     for (const config of settings.executors) {
       const signature = { ...config, enabled: true, secretKeys };
       if (isDeepStrictEqual(this.adapters[config.id]?.signature, signature)) continue;
@@ -228,8 +237,8 @@ export class Runtime {
       .map(t => t.wait.status === 'invalid'
         ? `${t.issue?.identifier || t.title}: 等待配置无效，已停止重试。${t.wait.error}`
         : `${t.issue?.identifier || t.title}: 条件监听连续失败 ${t.wait.errorCount} 次，自动复核中；未启动执行。`);
-    const syncStatus = Object.entries(state.linearSync || {}).filter(([key]) => state.settings.projects.some(p => p.linear?.enabled && key === JSON.stringify([p.linear.workspaceId,p.linear.tokenEnv])))
-      .map(([key, value]) => ({ key, ...Object.fromEntries(['lastAttemptAt','lastSuccessAt','nextAt','retryAt','intervalMs','failures','error'].map(k => [k,value[k]])) }));
+    const syncStatus = Object.entries(state.linearSync || {}).filter(([key]) => state.settings.projects.some(p => p.linear?.enabled && key === syncKey(linearMapping(p, state.settings))))
+      .map(([key, value]) => ({ key, projectIds: state.settings.projects.filter(p => p.linear?.enabled && key === syncKey(linearMapping(p, state.settings))).map(p => p.id),...Object.fromEntries(['lastAttemptAt','lastSuccessAt','nextAt','retryAt','intervalMs','failures','error'].map(k => [k,value[k]])) }));
     const expired = state.tasks.filter(t => currentTask(t, state) && t.status === 'blocked' && t.wait?.status === 'expired')
       .map(t => `${t.issue?.identifier || t.title}: 等待窗口已过期${t.wait.pendingUpdate ? '且已有新回执' : ''}，需要本地负责人重新安排；不会自动延期。`);
     const reviewLimits = state.tasks.filter(t => currentTask(t, state) && t.reviewLimitNotified)
@@ -250,9 +259,12 @@ export class Runtime {
     const archived = archivedStubs(state).map(({ id, title, status, projectId, issue, createdAt, endedAt, supersededBy, archivedAt }) =>
       ({ id, title, status, projectId, issue, createdAt, endedAt, supersededBy, archivedAt }));
     const drain = state.drain?.on ? state.drain : { on: false };
-    return { ...state, tasks, archived, drain, restart: restartReadiness(state), focus: focusView(state), linearSync: undefined, syncStatus, health: this.health,
+    // Bound credentials (bot): identity and token expiry only, never the token. Errors fail closed and show here.
+    const linearIdentity = this.credentials.status();
+    const identityErrors = linearIdentity.filter(c => c.error).map(c => `Linear 凭据 ${c.id || c.mode}：${c.error}`);
+    return { ...state, tasks, archived, drain, restart: restartReadiness(state), focus: focusView(state), linearSync: undefined, syncStatus, linearIdentity, health: this.health,
       // Settings fields this bundle does not understand (kept, no effect until a rebuild/restart).
-      settingsUnknownKeys: unknownSettingKeys(state.settings), errors: [...this.errors, ...reportErrors, ...monitorErrors, ...expired, ...attentionErrors, ...notificationErrors, ...reviewLimits] };
+      settingsUnknownKeys: unknownSettingKeys(state.settings), errors: [...this.errors, ...identityErrors, ...reportErrors, ...monitorErrors, ...expired, ...attentionErrors, ...notificationErrors, ...reviewLimits] };
   }
   sharedRead(key, operation, ttl = 0) {
     const old = this.reads.get(key);
@@ -296,6 +308,7 @@ export class Runtime {
       state.settings = settings; state.revision++;
     });
     this.install(settings);
+    this.verifyLinearIdentities().catch(() => {});
   }
   serializePublication(operation) {
     const result = (this.publicationTail || Promise.resolve()).then(operation);
@@ -534,10 +547,45 @@ export class Runtime {
     await this.dispatcher.flush();
     return this.snapshot();
   }
-  client(mapping) {
+  client(linear) {
+    const mapping = this.boundMapping(linear);
+    // A project switched to a bound credential (bot) never falls back to the personal key: fail closed.
+    if (mapping?.auth || mapping?.botMode || mapping?.intakeBy === 'delegate') {
+      if (!mapping.auth) throw Object.assign(new Error('Linear 机器人凭据未配置'), { code: 'LINEAR_AUTH' });
+      return this.linearFactory(this.credentials.get(mapping.auth));
+    }
     const token = this.env[mapping.tokenEnv];
     if (!token) throw new Error(`Missing environment variable ${mapping.tokenEnv}`);
     return this.linearFactory(token);
+  }
+  /** The effective mapping (settings.linear binding merged) of a project.linear object passed by a caller. */
+  boundMapping(linear) {
+    if (!linear || 'intakeBy' in linear) return linear;
+    const settings = this.settingsCache;
+    if (!settings?.linear?.projects?.length) return linear;
+    const project = settings.projects.find(p => p.linear && isDeepStrictEqual(p.linear, linear)) ||
+      settings.projects.find(p => p.linear?.projectId && p.linear.projectId === linear.projectId && p.linear.workspaceId === linear.workspaceId);
+    return project ? linearMapping(project, settings) : linear;
+  }
+  /** viewer { id app } of a bound credential (fails closed on a botUserId / workspace mismatch). */
+  botIdentity(linear) {
+    const mapping = this.boundMapping(linear);
+    if (!mapping?.auth) return Promise.reject(Object.assign(new Error('Linear 机器人凭据未配置'), { code: 'LINEAR_AUTH' }));
+    return this.credentials.get(mapping.auth).identity();
+  }
+  /** Delegate mappings carry the bot id their filters compare against. */
+  async resolveMapping(mapping) {
+    if (mapping?.intakeBy !== 'delegate' || mapping.delegateId) return mapping;
+    return { ...mapping, delegateId: (await this.botIdentity(mapping)).id };
+  }
+  /** Checks every bound credential once (start, configure); results show in snapshot().linearIdentity. */
+  verifyLinearIdentities(settings = this.settingsCache) {
+    const blocks = new Map();
+    for (const project of settings?.projects || []) {
+      const mapping = linearMapping(project, settings);
+      if (project.linear?.enabled && mapping?.auth) blocks.set(credentialKey(mapping.auth), mapping.auth);
+    }
+    return Promise.allSettled([...blocks.values()].map(auth => this.credentials.get(auth).identity()));
   }
   async intake(batch) {
     const state = await this.store.read();
@@ -547,8 +595,8 @@ export class Runtime {
     for (const project of (batch?.projects || state.settings.projects.filter(p => p.linear?.enabled))) {
       try {
       if (!isDeepStrictEqual(project, (await this.store.read()).settings.projects.find(p => p.id === project.id))) continue;
-      const client = this.client(project.linear), mapping = linearMapping(project, state.settings);
-      for (const issue of batch ? batch.issues.filter(i => i.project?.id === mapping.projectId && assigneeAllowed(i, mapping) && i.state?.id === mapping.readyStateId && i.updatedAt >= mapping.since) : await client.issues(mapping)) {
+      const client = this.client(project.linear), mapping = await this.resolveMapping(linearMapping(project, state.settings));
+      for (const issue of batch ? batch.issues.filter(i => i.project?.id === mapping.projectId && receiverAllowed(i, mapping) && i.state?.id === mapping.readyStateId && i.updatedAt >= mapping.since) : await client.issues(mapping)) {
         // A user-held issue takes no new automatic round (one held issue must not fail the project's intake).
         await this.submit({ projectId: project.id, title: `${issue.identifier} · ${issue.title}`,
           prompt: issuePrompt(issue),
@@ -558,6 +606,17 @@ export class Runtime {
       } catch { errors.push(`${project.label}: Linear intake unavailable`); }
     }
     if (errors.length) throw new Error(errors.join('; '));
+  }
+  /** Header prefix of dispatcher-written comments: 'ZRSTUDIO：' in legacy mode, none for the bot (configurable). */
+  reportPrefix(projectId, state) {
+    const project = state.settings.projects.find(p => p.id === projectId);
+    return linearMapping(project, state.settings)?.reportPrefix ?? 'ZRSTUDIO：';
+  }
+  /** Structured-wait comment policy: the excluded author is the receiver account (legacy) or the bot itself. */
+  async waitPolicy(project, settings) {
+    const mapping = linearMapping(project, settings);
+    if (!mapping?.botMode) return { ...project.followup, assigneeId: project.linear?.assigneeId };
+    return { ...project.followup, assigneeId: (await this.botIdentity(mapping)).id };
   }
   report() { return this.serializePublication(() => this.reportCurrent()); }
   async reportCurrent() {
@@ -577,7 +636,7 @@ export class Runtime {
         // The task settled: publish the rounds collected since the last batch together with its own result.
         if (!quiet && task.status !== 'running' && task.pendingRounds?.length) {
           state.outbox.push({ id: randomUUID(), taskId: task.id, projectId: task.projectId, roundReport: true,
-            issueId: task.issue.id, body: roundsDigest(task.pendingRounds), status: 'pending', tries: 0 });
+            issueId: task.issue.id, body: roundsDigest(task.pendingRounds, this.reportPrefix(task.projectId, state)), status: 'pending', tries: 0 });
           delete task.pendingRounds;
         }
         task.reportVersion = (task.reportVersion || 0) + 1;
@@ -593,7 +652,7 @@ export class Runtime {
       for (const task of state.tasks.filter(t => t.issue && t.pendingRounds?.length &&
           (!currentTask(t, state) || Date.now() - Date.parse(t.pendingRounds[0].at) >= ROUND_BATCH_MS))) {
         state.outbox.push({ id: randomUUID(), taskId: task.id, projectId: task.projectId, roundReport: true,
-          issueId: task.issue.id, body: roundsDigest(task.pendingRounds), status: 'pending', tries: 0 });
+          issueId: task.issue.id, body: roundsDigest(task.pendingRounds, this.reportPrefix(task.projectId, state)), status: 'pending', tries: 0 });
         delete task.pendingRounds;
       }
       // Supersede obsolete retries immediately, not only when their backoff expires.
@@ -847,7 +906,7 @@ export class Runtime {
         const activity = remote ? supplied ? supplied.value : await this.client(project.linear).activity(linearMapping(project, snapshot.settings), old.wait.issueId, old.issue.id) : null;
         let event = old.wait.kind === 'task' ? localEvent : wakeEvent(observing ? { ...old.wait, kind: 'linear', notBefore: undefined, expiresAt: undefined, recheckAt: undefined,
           seen: [...(old.wait.seen || []), ...(old.wait.observedRevisions || [])] } : old.wait,
-          activity, { ...project.followup, assigneeId: project.linear?.assigneeId }, Date.now(), ownCommentIds(snapshot));
+          activity, await this.waitPolicy(project, snapshot.settings), Date.now(), ownCommentIds(snapshot));
         await this.dispatcher.update(state => {
           const task = state.tasks.find(t => t.id === old.id);
           if (!task || !currentTask(task, state) || task.status !== 'blocked' || task.owner === 'human' || task.wait?.id !== old.wait.id || task.wait.status !== old.wait.status) return;
@@ -1013,8 +1072,15 @@ export class Runtime {
       // with trustReceiverComments, an owner comment from the shared receiver account (which monitor()
       // can never see) also ends the wait, replacing its inherited timing window.
       const liveWait = LIVE_WAIT.has(task.wait?.status);
-      if (liveWait && !policy.trustReceiverComments) continue;
-      const allowed = policy.commentAuthorIds.filter(id => id !== project.linear.assigneeId);
+      // Bot mode (settings.linear): self = the bot's own comments; trusted = commentAuthorIds + owner ids, by
+      // author id only (prefixes ignored). During a live wait only the owner's comments end it, as with
+      // trustReceiverComments; collaborator replies stay with monitor(). No bot identity: read nothing (fail closed).
+      const mapping = linearMapping(project, state.settings), bot = Boolean(mapping?.botMode);
+      if (liveWait && !policy.trustReceiverComments && !bot) continue;
+      let botId = null;
+      if (bot) { try { botId = (await this.botIdentity(mapping)).id; } catch { continue; } }
+      const trust = bot ? botTrust(policy, mapping, botId) : null;
+      const allowed = bot ? (liveWait ? trust.owners : trust.trusted) : policy.commentAuthorIds.filter(id => id !== project.linear.assigneeId);
       // At the wake-up limit the next comment starts an audit round in a fresh session (new count).
       // Only when the audits are used up too is the comment announced once (Linear + panel) and held.
       const atLimit = (task.reviewWakeups || 0) >= (policy.maxWakeups || 8);
@@ -1022,7 +1088,7 @@ export class Runtime {
       // trustReceiverComments: the owner may share the receiver's Linear account (e.g. another device of
       // the same person). Such a comment counts only when it is not this host's own report (outbox id),
       // not an agent writeback (selfCommentPrefix) and was posted after the round settled.
-      const receiver = policy.trustReceiverComments ? project.linear.assigneeId : null;
+      const receiver = !bot && policy.trustReceiverComments ? project.linear.assigneeId : null;
       if (!allowed.length && !receiver || atLimit && !canAudit && task.reviewLimitNotified) continue;
       const [source] = JSON.parse(task.key);
       if (keyTaken(state, JSON.stringify([source, `continue:${task.id}`]))) continue;
@@ -1052,7 +1118,8 @@ export class Runtime {
         if (prefix && body.startsWith(prefix)) return false;
         return ownerMarks.some(m => body.startsWith(m)) || Date.parse(c.createdAt) > settled;
       };
-      const comments = (activity.comments || []).filter(c => (!liveWait && allowed.includes(c.user?.id) || fromReceiver(c)) && !own.has(c.id) && !isAcceptanceNotice(c.body) &&
+      const authored = bot ? c => trust.accepts(c, allowed) : c => !liveWait && allowed.includes(c.user?.id) || fromReceiver(c);
+      const comments = (activity.comments || []).filter(c => authored(c) && !own.has(c.id) && !isAcceptanceNotice(c.body) &&
         !seen.has(c.id) && Date.parse(c.createdAt) > since).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       if (!comments.length && !carried.length) continue;
       const ids = [...carried, ...comments].map(c => c.id);
@@ -1112,8 +1179,12 @@ export class Runtime {
     const project = state.settings.projects.find(p => p.id === task.projectId);
     const policy = project?.followup;
     if (!policy?.enabled || !policy.reviewComments || !project.linear?.enabled) return;
-    const allowed = (policy.commentAuthorIds || []).filter(id => id !== project.linear.assigneeId);
-    const receiver = policy.trustReceiverComments ? project.linear.assigneeId : null;
+    // Bot mode: trusted authors by id (owner included), no prefixes; the bot's own comments are never input.
+    const mapping = linearMapping(project, state.settings), bot = Boolean(mapping?.botMode);
+    let trust = null;
+    if (bot) { try { trust = botTrust(policy, mapping, (await this.botIdentity(mapping)).id); } catch { return; } }
+    const allowed = bot ? trust.trusted : (policy.commentAuthorIds || []).filter(id => id !== project.linear.assigneeId);
+    const receiver = !bot && policy.trustReceiverComments ? project.linear.assigneeId : null;
     if (!allowed.length && !receiver) return;
     this.commentDirty ||= new Set();
     if (!this.commentDue(task, modeOf(project))) return;
@@ -1129,6 +1200,7 @@ export class Runtime {
     const since = Date.parse(task.createdAt || 0);
     const comments = (activity.comments || []).filter(c => {
       if (own.has(c.id) || seen.has(c.id) || Date.parse(c.createdAt) <= since || isAcceptanceNotice(c.body)) return false;
+      if (bot) return trust.accepts(c, allowed);
       const body = String(c.body || '').trimStart();
       if (allowed.includes(c.user?.id)) return true;
       return receiver && c.user?.id === receiver && !(prefix && body.startsWith(prefix)) && ownerMarks.some(m => body.startsWith(m));

@@ -30,8 +30,8 @@ export function summaryText(text) {
 const DIGEST_LIMIT = 30000;
 // Several collected round results as one comment. When they do not fit, the older rounds shrink to their first
 // line (round number and progress) plus the repository link; the newest rounds stay in full.
-export function roundsDigest(rounds) {
-  const head = `ZRSTUDIO：自动续办 ${rounds.length} 轮的结果合并回写（${rounds[0].at.slice(5, 16).replace('T', ' ')} ～ ${rounds.at(-1).at.slice(5, 16).replace('T', ' ')} UTC，按时间先后）。`;
+export function roundsDigest(rounds, prefix = 'ZRSTUDIO：') {
+  const head = `${prefix}自动续办 ${rounds.length} 轮的结果合并回写（${rounds[0].at.slice(5, 16).replace('T', ' ')} ～ ${rounds.at(-1).at.slice(5, 16).replace('T', ' ')} UTC，按时间先后）。`;
   const full = rounds.map(r => r.body);
   const brief = rounds.map(r => r.body.split('\n').filter(l => /^自动续办第|^阶段进度|^完整结论在 Git/.test(l)).join('\n'));
   const parts = [...full];

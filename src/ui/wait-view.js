@@ -23,7 +23,7 @@ export function waitView(task, data, now = Date.now()) {
   const wait = task.wait;
   const queueExpired = task.status === 'blocked' && task.events?.at(-1)?.action === 'window-expired';
   const project = data.settings.projects.find(p => p.id === task.projectId);
-  const sync = data.syncStatus?.find(s => s.key === JSON.stringify([project?.linear?.workspaceId, project?.linear?.tokenEnv]));
+  const sync = data.syncStatus?.find(s => s.projectIds ? s.projectIds.includes(project?.id) : s.key === JSON.stringify([project?.linear?.workspaceId, project?.linear?.tokenEnv]));
   // A newly armed wait can still carry the previous round's result. Do not present its blockers as current.
   const prior = task.outcome?.wait;
   const sameWait = !queueExpired && (!wait || (prior && ['kind', 'condition', 'notBefore', 'recheckAt', 'expiresAt'].every(k => prior[k] === wait[k]) &&

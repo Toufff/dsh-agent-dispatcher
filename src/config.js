@@ -64,7 +64,27 @@ export const effortExperimentSchema = z.object({ enabled: z.boolean(),
   arms: z.object({ even: effort, odd: effort }).strict(), projectIds: z.array(id).max(100),
   // Fallback route when the session's current selection cannot be read (default leihuo / deepseek-flash).
   provider: id.optional(), model: id.optional() }).strict();
+const envName = z.string().regex(/^[A-Z][A-Z0-9_]{1,159}$/);
+// Linear credential blocks (src/linear-auth.js). Only env var NAMES are stored, never key, client id or secret values.
+export const linearCredentialSchema = z.discriminatedUnion('mode', [
+  z.object({ id, mode: z.literal('apiKey'), tokenEnv: envName, workspaceId: id.optional(), botUserId: id.optional(), default: z.boolean().optional() }).strict(),
+  z.object({ id, mode: z.literal('clientCredentials'), clientIdEnv: envName, clientSecretEnv: envName,
+    scope: z.string().regex(/^[a-z:,_]+$/).max(200).optional(), workspaceId: id.optional(), botUserId: id.optional(), default: z.boolean().optional() }).strict()
+]);
+// Per local project: which credential it uses and how it takes issues. Top level (like includeUnassigned) so the
+// switch and its rollback never change project.linear: running tasks, their dedup keys and waits are untouched.
+export const linearBindingSchema = z.object({ projectId: id, credential: id.optional(),
+  intake: z.object({ by: z.enum(['assignee', 'delegate']) }).strict().optional(),
+  // 'bot': self = the bot's own comments, trusted = commentAuthorIds + ownerUserIds, prefixes ignored.
+  // Defaults to 'bot' for delegate intake, 'legacy' otherwise.
+  commentTrust: z.enum(['legacy', 'bot']).optional(),
+  // Owner account(s) trusted in bot mode (default: the project's linear.assigneeId).
+  ownerUserIds: z.array(id).max(10).optional(),
+  // Prefix of dispatcher-written comment headers (default '' in bot mode, 'ZRSTUDIO：' otherwise).
+  reportPrefix: z.string().max(40).optional() }).strict();
 export const settingsSchema = z.object({ executors: z.array(executorSchema), projects: z.array(projectSchema),
+  linear: z.object({ credentials: z.array(linearCredentialSchema).max(20).default([]),
+    projects: z.array(linearBindingSchema).max(100).default([]) }).strict().optional(),
   effortExperiment: effortExperimentSchema.optional(),
   // Projects whose unassigned ready (Todo) issues are taken too, read only (never assigned by the dispatcher).
   // Top level, like effortExperiment, so it can change without stopping project tasks or invalidating their waits.
@@ -96,6 +116,21 @@ export const settingsSchema = z.object({ executors: z.array(executorSchema), pro
       ctx.addIssue({ code: 'custom', message: 'Effort experiment project does not exist' });
     if (value.includeUnassigned?.projectIds.some(id => !value.projects.some(p => p.id === id)))
       ctx.addIssue({ code: 'custom', message: 'Unassigned-intake project does not exist' });
+    const block = value.linear;
+    if (block) {
+      if (new Set(block.credentials.map(c => c.id)).size !== block.credentials.length)
+        ctx.addIssue({ code: 'custom', message: 'Duplicate Linear credential identity' });
+      if (new Set(block.projects.map(p => p.projectId)).size !== block.projects.length)
+        ctx.addIssue({ code: 'custom', message: 'Duplicate Linear project binding' });
+      for (const binding of block.projects) {
+        if (!value.projects.some(p => p.id === binding.projectId && p.linear))
+          ctx.addIssue({ code: 'custom', message: 'Linear binding project does not exist or has no Linear mapping' });
+        if (binding.credential && !block.credentials.some(c => c.id === binding.credential))
+          ctx.addIssue({ code: 'custom', message: 'Linear binding credential does not exist' });
+        if ((binding.intake?.by === 'delegate' || binding.commentTrust === 'bot') && !binding.credential && !block.credentials.some(c => c.default))
+          ctx.addIssue({ code: 'custom', message: 'Delegate intake and bot comment trust need a bot credential' });
+      }
+    }
     if (channels.some(c => c.projectIds.some(id => !value.projects.some(p => p.id === id))))
       ctx.addIssue({ code: 'custom', message: 'Notification project does not exist' });
   });

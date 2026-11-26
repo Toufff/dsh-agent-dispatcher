@@ -1,7 +1,7 @@
 import { LIVE_WAIT } from './states.js';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { WaitTargetError, validWaitTarget, linearMapping, assigneeAllowed } from './linear.js';
+import { WaitTargetError, validWaitTarget, linearMapping, receiverAllowed, syncKey } from './linear.js';
 import { currentTask, keyTaken } from './workflow.js';
 
 const overlap = 60000, reconcileEvery = 15 * 60000;
@@ -9,7 +9,7 @@ const hash = value => createHash('sha256').update(JSON.stringify(value)).digest(
 export function syncGroups(state) {
   const groups = new Map();
   for (const project of state.settings.projects.filter(p => p.linear?.enabled)) {
-    const key = JSON.stringify([project.linear.workspaceId, project.linear.tokenEnv]);
+    const key = syncKey(linearMapping(project, state.settings));
     if (!groups.has(key)) groups.set(key, { key, projects: [], waits: [] });
     const group = groups.get(key); group.projects.push(project);
     if (!state.paused && project.followup?.enabled) for (const task of state.tasks) {
@@ -34,7 +34,7 @@ export function syncGroups(state) {
 
 function activityFor(task, project, watched, comments, mapping = project.linear) {
   const parent = watched.find(i => i.id === task.issue.id), target = watched.find(i => i.id === (task.wait.issueId || task.issue.id));
-  if (!parent || parent.archivedAt || parent.project?.id !== project.linear.projectId || !assigneeAllowed(parent, mapping) || ['completed', 'canceled'].includes(parent.state?.type))
+  if (!parent || parent.archivedAt || parent.project?.id !== project.linear.projectId || !receiverAllowed(parent, mapping) || ['completed', 'canceled'].includes(parent.state?.type))
     throw new Error('Parent issue is closed, reassigned or outside the mapped project; local continuation remains stopped');
   if (!validWaitTarget(parent, target, project.linear.projectId)) throw new WaitTargetError();
   return { ...target, parentState: parent.state, comments: comments.filter(c => c.issue?.id === target.id) };
@@ -61,7 +61,7 @@ export class LinearSync {
       const valid = async () => syncGroups(await r.store.read()).some(g => g.key === group.key && g.signature === group.signature);
       let monitored = false;
       try {
-        const result = await r.client(group.projects[0].linear).changes({
+        const result = await r.client(group.mappings[0]).changes({
           workspaceId: group.projects[0].linear.workspaceId, mappings: group.mappings,
           targets: group.waits.map(t => ({ parentId: t.issue.id, issueId: t.wait.issueId || t.issue.id })),
           issueSince: since, commentSince: since && since > commentStart ? since : commentStart, startedAt: now
@@ -86,7 +86,7 @@ export class LinearSync {
         for (const task of group.waits) {
           const project = group.projects.find(p => p.id === task.projectId);
           try { if (result.activityError) throw result.activityError;
-            activities.set(task.id, { waitId: task.wait.id, value: activityFor(task, project, result.watched, comments, group.mappings[group.projects.indexOf(project)]) }); }
+            activities.set(task.id, { waitId: task.wait.id, value: activityFor(task, project, result.watched, comments, (result.mappings || group.mappings)[group.projects.indexOf(project)]) }); }
           catch (error) { activities.set(task.id, { waitId: task.wait.id, error }); }
         }
         await r.monitor({ activities });
@@ -110,7 +110,9 @@ export class LinearSync {
           if (!isDeepStrictEqual(group.projects, s.settings.projects.filter(p => group.projects.some(g => g.id === p.id)))) return;
           s.linearSync ||= {}; s.linearSync[group.key] = { ...(s.linearSync[group.key] || saved),
             lastAttemptAt: new Date(now).toISOString(), failures, retryAt: this.now() + delay, nextAt: this.now() + delay,
-            error: error.code === 'RATE_LIMITED' ? 'Linear 请求限流，等待额度恢复' : 'Linear 同步失败，自动退避重试；同步进度已保留' };
+            error: error.code === 'RATE_LIMITED' ? 'Linear 请求限流，等待额度恢复'
+              : ['LINEAR_AUTH', 'LINEAR_IDENTITY_MISMATCH', 'LINEAR_UNAUTHENTICATED'].includes(error.code) ? `Linear 机器人凭据不可用，已停止接单（${error.message}）；同步进度已保留`
+              : 'Linear 同步失败，自动退避重试；同步进度已保留' };
         });
         if (!monitored) await r.monitor({ activities: new Map(group.waits.map(t => [t.id, { waitId: t.wait.id, error }])) });
       }

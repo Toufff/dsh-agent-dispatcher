@@ -1,3 +1,5 @@
+import { credentialKey } from './linear-auth.js';
+
 export class WaitTargetError extends Error {
   constructor() { super('等待目标必须是当前工单、同项目直接子单或 Linear 明确关联的工单；请修正恢复条件，重试不会解决此问题。'); this.code = 'INVALID_WAIT_TARGET'; }
 }
@@ -20,21 +22,76 @@ export function validWaitTarget(source, target, projectId) {
  */
 export function linearMapping(project, settings) {
   if (!project?.linear) return project?.linear;
-  return settings?.includeUnassigned?.projectIds?.includes(project.id) ? { ...project.linear, includeUnassigned: true } : project.linear;
+  let mapping = settings?.includeUnassigned?.projectIds?.includes(project.id) ? { ...project.linear, includeUnassigned: true } : project.linear;
+  const binding = linearBinding(project, settings);
+  if (binding) mapping = { ...mapping, ...binding };
+  return mapping;
 }
-/** An issue belongs to the mapping's receiver: assigned to it, or unassigned when the mapping includes those. */
-export const assigneeAllowed = (issue, mapping) =>
-  issue?.assignee?.id === mapping.assigneeId || Boolean(mapping.includeUnassigned) && !issue?.assignee?.id;
+/**
+ * The bot / credential switch of a project (settings.linear, top level like includeUnassigned, so switching and
+ * rolling back never touch project.linear: running tasks and their waits keep their identity). Returns the fields
+ * merged into the mapping, or null for a project that is not listed (legacy behaviour, unchanged).
+ */
+export function linearBinding(project, settings) {
+  const block = settings?.linear, entry = block?.projects?.find(p => p.projectId === project?.id);
+  if (!entry || !project?.linear) return null;
+  const credentials = block.credentials || [];
+  const auth = entry.credential ? credentials.find(c => c.id === entry.credential)
+    : credentials.find(c => c.default && (!c.workspaceId || c.workspaceId === project.linear.workspaceId));
+  const intakeBy = entry.intake?.by || 'assignee';
+  const botMode = (entry.commentTrust || (intakeBy === 'delegate' ? 'bot' : 'legacy')) === 'bot';
+  return { auth: auth ? { workspaceId: project.linear.workspaceId, ...auth } : null, intakeBy, botMode,
+    ownerUserIds: entry.ownerUserIds || [project.linear.assigneeId],
+    reportPrefix: entry.reportPrefix ?? (botMode ? '' : 'ZRSTUDIO：') };
+}
+/** Sync/sweep grouping key of a mapping: legacy keys stay exactly as before. */
+export function syncKey(mapping) {
+  const base = [mapping.workspaceId, mapping.tokenEnv];
+  return JSON.stringify(mapping.auth || mapping.intakeBy === 'delegate' ? [...base, credentialKey(mapping.auth) || 'none', mapping.intakeBy || 'assignee'] : base);
+}
+/**
+ * An issue belongs to the mapping's receiver: assigned to it (or unassigned when the mapping includes those);
+ * in delegate mode delegated to the bot. A delegate mapping without a resolved bot id admits nothing (fail closed).
+ */
+export const receiverAllowed = (issue, mapping) => mapping.intakeBy === 'delegate'
+  ? Boolean(mapping.delegateId) && issue?.delegate?.id === mapping.delegateId
+  : issue?.assignee?.id === mapping.assigneeId || Boolean(mapping.includeUnassigned) && !issue?.assignee?.id;
+export const assigneeAllowed = receiverAllowed;
 const assigneeFilters = mapping => [{ id: { eq: mapping.assigneeId } }, ...(mapping.includeUnassigned ? [{ null: true }] : [])];
+/** Filter clauses selecting the mapping's receiver. */
+const receiverClauses = mapping => mapping.intakeBy === 'delegate'
+  ? [{ delegate: { id: { eq: mapping.delegateId } } }]
+  : assigneeFilters(mapping).map(assignee => ({ assignee }));
+const delegateField = mappings => mappings.some(m => m?.intakeBy === 'delegate') ? ' delegate { id }' : '';
+const authFailure = () => Object.assign(new Error('Linear 认证失败'), { code: 'LINEAR_UNAUTHENTICATED' });
 
-/** Fixed official endpoint: issue content cannot redirect credentials. */
+/**
+ * Fixed official endpoint: issue content cannot redirect credentials. `token` is a personal API key (legacy) or a
+ * credential object (src/linear-auth.js) that supplies the header, refreshes the bot token and checks identity.
+ */
 export class LinearClient {
-  constructor(token, fetcher = fetch) { this.token = token; this.fetcher = fetcher; }
-  async query(query, variables = {}) {
+  constructor(token, fetcher = fetch) {
+    if (token && typeof token === 'object') this.credential = token; else this.token = token;
+    this.fetcher = fetcher;
+  }
+  /** Delegate mappings get the bot's own id (viewer of this credential) before any filter is built. */
+  async resolve(mapping) {
+    if (mapping?.intakeBy !== 'delegate' || mapping.delegateId) return mapping;
+    if (!this.credential) throw Object.assign(new Error('委派接单需要机器人凭据'), { code: 'LINEAR_AUTH' });
+    return { ...mapping, delegateId: (await this.credential.identity()).id };
+  }
+  async query(query, variables = {}, retried = false) {
+    const authorization = this.credential ? await this.credential.ready() : this.token;
     const response = await this.fetcher('https://api.linear.app/graphql', {
-      method: 'POST', headers: { Authorization: this.token, 'Content-Type': 'application/json' },
+      method: 'POST', headers: { Authorization: authorization, 'Content-Type': 'application/json' },
       body: JSON.stringify({ query, variables }), signal: AbortSignal.timeout(15000)
     });
+    // An expired or revoked bot token: drop it and retry once with a fresh one.
+    if (this.credential && response.status === 401) {
+      this.credential.invalidate(authorization);
+      if (!retried) return this.query(query, variables, true);
+      throw authFailure();
+    }
     const serverTime = Date.parse(response.headers?.get('date'));
     if (Number.isFinite(serverTime)) this.serverTime = serverTime;
     const limited = () => {
@@ -46,9 +103,16 @@ export class LinearClient {
       return error;
     };
     if (response.status === 429) throw limited();
-    if (!response.ok) throw new Error(`Linear HTTP ${response.status}`);
+    // Linear reports a rejected token as HTTP 400 with an AUTHENTICATION_ERROR body: read it for bot credentials.
+    if (!response.ok && !(this.credential && response.status === 400)) throw new Error(`Linear HTTP ${response.status}`);
     const result = await response.json();
+    if (!response.ok && !result?.errors?.some(e => e.extensions?.code === 'AUTHENTICATION_ERROR')) throw new Error(`Linear HTTP ${response.status}`);
     if (result.errors?.some(e => e.extensions?.code === 'RATELIMITED' || e.extensions?.code === 'RATE_LIMITED')) throw limited();
+    if (this.credential && result.errors?.some(e => e.extensions?.code === 'AUTHENTICATION_ERROR')) {
+      this.credential.invalidate(authorization);
+      if (!retried) return this.query(query, variables, true);
+      throw authFailure();
+    }
     if (result.errors?.length) throw new Error('Linear rejected the request; check scope and identifiers');
     return result.data;
   }
@@ -73,19 +137,20 @@ export class LinearClient {
     if (identity.organization.id !== workspaceId) throw new Error('Linear token belongs to another workspace');
     // Use the earlier clock and overlap on the next read; never advance to completion time.
     const until = new Date(Math.min(startedAt, this.serverTime || startedAt)).toISOString();
-    const fields = 'id identifier title description url updatedAt project { id } assignee { id } state { id type } parent { id }';
+    mappings = await Promise.all(mappings.map(m => this.resolve(m)));
+    const fields = `id identifier title description url updatedAt project { id } assignee { id }${delegateField(mappings)} state { id type } parent { id }`;
     let issues = [], watched = [], comments = [], issueError, activityError;
-    try { issues = mappings.length ? await this.collection('issues', { or: mappings.flatMap(m => assigneeFilters(m).map(assignee => ({
-      project: { id: { eq: m.projectId } }, assignee, state: { id: { eq: m.readyStateId } },
+    try { issues = mappings.length ? await this.collection('issues', { or: mappings.flatMap(m => receiverClauses(m).map(receiver => ({
+      project: { id: { eq: m.projectId } }, ...receiver, state: { id: { eq: m.readyStateId } },
       updatedAt: { gte: issueSince && issueSince > m.since ? issueSince : m.since, lte: until }
     }))) }, fields) : []; } catch (error) { if (error.code === 'RATE_LIMITED') throw error; issueError = error; }
     const ids = [...new Set(targets.flatMap(t => [t.parentId, t.issueId]))];
-    try { watched = ids.length ? await this.collection('issues', { id: { in: ids } }, `id identifier project { id } assignee { id } state { id type } parent { id } archivedAt ${relationFields}`, true) : [];
+    try { watched = ids.length ? await this.collection('issues', { id: { in: ids } }, `id identifier project { id } assignee { id }${delegateField(mappings)} state { id type } parent { id } archivedAt ${relationFields}`, true) : [];
     comments = targets.length ? await this.collection('comments', {
       issue: { id: { in: [...new Set(targets.map(t => t.issueId))] } }, updatedAt: { gte: commentSince, lte: until }
     }, 'id body createdAt updatedAt user { id } issue { id }') : [];
     } catch (error) { if (error.code === 'RATE_LIMITED') throw error; activityError = error; }
-    return { issues, watched, comments, until, issueError, activityError };
+    return { issues, watched, comments, until, issueError, activityError, mappings };
   }
   async catalog() {
     const identity = await this.query('query { viewer { id name } organization { id name } }');
@@ -114,6 +179,7 @@ export class LinearClient {
   async issues(mapping) {
     const identity = await this.query('query { organization { id } }');
     if (identity.organization.id !== mapping.workspaceId) throw new Error('Linear token belongs to another workspace');
+    mapping = await this.resolve(mapping);
     let cursor = null, issues = [];
     do {
       const data = await this.query(`query($filter:IssueFilter!, $after:String) {
@@ -121,7 +187,7 @@ export class LinearClient {
           nodes { id identifier title description url updatedAt }
           pageInfo { hasNextPage endCursor }
         }
-      }`, { filter: { project: { id: { eq: mapping.projectId } }, ...(mapping.includeUnassigned ? { or: assigneeFilters(mapping).map(assignee => ({ assignee })) } : { assignee: { id: { eq: mapping.assigneeId } } }),
+      }`, { filter: { project: { id: { eq: mapping.projectId } }, ...(mapping.intakeBy === 'delegate' ? receiverClauses(mapping)[0] : mapping.includeUnassigned ? { or: assigneeFilters(mapping).map(assignee => ({ assignee })) } : { assignee: { id: { eq: mapping.assigneeId } } }),
         state: { id: { eq: mapping.readyStateId } }, updatedAt: { gte: mapping.since } }, after: cursor });
       issues.push(...data.issues.nodes);
       cursor = data.issues.pageInfo.hasNextPage ? data.issues.pageInfo.endCursor : null;
@@ -132,7 +198,8 @@ export class LinearClient {
   async eligible(mapping, parentId) {
     const identity = await this.query('query { organization { id } }');
     if (identity.organization.id !== mapping.workspaceId) throw new Error('Linear token belongs to another workspace');
-    const parent = (await this.query(`query($id:String!) { issue(id:$id) { id project { id } assignee { id } state { type } ${relationFields} } }`, { id: parentId })).issue;
+    mapping = await this.resolve(mapping);
+    const parent = (await this.query(`query($id:String!) { issue(id:$id) { id project { id } assignee { id }${delegateField([mapping])} state { type } ${relationFields} } }`, { id: parentId })).issue;
     if (!parent || parent.project?.id !== mapping.projectId || !assigneeAllowed(parent, mapping) || ['completed', 'canceled'].includes(parent.state?.type))
       throw new Error('Parent issue is closed, reassigned or outside the mapped project; local continuation remains stopped');
     return parent;
