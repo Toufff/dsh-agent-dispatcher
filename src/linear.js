@@ -42,7 +42,23 @@ export function linearBinding(project, settings) {
   const botMode = (entry.commentTrust || (intakeBy === 'delegate' ? 'bot' : 'legacy')) === 'bot';
   return { auth: auth ? { workspaceId: project.linear.workspaceId, ...auth } : null, intakeBy, botMode,
     ownerUserIds: entry.ownerUserIds || [project.linear.assigneeId],
+    selfPrefixGuard: entry.selfPrefixGuard ?? true,
     reportPrefix: entry.reportPrefix ?? (botMode ? '' : 'ZRSTUDIO：') };
+}
+/**
+ * The account whose comments never answer a structured wait: the shared receiver (project.linear.assigneeId) in
+ * legacy mode, the bot itself in bot mode (botId when known, else the configured botUserId). One rule for
+ * validateLocalWait, the wait view and waitPolicy.
+ */
+export function replyExcludedId(project, settings, botId = null) {
+  const mapping = linearMapping(project, settings);
+  return mapping?.botMode ? botId || mapping.auth?.botUserId || null : project?.linear?.assigneeId;
+}
+/** Accounts a structured Linear wait may name as expected repliers (bot mode adds the owner accounts). */
+export function waitReplyAuthors(project, settings, botId = null) {
+  const mapping = linearMapping(project, settings), excluded = replyExcludedId(project, settings, botId);
+  const ids = [...(project?.followup?.commentAuthorIds || []), ...(mapping?.botMode ? mapping.ownerUserIds || [] : [])];
+  return [...new Set(ids)].filter(id => id && id !== excluded);
 }
 /** Sync/sweep grouping key of a mapping: legacy keys stay exactly as before. */
 export function syncKey(mapping) {
@@ -113,6 +129,7 @@ export class LinearClient {
       if (!retried) return this.query(query, variables, true);
       throw authFailure();
     }
+    this.credential?.accepted(authorization);
     if (result.errors?.length) throw new Error('Linear rejected the request; check scope and identifiers');
     return result.data;
   }

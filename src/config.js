@@ -80,6 +80,10 @@ export const linearBindingSchema = z.object({ projectId: id, credential: id.opti
   commentTrust: z.enum(['legacy', 'bot']).optional(),
   // Owner account(s) trusted in bot mode (default: the project's linear.assigneeId).
   ownerUserIds: z.array(id).max(10).optional(),
+  // Bot mode transition guard (default true): a comment starting with followup.selfCommentPrefix (default
+  // 'ZRSTUDIO') is self even from a trusted account, because automation still posts through the owner's
+  // shared account. Set false only once every automation posts as the bot (src/comment-trust.js).
+  selfPrefixGuard: z.boolean().optional(),
   // Prefix of dispatcher-written comment headers (default '' in bot mode, 'ZRSTUDIO：' otherwise).
   reportPrefix: z.string().max(40).optional() }).strict();
 export const settingsSchema = z.object({ executors: z.array(executorSchema), projects: z.array(projectSchema),
@@ -129,6 +133,14 @@ export const settingsSchema = z.object({ executors: z.array(executorSchema), pro
           ctx.addIssue({ code: 'custom', message: 'Linear binding credential does not exist' });
         if ((binding.intake?.by === 'delegate' || binding.commentTrust === 'bot') && !binding.credential && !block.credentials.some(c => c.default))
           ctx.addIssue({ code: 'custom', message: 'Delegate intake and bot comment trust need a bot credential' });
+        // The bot identity is pinned: without botUserId a personal key or another app's credentials would be
+        // taken for the bot without any error (delegate filter and self classification follow the viewer).
+        const bound = binding.credential ? block.credentials.find(c => c.id === binding.credential) : block.credentials.find(c => c.default);
+        if ((binding.intake?.by === 'delegate' || binding.commentTrust === 'bot') && bound && (!bound.botUserId || bound.mode !== 'clientCredentials'))
+          ctx.addIssue({ code: 'custom', message: 'Delegate intake and bot comment trust need a clientCredentials credential with botUserId' });
+        const ownerIds = binding.ownerUserIds || [value.projects.find(p => p.id === binding.projectId)?.linear?.assigneeId];
+        if (bound?.botUserId && ownerIds.includes(bound.botUserId))
+          ctx.addIssue({ code: 'custom', message: 'Linear botUserId must not be an owner account' });
       }
     }
     if (channels.some(c => c.projectIds.some(id => !value.projects.some(p => p.id === id))))

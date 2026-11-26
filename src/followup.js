@@ -1,6 +1,7 @@
 import { has, FAULTED_WAIT } from './states.js';
 import { z } from 'zod';
 import { waitScopeError, keyTaken, archivedStubs, findTask } from './workflow.js';
+import { waitReplyAuthors } from './linear.js';
 
 const timestamp = z.string().datetime({ offset: true });
 export const waitSchema = z.object({
@@ -74,7 +75,7 @@ export function validateLocalWait(wait, task, state) {
   const project = state.settings.projects.find(p => p.id === task.projectId);
   if (wait.kind === 'linear') {
     if (!wait.expectedAuthorIds?.length) throw waitFault('WAIT_REPLY_UNDECLARED');
-    const allowed = (project?.followup?.commentAuthorIds || []).filter(id => id !== project?.linear?.assigneeId);
+    const allowed = waitReplyAuthors(project, state.settings);
     if (!allowed.length || wait.expectedAuthorIds?.some(id => !allowed.includes(id))) throw waitFault('WAIT_REPLY_UNREACHABLE');
   }
   if (wait.kind !== 'task') return wait;

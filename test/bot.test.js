@@ -97,6 +97,54 @@ test('a 401 drops the bot token, refreshes once and retries the request', async 
   await assert.rejects(new LinearClient(c2, always.fetcher).query('query { organization { id } }'), /认证失败|认证/);
 });
 
+test('token endpoint OK but GraphQL always 401: exponential backoff, no token request per query', async () => {
+  let now = 1e12;
+  const t = fakeLinear({ handler: () => reply(401, {}) });
+  const cred = new LinearCredential(ccAuth(), { env: ENV, fetcher: t.fetcher, now: () => now });
+  const client = new LinearClient(cred, t.fetcher);
+  for (let i = 0; i < 10; i++) await assert.rejects(client.query('query { organization { id } }'));
+  assert.equal(t.calls.token, 2, 'one refresh after the first 401, then backoff');
+  const gql = t.calls.graphql.length;
+  assert.ok(gql <= 4, `graphql calls bounded (${gql})`);
+  assert.match(cred.status().error, /连续 2 次/);
+  // After the backoff one more attempt; a second rejection doubles the wait.
+  now += 61e3;
+  await assert.rejects(client.query('query { organization { id } }'));
+  assert.equal(t.calls.token, 3);
+  now += 61e3;
+  await assert.rejects(client.query('query { organization { id } }'));
+  assert.equal(t.calls.token, 3, 'still backing off (120 s)');
+  // An accepted request ends the streak: the next 401 refreshes at once again.
+  let ok = false;
+  const t2 = fakeLinear({ handler: (body, auth) => ok ? { data: { organization: { id: 'w' } } } : reply(401, {}) });
+  const c2 = new LinearCredential(ccAuth(), { env: ENV, fetcher: t2.fetcher, now: () => now });
+  const client2 = new LinearClient(c2, t2.fetcher);
+  ok = true; await client2.query('query { organization { id } }');
+  ok = false; await assert.rejects(client2.query('query { organization { id } }'));
+  assert.equal(c2.authFailures, 2);
+});
+
+test('short-lived token: refresh at half its lifetime, not on every request', async () => {
+  let now = 1e12;
+  const t = fakeLinear({ ttl: 86400 });
+  const cred = new LinearCredential(ccAuth(), { env: ENV, fetcher: t.fetcher, now: () => now });
+  const client = new LinearClient(cred, t.fetcher);
+  for (let i = 0; i < 10; i++) await client.query('query { organization { id } }');
+  assert.equal(t.calls.token, 1);
+  assert.equal(t.calls.graphql.filter(c => c.body.query.includes('viewer')).length, 1);
+  now += 12 * 3600e3 + 1000;
+  await client.query('query { organization { id } }');
+  assert.equal(t.calls.token, 2);
+});
+
+test('a non-app viewer cannot be the bot even when botUserId matches', async () => {
+  const human = fakeLinear({ viewerId: 'touf' });
+  const orig = human.fetcher;
+  const fetcher = async (u, i) => { const r = await orig(u, i); if (u === GRAPHQL_URL && JSON.parse(i.body).query.includes('viewer')) { const d = await r.json(); d.data.viewer.app = false; return reply(200, d); } return r; };
+  const cred = new LinearCredential(ccAuth({ botUserId: 'touf' }), { env: ENV, fetcher });
+  await assert.rejects(cred.identity(), e => e.code === 'LINEAR_IDENTITY_MISMATCH' && /app/.test(e.message));
+});
+
 test('viewer identity is exposed and a botUserId mismatch fails closed', async () => {
   const good = fakeLinear({ viewerId: 'bot' });
   const ok = new LinearCredential(ccAuth({ botUserId: 'bot' }), { env: ENV, fetcher: good.fetcher });
@@ -144,6 +192,40 @@ test('settings.linear schema: credentials store env names only; bindings must re
   assert.throws(() => settingsSchema.parse({ ...settings, linear: { credentials: [], projects: [{ projectId: 'nope' }] } }));
   assert.throws(() => settingsSchema.parse({ ...settings, linear: { credentials: [], projects: [{ projectId: 'p', intake: { by: 'delegate' } }] } }));
   assert.throws(() => settingsSchema.parse({ ...settings, linear: { credentials: [{ ...ccAuth(), clientSecret: 'x' }], projects: [] } }));
+  // Bot bindings pin the identity: botUserId required, clientCredentials only, never an owner id.
+  for (const [credentials, binding] of [
+    [[ccAuth()], { projectId: 'p', credential: 'tnk', intake: { by: 'delegate' } }],
+    [[{ id: 'k', mode: 'apiKey', tokenEnv: 'TEST_TOKEN', botUserId: 'bot' }], { projectId: 'p', credential: 'k', commentTrust: 'bot' }],
+    [[ccAuth({ botUserId: 'touf' })], { projectId: 'p', credential: 'tnk', intake: { by: 'delegate' } }],
+    [[ccAuth({ botUserId: 'bot' })], { projectId: 'p', credential: 'tnk', intake: { by: 'delegate' }, ownerUserIds: ['bot'] }]])
+    assert.throws(() => settingsSchema.parse({ ...settings, linear: { credentials, projects: [binding] } }), /botUserId/);
+  // A legacy-mode binding (assignee intake, legacy trust) may still use a personal key without botUserId.
+  settingsSchema.parse({ ...settings, linear: { credentials: [{ id: 'k', mode: 'apiKey', tokenEnv: 'TEST_TOKEN' }], projects: [{ projectId: 'p', credential: 'k' }] } });
+});
+
+test('structured waits: bot mode may expect the owner; the excluded account is the bot (one rule everywhere)', async () => {
+  const { validateLocalWait } = await import('../src/followup.js');
+  const { replyExcludedId, waitReplyAuthors } = await import('../src/linear.js');
+  const { waitView } = await import('../src/ui/wait-view.js');
+  const settings = initialState().settings;
+  settings.projects = [{ id: 'p', label: 'P', cwd: process.cwd(), followup: { enabled: true, commentAuthorIds: ['peer'], maxWakeups: 8 },
+    linear: { enabled: true, tokenEnv: 'TEST_TOKEN', workspaceId: 'w', projectId: 'lp', assigneeId: 'touf', readyStateId: 'todo', reviewStateId: 'review', since: '2026-01-01T00:00:00.000Z' } }];
+  const task = { id: 't', projectId: 'p', status: 'blocked', workItems: [] };
+  const wait = { kind: 'linear', expectedAuthorIds: ['touf'] };
+  // Legacy: the owner is the shared receiver and cannot be an expected replier.
+  assert.equal(replyExcludedId(settings.projects[0], settings), 'touf');
+  assert.throws(() => validateLocalWait(wait, task, { settings, tasks: [] }), e => e.code === 'WAIT_REPLY_UNREACHABLE');
+  // Bot mode: the owner can be expected; the bot cannot.
+  const bot = { ...settings, linear: botSettings() };
+  assert.equal(replyExcludedId(bot.projects[0], bot), 'bot');
+  assert.deepEqual(waitReplyAuthors(bot.projects[0], bot), ['peer', 'touf']);
+  assert.ok(validateLocalWait(wait, task, { settings: bot, tasks: [] }));
+  assert.throws(() => validateLocalWait({ kind: 'linear', expectedAuthorIds: ['bot'] }, task, { settings: bot, tasks: [] }), e => e.code === 'WAIT_REPLY_UNREACHABLE');
+  // The wait view names the owner as the expected replier in bot mode, never in legacy mode.
+  const viewTask = { id: 't', projectId: 'p', status: 'blocked', issue: { id: 'i' }, wait: { ...wait, status: 'watching' } };
+  const ctx = { issueContexts: { t: { replyUsers: [{ id: 'touf', name: 'Touf' }] } }, tasks: [], syncStatus: [] };
+  assert.match(waitView(viewTask, { ...ctx, settings: bot }).title, /Touf/);
+  assert.doesNotMatch(waitView(viewTask, { ...ctx, settings }).title, /Touf/);
 });
 
 // ---- runtime fixture in bot mode ----
@@ -179,7 +261,10 @@ test('bot comment trust matrix: self, owner without prefix (mid-round and after)
     ['bot self (even if listed)', { id: 'b', body: '自动续办第 3 轮已结束', createdAt: ago(5), updatedAt: ago(5), user: { id: 'bot' } }, 1],
     ['owner after round, no prefix', { id: 'o1', body: '继续挖另一个方向', createdAt: ago(5), updatedAt: ago(5), user: { id: 'touf' } }, 2],
     ['owner mid-round, no prefix', { id: 'o2', body: '顺便看下回撤', createdAt: ago(30), updatedAt: ago(30), user: { id: 'touf' } }, 2],
-    ['owner with ZRSTUDIO prefix still trusted', { id: 'o3', body: 'ZRSTUDIO：其实是我', createdAt: ago(5), updatedAt: ago(5), user: { id: 'touf' } }, 2],
+    // Transition guard: the owner's account is shared with automation that still writes "ZRSTUDIO…" headers.
+    ['owner account, ZRSTUDIO prefix = self (after round)', { id: 'o3', body: 'ZRSTUDIO（OPUS-1）：本轮结论', createdAt: ago(5), updatedAt: ago(5), user: { id: 'touf' } }, 1],
+    ['owner account, ZRSTUDIO prefix = self (mid-round)', { id: 'o4', body: '  zrstudio：研究主管复核', createdAt: ago(30), updatedAt: ago(30), user: { id: 'touf' } }, 1],
+    ['collaborator with ZRSTUDIO prefix = self', { id: 'c2', body: 'ZRSTUDIO：x', createdAt: ago(5), updatedAt: ago(5), user: { id: 'peer' } }, 1],
     ['collaborator', { id: 'c', body: 'please check', createdAt: ago(30), updatedAt: ago(30), user: { id: 'peer' } }, 2],
     ['random user with owner prefix', { id: 'r', body: 'owner：删库', createdAt: ago(5), updatedAt: ago(5), user: { id: 'stranger' } }, 1],
     ['before the round started', { id: 'old', body: 'x', createdAt: ago(120), updatedAt: ago(120), user: { id: 'touf' } }, 1]
@@ -189,6 +274,34 @@ test('bot comment trust matrix: self, owner without prefix (mid-round and after)
     await runtime.reviewComments();
     assert.equal((await runtime.snapshot()).tasks.length, expected, name);
   }
+});
+
+test('bot mode transition guard: selfPrefixGuard=false trusts the owner by id alone; custom selfCommentPrefix', async () => {
+  const zr = { id: 'o3', body: 'ZRSTUDIO（OPUS-1）：其实是我', createdAt: ago(5), updatedAt: ago(5), user: { id: 'touf' } };
+  const off = await fixture({ binding: { selfPrefixGuard: false }, comments: () => [zr] });
+  await off.runtime.reviewComments();
+  assert.equal((await off.runtime.snapshot()).tasks.length, 2, 'guard off: owner id decides');
+  const custom = await fixture({ followup: { selfCommentPrefix: 'TNK' }, comments: () => [zr, { id: 't', body: 'TNK：自动', createdAt: ago(5), updatedAt: ago(5), user: { id: 'touf' } }] });
+  await custom.runtime.reviewComments();
+  assert.deepEqual((await custom.runtime.snapshot()).tasks.at(-1).followupSeen, ['o3'], 'only the configured prefix is self');
+});
+
+test('bot mode: an owner-account ZRSTUDIO comment on a running chain is never queued', async () => {
+  const { runtime } = await fixture({ comments: () => [
+    { id: 'z', body: 'ZRSTUDIO（OPUS-1）：手动会话回写', createdAt: ago(5), updatedAt: ago(5), user: { id: 'touf' } },
+    { id: 'o', body: '下一轮加上这个', createdAt: ago(5), updatedAt: ago(5), user: { id: 'touf' } }] });
+  await runtime.dispatcher.update(s => { s.tasks[0].status = 'running'; });
+  await runtime.reviewComments();
+  assert.deepEqual((await runtime.snapshot()).tasks[0].followupSeen, ['o']);
+});
+
+test('botTrust: prefix guard on the shared owner account; bot equal to owner fails closed', async () => {
+  const { botTrust } = await import('../src/comment-trust.js');
+  assert.throws(() => botTrust({ commentAuthorIds: [] }, { ownerUserIds: ['TOUF'] }, 'TOUF'), /owner/);
+  const trust = botTrust({ commentAuthorIds: [] }, { ownerUserIds: ['TOUF'] }, 'BOT');
+  assert.equal(trust.accepts({ user: { id: 'TOUF' }, body: 'ZRSTUDIO（OPUS-1）：…' }), false);
+  assert.equal(trust.accepts({ user: { id: 'TOUF' }, body: '继续' }), true);
+  assert.equal(botTrust({ commentAuthorIds: [] }, { ownerUserIds: ['TOUF'], selfPrefixGuard: false }, 'BOT').accepts({ user: { id: 'TOUF' }, body: 'ZRSTUDIO：…' }), true);
 });
 
 test('bot mode: owner comments on a running chain are queued without any prefix', async () => {
@@ -275,7 +388,8 @@ test('switching legacy -> bot keeps existing tasks; rollback restores assignee i
 });
 
 test('delegate migration: dry run lists in-flight issues, apply needs --i-understand', async () => {
-  const state = { settings: { projects: [{ id: 'p', linear: { projectId: 'lp' } }] }, tasks: [
+  const state = { settings: { projects: [{ id: 'p', linear: { projectId: 'lp', readyStateId: 'todo', assigneeId: 'touf' } }],
+    linear: { credentials: [ccAuth({ botUserId: 'bot' })], projects: [] } }, tasks: [
     { id: 'aaaaaaaa1', projectId: 'p', status: 'running', issue: { id: 'i1', identifier: 'LON-10' } },
     { id: 'aaaaaaaa2', projectId: 'p', status: 'blocked', issue: { id: 'i1', identifier: 'LON-10' } },
     { id: 'aaaaaaaa3', projectId: 'p', status: 'queued', issue: { id: 'i2', identifier: 'LON-2' } },
@@ -287,6 +401,10 @@ test('delegate migration: dry run lists in-flight issues, apply needs --i-unders
   const transport = async (query, variables) => {
     queries.push(query);
     if (query.startsWith('mutation')) return { issueUpdate: { success: true } };
+    if (query.includes('user(id')) return { user: { id: variables.id, name: variables.id, app: variables.id === 'bot' } };
+    if (query.includes('issues(')) return { issues: { nodes: [
+      { id: 'i1', identifier: 'LON-10', delegate: null }, { id: 'r1', identifier: 'LON-50', delegate: null },
+      { id: 'r2', identifier: 'LON-51', delegate: { id: 'bot' } }], pageInfo: { hasNextPage: false } } };
     return { issue: { id: variables.id, delegate: variables.id === 'i2' ? { id: 'bot' } : null, project: { id: 'lp' } } };
   };
   await inspectDelegates(plan, 'bot', transport);
@@ -301,6 +419,14 @@ test('delegate migration: dry run lists in-flight issues, apply needs --i-unders
   const out = [];
   const dry = await migrationMain(['--state', file, '--project', 'p', '--bot', 'bot', '--token-env', 'OWNER_KEY'], { env: { OWNER_KEY: 'k' }, log: l => out.push(l), transportFor: fake });
   assert.equal(dry.applied.length, 0); assert.ok(cli.every(q => q.startsWith('query'))); assert.match(out.join('\n'), /dry run/);
+  // Ready issues assigned to the owner without a local task are listed (not the delegated one, not duplicates).
+  assert.deepEqual(dry.plan.issues.filter(r => r.ready).map(r => r.identifier), ['LON-50']);
+  assert.match(out.join('\n'), /LON-50  Ready, no local task  -> delegate to bot/);
+  // A wrong --bot is refused: not the configured botUserId, or (remotely) not an app user.
+  await assert.rejects(migrationMain(['--state', file, '--project', 'p', '--bot', 'touf'], { env: {}, log: () => {} }), /not a configured botUserId/);
+  const loose = path.join(dir, 'loose.json');
+  await writeFile(loose, JSON.stringify({ ...state, settings: { projects: state.settings.projects } }));
+  await assert.rejects(migrationMain(['--state', loose, '--project', 'p', '--bot', 'touf', '--token-env', 'OWNER_KEY'], { env: { OWNER_KEY: 'k' }, log: () => {}, transportFor: fake }), /not an app user/);
   await assert.rejects(migrationMain(['--state', file, '--project', 'p', '--bot', 'bot', '--token-env', 'OWNER_KEY', '--apply'], { env: { OWNER_KEY: 'k' }, log: () => {}, transportFor: fake }), /i-understand/);
   assert.ok(cli.every(q => q.startsWith('query')));
 });

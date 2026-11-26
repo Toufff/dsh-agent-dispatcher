@@ -11,7 +11,7 @@ import { outcomeProtocol, parseOutcome, inspectOutcome, outcomeReports } from '.
 import { parseSettings, unknownSettingKeys } from './config.js';
 import { CliAdapter } from './adapters/cli.js';
 import { DshAdapter } from './adapters/dsh.js';
-import { LinearClient, linearMapping, receiverAllowed, syncKey } from './linear.js';
+import { LinearClient, linearMapping, receiverAllowed, syncKey, replyExcludedId } from './linear.js';
 import { LinearCredentials, credentialEnvNames, credentialKey } from './linear-auth.js';
 import { botTrust } from './comment-trust.js';
 import { AdapterRegistry } from './adapters/registry.js';
@@ -615,8 +615,8 @@ export class Runtime {
   /** Structured-wait comment policy: the excluded author is the receiver account (legacy) or the bot itself. */
   async waitPolicy(project, settings) {
     const mapping = linearMapping(project, settings);
-    if (!mapping?.botMode) return { ...project.followup, assigneeId: project.linear?.assigneeId };
-    return { ...project.followup, assigneeId: (await this.botIdentity(mapping)).id };
+    if (!mapping?.botMode) return { ...project.followup, assigneeId: replyExcludedId(project, settings) };
+    return { ...project.followup, assigneeId: replyExcludedId(project, settings, (await this.botIdentity(mapping)).id) };
   }
   report() { return this.serializePublication(() => this.reportCurrent()); }
   async reportCurrent() {
@@ -1077,9 +1077,8 @@ export class Runtime {
       // trustReceiverComments; collaborator replies stay with monitor(). No bot identity: read nothing (fail closed).
       const mapping = linearMapping(project, state.settings), bot = Boolean(mapping?.botMode);
       if (liveWait && !policy.trustReceiverComments && !bot) continue;
-      let botId = null;
-      if (bot) { try { botId = (await this.botIdentity(mapping)).id; } catch { continue; } }
-      const trust = bot ? botTrust(policy, mapping, botId) : null;
+      let trust = null;
+      if (bot) { try { trust = botTrust(policy, mapping, (await this.botIdentity(mapping)).id); } catch { continue; } }
       const allowed = bot ? (liveWait ? trust.owners : trust.trusted) : policy.commentAuthorIds.filter(id => id !== project.linear.assigneeId);
       // At the wake-up limit the next comment starts an audit round in a fresh session (new count).
       // Only when the audits are used up too is the comment announced once (Linear + panel) and held.

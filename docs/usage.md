@@ -83,22 +83,23 @@ Classified completion queues a privacy-preserving comment and moves the issue to
 }
 ```
 
-- **凭据**：只填环境变量**名**，不填值。`mode` 可选 `clientCredentials`（OAuth 客户端凭据）或 `apiKey`（`tokenEnv`，个人密钥，可配 `botUserId` 交叉核对）。凭据可以按项目引用（`credential`），也可以写 `"default": true`（可带 `workspaceId`）给同工作区未指定凭据的绑定用。凭据环境变量和 `tokenEnv` 一样不会传给执行器子进程。
-- **令牌**：向固定的官方地址 `https://api.linear.app/oauth/token` 以 `grant_type=client_credentials` 取 Bearer 令牌（30 天）。令牌只放内存，不落盘；剩余不到 3 天时提前刷新，并发请求只刷新一次；GraphQL 返回 401（或 `AUTHENTICATION_ERROR`）时丢弃令牌、刷新后重试一次。刷新失败但旧令牌仍有效时继续用旧令牌；没有有效令牌时**一律关闭**：不接单、不读评论，回写留在发件箱稍后重试，原因显示在面板错误和快照 `linearIdentity`（只有到期时间，没有令牌）。令牌接口失败后按 1 分钟起指数退避，不会反复请求。
-- **身份**：启动和保存设置时查询 `viewer { id app }`，结果在快照 `linearIdentity`。配了 `botUserId` 而实际身份不同（或凭据属于别的工作区）时报错并关闭：不接单、不读评论、不回写。
+- **凭据**：只填环境变量**名**，不填值。`mode` 可选 `clientCredentials`（OAuth 客户端凭据）或 `apiKey`（`tokenEnv`，个人密钥）。委派接单或 `commentTrust: "bot"` 的绑定**必须**用带 `botUserId` 的 `clientCredentials` 凭据，`botUserId` 也不能是 owner 账号，否则设置保存不通过；`apiKey` 只用于旧方式绑定。凭据可以按项目引用（`credential`），也可以写 `"default": true`（可带 `workspaceId`）给同工作区未指定凭据的绑定用。凭据环境变量和 `tokenEnv` 一样不会传给执行器子进程。
+- **令牌**：向固定的官方地址 `https://api.linear.app/oauth/token` 以 `grant_type=client_credentials` 取 Bearer 令牌（30 天）。令牌只放内存，不落盘；剩余不到 3 天（令牌有效期短于 6 天时为有效期的一半）时提前刷新，并发请求只刷新一次；GraphQL 返回 401（或 `AUTHENTICATION_ERROR`）时丢弃令牌、刷新后重试一次；新令牌又被拒绝时按 1 分钟起指数退避（最长 30 分钟），退避期内直接关闭、不再请求令牌接口，直到某次请求被接受才清零（应用被撤权、scope 不足、令牌被别的进程重新签发而作废时不会来回刷令牌）。刷新失败但旧令牌仍有效时继续用旧令牌；没有有效令牌时**一律关闭**：不接单、不读评论，回写留在发件箱稍后重试，原因显示在面板错误和快照 `linearIdentity`（只有到期时间，没有令牌）。令牌接口失败后按 1 分钟起指数退避，不会反复请求。
+- **身份**：启动和保存设置时查询 `viewer { id app }`，结果在快照 `linearIdentity`。配了 `botUserId` 而实际身份不同、`viewer.app` 不是 `true`（个人密钥或人的账号），或凭据属于别的工作区时报错并关闭：不接单、不读评论、不回写。
 - **接单**：`intake.by` = `assignee`（旧方式，默认）或 `delegate`（`delegate.id` = 机器人 id，其余项目 / 状态 / since 过滤和启动前复核不变）。委派模式下启动前复核也要求工单仍委派给机器人。
-- **评论信任**（委派模式默认 `commentTrust: "bot"`）：机器人自己发的评论是自身，永不唤醒；`followup.commentAuthorIds` 和 owner 账号（`ownerUserIds`，默认本项目 `linear.assigneeId`，即 Touf）是可信来源，只看作者 id，**不看前缀**，本轮进行中发的也收（并入下一轮）、本轮结束后发的照常续办；其他人的评论一律不算，哪怕带 `owner：` 前缀。等待外部条件期间只有 owner 的评论能结束等待，协作者回复仍交给结构化等待监控。`commentTrust: "legacy"` 可以在委派接单时仍用旧的前缀规则。
+- **评论信任**（委派模式默认 `commentTrust: "bot"`）：机器人自己发的评论是自身，永不唤醒；`followup.commentAuthorIds` 和 owner 账号（`ownerUserIds`，默认本项目 `linear.assigneeId`，即 Touf）是可信来源，按作者 id 判断，本轮进行中发的也收（并入下一轮）、本轮结束后发的照常续办；其他人的评论一律不算，哪怕带 `owner：` 前缀。**过渡保护**（绑定 `selfPrefixGuard`，默认开）：Touf 的个人账号仍是手动会话、研究主管等自动化共用的账号，它们的评论都以 `followup.selfCommentPrefix`（默认 `ZRSTUDIO`，不分大小写）开头；这样的评论不论谁发、不论本轮进行中还是结束后，都算自身、不唤醒，与 quant-mining push-queue 机器人模式的 `Get-LinearCommentClass` 一致。等所有自动化都改用机器人发评论后，再把 `selfPrefixGuard` 设为 `false`。结构化等待在机器人模式下可以把 owner 声明为预期回复人（被排除的只有机器人自己；旧方式仍排除 `linear.assigneeId`）。等待外部条件期间只有 owner 的评论能结束等待，协作者回复仍交给结构化等待监控。`commentTrust: "legacy"` 可以在委派接单时仍用旧的前缀规则。
 - **回写**：评论用机器人令牌发出，由机器人署名。合并回写的抬头在机器人模式下不再加 `ZRSTUDIO：`；需要时用绑定的 `reportPrefix` 指定。执行器自己写在 `publicSummary` 里的前缀由仓库规则决定，派发器不改。
 - **限流**：同步仍是单飞、评论扫描仍每 60 秒一次；机器人有自己独立的 Linear 额度，不再和个人账号共用。
 - **旧方式**：不在 `linear.projects` 里列出的项目完全按旧规则（共享账号前缀协议 `selfCommentPrefix` / `ownerCommentPrefix` / `trustReceiverComments`、个人密钥、按 assignee 接单），行为不变。
 
 **切换步骤**
 
+0. **部署顺序**：quant-mining 侧（`config/linear-bot.json` 的 `mode`，研究主管和 push-queue）要**先于或同时**切到机器人。派发器先切、quant-mining 仍用共享账号时，共享账号发的评论靠上面的过渡保护（`ZRSTUDIO` 前缀算自身）挡住；没带这个前缀的共享账号评论会被当成 owner 评论。上线前只读确认 Linear 的 `client_credentials` 再签发会不会作废旧令牌：如果会，派发器、研究主管、push-queue 不能各自换令牌，要共用一个令牌或各用一个 OAuth 应用。
 1. 在启动 DSH 的环境里配好 `LINEAR_TNK_CLIENT_ID` / `LINEAR_TNK_CLIENT_SECRET`（私有启动脚本或密钥管理器），重启宿主后才读得到。
 2. 先只加 `credentials`（带 `botUserId`）和一条 `"intake": { "by": "assignee" }`、`"commentTrust": "legacy"` 的绑定，看快照 `linearIdentity` 的 `viewer.id` 与 `app: true`、没有错误。
 3. 跑迁移预演，列出在办工单：
    `node scripts/delegate-migration.mjs --state <状态导出.json> --project <本地项目 id> --bot <机器人 id> [--token-env <只读密钥变量名>]`
-   默认只打印计划、不改任何东西；带 `--token-env` 时只读查询每张单当前的 delegate。状态文件用 `scripts/export-legacy-state.js` 导出。
+   默认只打印计划、不改任何东西。`--bot` 先和状态里配置的 `botUserId` 核对；带 `--token-env` 时再只读确认它是应用账号（`user.app`），并只读查询每张单当前的 delegate，同时列出项目里**处于 Ready、仍只指派给 Touf、没有委派给机器人、本地还没有任务**的单（切换后这些单不会被接，要一起委派）。不带 `--token-env` 时这一类单列不出来，脚本会提示。状态文件用 `scripts/export-legacy-state.js` 导出。
 4. 由 owner 在 Linear 把这些在办工单委派给机器人（或 owner 自己运行带 `--apply --i-understand` 的脚本；这一步**只由 owner 运行**，派发器和执行代理不运行）。没委派的在办工单在委派模式下会被启动前复核拦下，不会被错跑。
 5. 把绑定改成 `"intake": { "by": "delegate" }`（去掉 `commentTrust` 即按机器人规则）。保存后同步游标自动重建，已有任务不受影响。
 

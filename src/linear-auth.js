@@ -7,6 +7,9 @@ export const GRAPHQL_URL = 'https://api.linear.app/graphql';
 export const DEFAULT_SCOPE = 'read,write,app:assignable,app:mentionable';
 export const REFRESH_BEFORE_MS = 3 * 86400e3;
 const MIN_VALID_MS = 60e3, IDENTITY_TTL_MS = 10 * 60e3, MAX_BACKOFF_MS = 30 * 60e3;
+const backoff = n => Math.min(MAX_BACKOFF_MS, 60e3 * 2 ** Math.min(Math.max(n, 1) - 1, 5));
+/** Refresh threshold: 3 days, or half the token's lifetime when that is shorter (no refresh on every call). */
+export const refreshBefore = ttlMs => Math.min(REFRESH_BEFORE_MS, Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs / 2 : REFRESH_BEFORE_MS);
 
 const authError = (message, code = 'LINEAR_AUTH') => Object.assign(new Error(message), { code });
 
@@ -24,6 +27,9 @@ export class LinearCredential {
   constructor(auth, { env = process.env, fetcher = fetch, now = Date.now } = {}) {
     this.auth = auth; this.env = env; this.fetcher = fetcher; this.now = now;
     this.key = credentialKey(auth); this.failures = 0;
+    // Consecutive rejections (401 / AUTHENTICATION_ERROR) of tokens the endpoint issued. Not reset by a new token,
+    // only by a request the API accepted: a revoked app keeps getting tokens that GraphQL refuses.
+    this.authFailures = 0;
   }
   get oauth() { return this.auth.mode === 'clientCredentials'; }
   bearer() { return `Bearer ${this.token}`; }
@@ -35,7 +41,7 @@ export class LinearCredential {
       return key;
     }
     const left = () => (this.token ? this.expiresAt - this.now() : -1);
-    if (left() > REFRESH_BEFORE_MS) return this.bearer();
+    if (left() > refreshBefore(this.ttlMs)) return this.bearer();
     if (!this.refreshing) {
       // After a failure the token endpoint is not called again until the backoff ends.
       if (this.retryAt > this.now()) {
@@ -68,20 +74,29 @@ export class LinearCredential {
       const ttl = Number(data?.expires_in);
       if (typeof data?.access_token !== 'string' || !data.access_token || !Number.isFinite(ttl) || ttl <= 0)
         throw authError('Linear 机器人令牌响应缺少 access_token 或 expires_in');
-      this.token = data.access_token; this.fetchedAt = this.now(); this.expiresAt = this.fetchedAt + ttl * 1000;
+      this.token = data.access_token; this.fetchedAt = this.now(); this.ttlMs = ttl * 1000; this.expiresAt = this.fetchedAt + this.ttlMs;
       this.failures = 0; this.retryAt = 0; this.error = null;
       this.identityAt = 0;   // a new token is checked against the expected bot again
     } catch (error) {
       this.failures++;
-      this.retryAt = this.now() + Math.min(MAX_BACKOFF_MS, 60e3 * 2 ** Math.min(this.failures - 1, 5));
+      this.retryAt = this.now() + backoff(this.failures);
       this.error = error.code === 'LINEAR_AUTH' ? error.message : 'Linear 机器人令牌获取失败';
       throw error.code === 'LINEAR_AUTH' ? error : authError(this.error);
     }
   }
   /** A request was rejected as unauthenticated with this header: drop the token so the next call refreshes. */
+  // The first rejection refreshes at once (an expired or rotated token). A rejection of a token issued after an
+  // earlier rejection starts an exponential backoff: until it ends requests fail closed without calling the token
+  // endpoint (a revoked app, a missing scope, or another process re-issuing and voiding our token).
   invalidate(header) {
-    if (this.oauth && this.token && header === this.bearer()) { this.token = null; this.expiresAt = 0; this.retryAt = 0; }
+    if (!this.oauth || !this.token || header !== this.bearer()) return;
+    this.authFailures++;
+    this.token = null; this.expiresAt = 0;
+    this.retryAt = this.authFailures > 1 ? this.now() + backoff(this.authFailures - 1) : 0;
+    if (this.authFailures > 1) this.error = `Linear 拒绝了机器人令牌（连续 ${this.authFailures} 次），退避后再试`;
   }
+  /** The API accepted a request made with this header: rejections are no longer consecutive. */
+  accepted(header) { if (this.oauth && this.token && header === this.bearer()) this.authFailures = 0; }
   /** viewer { id app } of this credential, cross-checked with botUserId and workspaceId (mismatch fails closed). */
   identity() {
     if (this.identityValue && this.now() - this.identityAt < IDENTITY_TTL_MS) {
@@ -102,10 +117,13 @@ export class LinearCredential {
     if (!response.ok) throw authError(`Linear 身份查询失败（HTTP ${response.status}）`);
     const data = (await response.json().catch(() => ({})))?.data;
     if (!data?.viewer?.id) throw authError('Linear 身份查询没有返回 viewer');
+    // A readable viewer does not end a rejection streak (only a real request accepted by LinearClient does).
     const value = { id: data.viewer.id, name: data.viewer.name || '', app: Boolean(data.viewer.app), organizationId: data.organization?.id || null };
     this.identityValue = value; this.identityAt = this.now(); this.identityError = null;
     if (this.auth.botUserId && value.id !== this.auth.botUserId)
       this.identityError = `Linear 凭据身份与配置的 botUserId 不一致（实际 ${value.id}），已停止接单与回写`;
+    else if (this.auth.botUserId && !value.app)
+      this.identityError = 'Linear 凭据不是应用账号（viewer.app=false），不能作为机器人使用，已停止接单与回写';
     else if (this.auth.workspaceId && value.organizationId && value.organizationId !== this.auth.workspaceId)
       this.identityError = 'Linear 凭据属于另一个工作区，已停止接单与回写';
     if (this.identityError) throw authError(this.identityError, 'LINEAR_IDENTITY_MISMATCH');
